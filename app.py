@@ -83,7 +83,8 @@ function deviceRow(c){
   const ips = (c.ips || []).map(x=>`<span class="client-chip mono">${esc(x)}</span>`).join(' ');
   const mac = c.mac ? `<div class="sub mono">MAC ${esc(c.mac)}</div>` : '';
   const host = c.hostname ? `<div class="sub">${esc(c.hostname)}</div>` : '';
-  return `<tr><td><div class="device"><span class="icon">${esc(c.icon)}</span><span><b>${esc(c.display_name)}</b>${host}<br><span class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</span></span></div></td><td><span class="mono">${esc(c.identifier)}</span>${mac}</td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  const source = c.source ? `<div class="sub">${esc(c.source)}</div>` : '';
+  return `<tr><td><div class="device"><span class="icon">${esc(c.icon)}</span><span><b>${esc(c.display_name)}</b>${host}<br><span class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</span>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span>${mac}</td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => `<tr><td><a href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a></td><td>${esc(r.requests)}</td><td>${esc(r.clients)}</td><td>${dot(severityClass(r))}<span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`).join('');
@@ -238,30 +239,52 @@ def is_ip(value):
 
 
 def extract_identity(info, identifier, client_id=None):
+    """Extract the best available stable identity plus current IP observations.
+
+    AdGuard runtime clients can expose identifiers from several sources (hosts/rDNS/ARP/DHCP),
+    while persistent clients can expose explicit ids. We prefer MAC, then a non-IP client id,
+    then a named/hostnamed identity; bare IP is last resort because DHCP can reuse it.
+    """
     info = info or {}
     ids = info.get("ids") or info.get("id") or []
     if isinstance(ids, str):
         ids = [ids]
     values = list(ids) if isinstance(ids, list) else []
+    for key in ("identifier", "client_id", "mac", "address", "ip", "ip_addr"):
+        if info.get(key):
+            values.append(info.get(key))
     values.append(identifier)
     if client_id:
         values.append(client_id)
+
+    extra_ips = []
+    for key in ("ip_addrs", "ips", "addresses", "ip_addresses"):
+        raw = info.get(key) or []
+        if isinstance(raw, str):
+            raw = [raw]
+        if isinstance(raw, list):
+            extra_ips.extend(raw)
+    values_for_ips = values + extra_ips
+
     mac = next((normalize_mac(v) for v in values if is_mac(v)), "")
     ips = []
-    for v in values + list(info.get("ip_addrs") or []):
+    for v in values_for_ips:
         if is_ip(v):
             s = str(v).strip()
             if s not in ips:
                 ips.append(s)
-    name = (info.get("name") or "").strip()
-    hostname = (info.get("hostname") or info.get("name") or "").strip()
-    client_identifier = str(client_id or identifier or "").strip()
+
+    name = str(info.get("name") or "").strip()
+    hostname = str(info.get("hostname") or info.get("host") or info.get("name") or "").strip()
+    client_identifier = str(client_id or info.get("client_id") or identifier or "").strip()
+
     if mac:
         device_key = "mac:" + mac
     elif client_identifier and not is_ip(client_identifier):
         device_key = "client:" + client_identifier.lower()
-    elif name:
-        device_key = "name:" + re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    elif name or hostname:
+        label = name or hostname
+        device_key = "name:" + re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
     elif ips:
         device_key = "ip:" + ips[0]
     else:
@@ -278,6 +301,8 @@ def client_info_from_entry(entry):
     if name:
         source = "AdGuard client_info"
     device_key, mac, ips, name, hostname = extract_identity(info, ident, client_id)
+    if is_ip(ident) and ident not in ips:
+        ips.insert(0, ident)
     return str(ident), name, source, info, device_key, mac, ips, hostname
 
 
@@ -384,9 +409,10 @@ def refresh_runtime_clients():
             if not x:
                 continue
             name = (x.get("name") or "").strip()
-            source = "AdGuard configured client" if ident in manual else (x.get("source") or "AdGuard auto-client")
+            source = "AdGuard configured client" if ident in manual else (x.get("source") or "AdGuard runtime client")
             info = dict(x)
-            device_key, mac, ips, cname, hostname = extract_identity(info, ident)
+            # Runtime clients normally expose the current IP as `ip`; keep it as a current observation.
+            device_key, mac, ips, cname, hostname = extract_identity(info, ident, x.get("client_id") or x.get("id"))
             c.execute("""UPDATE client_cache SET name=?, source=?, info_json=?, device_key=?, mac=?, hostname=? WHERE identifier=?""",
                       (name or cname, source, json.dumps(info), device_key or current_device_key, mac, hostname, ident))
             if device_key:
@@ -558,7 +584,7 @@ def inspect_html(result):
 <div><div class='kv'><b>TrackerDB domain:</b> {_html(result['tracker'].get('matched_domain') or 'No match')}</div><div class='kv'><b>Source snapshot:</b> WhoTracks.me / Ghostery TrackerDB</div></div></div>
 <h3>Local activity</h3><p><b>Requests:</b> {result['requests']} &nbsp; <b>Clients:</b> {len(result['clients'])}</p>
 <table><thead><tr><th>Device</th><th>IP(s)</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{clients_html}</tbody></table>
-<p class='source'>Client identity comes from AdGuard client information when available. IPs are observations and may change with DHCP.</p>
+<p class='source'>Stable identity prefers MAC or a non-IP AdGuard client identifier, then a named hostname; IPs are observations and may change with DHCP. AdGuard runtime clients can come from rDNS/hosts/ARP/DHCP sources.</p>
 </div>"""
 
 
@@ -617,8 +643,8 @@ def clients_html(clients):
 
 
 def state_payload(q=""):
-    # The UI refresh itself is a read-only AdGuard query trigger. Deduplication makes repeated query-log reads safe.
-    ingest(force=True)
+    # UI refresh is intentionally read-only against our local SQLite state.
+    # AdGuard polling is performed by the background worker every POLL_SECONDS.
     result = inspect_domain(q) if q else None
     return {"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "inspect_html": inspect_html(result) if result else None}
 
@@ -638,7 +664,7 @@ def worker():
 @app.route("/")
 def index():
     q = request.args.get("q", "").strip()
-    ingest(force=True)
+    ingest(force=False)
     result = inspect_domain(q) if q else None
     recent = get_recent()
     clients = get_clients()
