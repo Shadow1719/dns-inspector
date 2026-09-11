@@ -2,7 +2,7 @@
 
 Read-only local DNS visibility tool for AdGuard Home.
 
-## v0.4.1
+## v0.4.3
 - app version is read dynamically from `VERSION` and shown in the web UI
 - browser refreshes data every 10s by default without reloading the page or losing scroll position (`UI_REFRESH_SECONDS`)
 - the UI refresh triggers a read-only AdGuard Query Log poll, while background polling continues independently (`POLL_SECONDS`)
@@ -31,8 +31,13 @@ Read-only local DNS visibility tool for AdGuard Home.
 The app prefers a stable AdGuard client identifier or MAC address when AdGuard exposes one. IP addresses are stored as observations and are not treated as permanent device identities, which keeps DHCP changes from corrupting the device history.
 
 
-### v0.4.1
+### v0.4.3
 - improves AdGuard runtime-client identity extraction (IP, hostname, client identifier, MAC when exposed)
 - keeps DHCP IPs as observations rather than permanent device identities
 - UI refresh reads local SQLite state; AdGuard polling is performed only by the background worker
 - shows client source and richer device identity details in the Clients / Devices table
+
+
+### v0.4.3
+- adds a one-click Reset button to leave a hostname inspection and return to the main overview
+- does not alter stored query history or AdGuard configuration

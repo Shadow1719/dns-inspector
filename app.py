@@ -24,6 +24,7 @@ AGH_URL = os.getenv("AGH_URL", "http://192.168.1.100:30004").rstrip("/")
 AGH_USER = os.getenv("AGH_USER", "")
 AGH_PASS = os.getenv("AGH_PASS", "")
 POLL_SECONDS = max(5, int(os.getenv("POLL_SECONDS", "10")))
+NEIGHBORS_PATH = os.getenv("NEIGHBORS_PATH", "/data/neighbors.txt")
 UI_REFRESH_SECONDS = max(5, int(os.getenv("UI_REFRESH_SECONDS", "10")))
 DB_PATH = os.getenv("DB_PATH", "/data/inspector.db")
 TRACKERDB_PATH = os.getenv("TRACKERDB_PATH", "/data/trackerdb.sqlite")
@@ -38,6 +39,9 @@ app = Flask(__name__)
 db_lock = threading.Lock()
 session = requests.Session()
 last_ingest_at = 0.0
+neighbors_lock = threading.Lock()
+neighbors_cache = {}
+neighbors_mtime = None
 
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
@@ -59,7 +63,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.9em
 </style></head><body>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
 <p class="muted">Read-only view of AdGuard Home Query Log. This app never changes AdGuard settings. <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · <span id="last-update">last update {{updated}}</span></p>
-<form action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button>Inspect</button></form>
+<form action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <div id="inspect-root">
 {% if result %}{{ inspect_html|safe }}{% endif %}
 </div>
@@ -230,6 +234,40 @@ def normalize_mac(value):
     return str(value).strip().lower().replace("-", ":")
 
 
+def load_neighbors(force=False):
+    """Load the daily TrueNAS IP->MAC snapshot from neighbors.txt."""
+    global neighbors_cache, neighbors_mtime
+    try:
+        mtime = os.path.getmtime(NEIGHBORS_PATH)
+    except OSError:
+        return {}
+    with neighbors_lock:
+        if not force and neighbors_mtime == mtime:
+            return dict(neighbors_cache)
+        parsed = {}
+        try:
+            with open(NEIGHBORS_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 3 and is_ip(parts[0]) and parts[1] == "lladdr" and is_mac(parts[2]):
+                        parsed[str(parts[0]).strip()] = normalize_mac(parts[2])
+        except Exception as e:
+            print("neighbors load error:", repr(e), flush=True)
+            return dict(neighbors_cache)
+        neighbors_cache = parsed
+        neighbors_mtime = mtime
+        return dict(neighbors_cache)
+
+
+def neighbor_mac_for_ips(ips):
+    neighbors = load_neighbors()
+    for ip in ips:
+        mac = neighbors.get(str(ip).strip())
+        if mac:
+            return mac
+    return ""
+
+
 def is_ip(value):
     try:
         ipaddress.ip_address(str(value).strip())
@@ -278,6 +316,8 @@ def extract_identity(info, identifier, client_id=None):
     hostname = str(info.get("hostname") or info.get("host") or info.get("name") or "").strip()
     client_identifier = str(client_id or info.get("client_id") or identifier or "").strip()
 
+    if not mac:
+        mac = neighbor_mac_for_ips(ips)
     if mac:
         device_key = "mac:" + mac
     elif client_identifier and not is_ip(client_identifier):
@@ -385,6 +425,7 @@ def ingest(force=False):
             c.execute("DELETE FROM processed_queries WHERE rowid IN (SELECT rowid FROM processed_queries ORDER BY seen_at DESC LIMIT -1 OFFSET 100000)")
             c.commit()
         refresh_runtime_clients()
+        reconcile_neighbors()
         last_ingest_at = time.time()
         if new_count:
             print(f"Ingested {new_count} new DNS queries.", flush=True)
@@ -649,9 +690,70 @@ def state_payload(q=""):
     return {"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "inspect_html": inspect_html(result) if result else None}
 
 
+def reconcile_neighbors():
+    """Merge legacy IP-keyed devices into MAC-keyed devices using neighbors.txt."""
+    neighbors = load_neighbors()
+    if not neighbors:
+        return 0
+    changed = 0
+    now = utcnow()
+    with db_lock, sqlite3.connect(DB_PATH) as c:
+        # Merge per-device records first. This preserves the historical IP list.
+        for ip, mac in neighbors.items():
+            old_key = "ip:" + ip
+            new_key = "mac:" + mac
+            if old_key == new_key:
+                continue
+            old = c.execute("SELECT name,hostname,mac,device_type,icon,confidence,source,last_seen,request_count,info_json FROM devices WHERE device_key=?", (old_key,)).fetchone()
+            if not old:
+                continue
+            new = c.execute("SELECT request_count FROM devices WHERE device_key=?", (new_key,)).fetchone()
+            if new:
+                c.execute("""UPDATE devices SET name=COALESCE(NULLIF(name,''),?), hostname=COALESCE(NULLIF(hostname,''),?), mac=?,
+                            device_type=CASE WHEN device_type='IoT / Unknown' THEN ? ELSE device_type END,
+                            icon=CASE WHEN icon='📦' THEN ? ELSE icon END,
+                            confidence=CASE WHEN confidence='low' THEN ? ELSE confidence END,
+                            last_seen=CASE WHEN last_seen < ? THEN ? ELSE last_seen END,
+                            request_count=request_count+?, info_json=CASE WHEN info_json='{}' THEN ? ELSE info_json END
+                            WHERE device_key=?""",
+                           (old[0], old[1], mac, old[3], old[4], old[5], old[7], old[7], old[8], old[9], new_key))
+            else:
+                c.execute("""INSERT INTO devices(device_key,name,hostname,mac,device_type,icon,confidence,source,last_seen,request_count,info_json)
+                             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                          (new_key, old[0], old[1], mac, old[3], old[4], old[5], old[6], old[7], old[8], old[9]))
+            c.execute("UPDATE device_ips SET device_key=? WHERE device_key=?", (new_key, old_key))
+            c.execute("DELETE FROM devices WHERE device_key=?", (old_key,))
+            changed += 1
+
+        # Rewrite domain client keys using the current IP->MAC snapshot.
+        for domain, raw in c.execute("SELECT domain,clients_json FROM domains").fetchall():
+            try:
+                clients = json.loads(raw or "{}")
+            except Exception:
+                clients = {}
+            migrated = {}
+            did_change = False
+            for key, count in clients.items():
+                if key.startswith("ip:"):
+                    mac = neighbors.get(key[3:])
+                    new_key = "mac:" + mac if mac else key
+                else:
+                    new_key = key
+                did_change = did_change or (new_key != key)
+                migrated[new_key] = migrated.get(new_key, 0) + count
+            if did_change:
+                c.execute("UPDATE domains SET clients_json=? WHERE domain=?", (json.dumps(migrated), domain))
+        c.commit()
+    if changed:
+        print(f"Reconciled {changed} legacy IP device(s) using neighbors.txt.", flush=True)
+    return changed
+
+
 def worker():
     init_db()
+    load_neighbors(force=True)
     refresh_runtime_clients()
+    reconcile_neighbors()
     migrate_legacy_domain_clients()
     refresh_trackerdb()
     while True:
