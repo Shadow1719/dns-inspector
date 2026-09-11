@@ -94,7 +94,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 </div>
 <section id="tab-overview" class="tab-panel active" data-panel="overview">
   <div id="inspect-root">
-  {% if result %}{{ inspect_html|safe }}{% endif %}
+  {% if inspect_html %}{{ inspect_html|safe }}{% endif %}
   </div>
   <div class="card"><h2>At a glance</h2>
   <table id="recent-table"><thead><tr><th class="sortable" data-sort-key="domain" data-sort-type="text">Domain</th><th class="sortable" data-sort-key="activity" data-sort-type="number">Activity</th><th class="sortable" data-sort-key="devices" data-sort-type="number">Devices</th><th class="sortable" data-sort-key="status" data-sort-type="text">Status</th><th class="sortable" data-sort-key="severity" data-sort-type="text">Severity</th><th class="sortable" data-sort-key="classification" data-sort-type="text">Classification</th></tr></thead>
@@ -1291,12 +1291,16 @@ def device_type_visual(device_type="", icon="📦", large=False):
 
 
 def vendor_logo_url(vendor):
+    """Return only an official vendor favicon bundled locally at build time.
+
+    We intentionally do not fall back to the hand-drawn SVG vendor marks here:
+    vendor identity should be represented by the vendor's own site favicon.
+    If the official favicon could not be fetched during the build, the normal
+    device-type icon is used instead.
+    """
     text = str(vendor or "").lower()
     for key, url in VENDOR_FAVICONS.items():
         if key in text and _local_static_exists(url):
-            return url
-    for key, url in VENDOR_LOGOS.items():
-        if key in text:
             return url
     return ""
 
