@@ -70,7 +70,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .mini-icon{font-size:.9rem}
 .client-chip{display:inline-block;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 7px;margin:2px;font-size:.85em}
-.glance-domain{font-weight:650}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
+.glance-domain{font-weight:650}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 </style></head><body>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
@@ -96,18 +96,23 @@ function esc(v){
 function dot(cls){ return `<span class="dot dot-${esc(cls)}"></span>`; }
 function severityClass(r){ return r.severity_class || 'gray'; }
 function formatUpdated(iso){ const d=new Date(iso); if(Number.isNaN(d.getTime())) return {time:String(iso),date:''}; return {time:d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}), date:d.toLocaleDateString([], {year:'numeric',month:'short',day:'numeric'})}; }
+function deviceHref(c){ return `/device?key=${encodeURIComponent(c.device_key || c.identifier || '')}`; }
+function ipHref(ip){ return `/ip?addr=${encodeURIComponent(ip)}`; }
+function deviceLink(c, label, extra=''){ return `<a class="link-device ${extra}" href="${deviceHref(c)}">${label}</a>`; }
+function ipLink(ip){ return `<a class="client-chip mono link-ip" href="${ipHref(ip)}">${esc(ip)}</a>`; }
 function deviceRow(c){
-  const ips = (c.ips || []).map(x=>`<span class="client-chip mono">${esc(x)}</span>`).join(' ');
-  const host = c.hostname && c.hostname !== (c.hostname || c.name || c.vendor || c.display_name || c.identifier) ? `<div class="technical mono">HOST ${esc(c.hostname)}</div>` : '';
+  const ips = (c.ips || []).map(ipLink).join(' ');
+  const host = c.hostname && c.hostname !== (c.name || c.vendor || c.display_name || c.identifier) ? `<div class="technical mono"><a class="link-ip" href="${deviceHref(c)}">HOST ${esc(c.hostname)}</a></div>` : '';
   const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)}</div>` : '';
-  const mac = c.mac ? `<div class="technical mono">${esc(c.mac)}</div>` : '';
+  const mac = c.mac ? `<div class="technical mono"><a class="link-device" href="${deviceHref(c)}">${esc(c.mac)}</a></div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
   const primary = c.hostname || c.name || c.vendor || c.display_name || c.identifier;
-  const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark-lg">${esc(c.icon || '◈')}</span>`; return `<tr><td><div class="device"><span>${visual}</span><span><div class="device-name">${esc(primary)}</div>${vendor}${host}${mac}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span></td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark-lg">${esc(c.icon || '◈')}</span>`;
+  return `<tr><td><div class="device">${deviceLink(c, visual)}<span>${deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device')}${vendor}${host}${mac}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td><a class="mono link-device" href="${deviceHref(c)}">${esc(c.identifier)}</a></td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => {
-    const devices = (r.devices || []).map(d => `<span class="device-chip">${d.vendor_logo ? `<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">` : `<span class="mini-icon">${esc(d.icon || '📦')}</span>`}${esc(d.name)}</span>`).join('');
+    const devices = (r.devices || []).map(d => `<a class="device-chip link-device" href="${deviceHref(d)}">${d.vendor_logo ? `<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">` : `<span class="mini-icon">${esc(d.icon || '📦')}</span>`}${esc(d.name)}</a>`).join('');
     return `<tr><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
   }).join('');
 }
@@ -727,10 +732,13 @@ def client_display(c, device_key, count):
 
 def inspect_html(result):
     if not result: return ""
-    clients_html = "".join(f"<tr><td><div class='device'><span>{vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))}</span><span><div class='device-name'>{_html(c['display_name'])}</div>{f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}</div>" if c.get('vendor') else ''}{f"<div class='sub mono'>HOST {_html(c['hostname'])}</div>" if c.get('hostname') and c.get('hostname') != c.get('display_name') else ''}{f"<div class='technical mono'>{_html(c['mac'])}</div>" if c.get('mac') else ''}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(', '.join(c['ips']) or '—')}</td><td class='mono'>{_html(c['mac'] or '—')}</td><td>{c['requests']}</td></tr>" for c in result["client_details"])
+    clients_html = "".join(
+        f"<tr><td><div class='device'><a class='link-device' href='/device?key={quote(c.get('device_key',''), safe='')}'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))}</a><span><a class='link-device' href='/device?key={quote(c.get('device_key',''), safe='')}'><div class='device-name'>{_html(c['display_name'])}</div></a>{f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}</div>" if c.get('vendor') else ''}{f"<div class='sub mono'><a class='link-device' href='/device?key={quote(c.get('device_key',''), safe='')}'>HOST {_html(c['hostname'])}</a></div>" if c.get('hostname') and c.get('hostname') != c.get('display_name') else ''}{f"<div class='technical mono'><a class='link-device' href='/device?key={quote(c.get('device_key',''), safe='')}'>{_html(c['mac'])}</a></div>" if c.get('mac') else ''}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'><a class='link-device' href='/device?key={quote(c.get('device_key',''), safe='')}'>{_html(c.get('identifier',''))}</a></td><td>{''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'> {_html(ip)} </a>" for ip in c.get('ips', [])) or '—'}</td><td>{c['requests']}</td></tr>"
+        for c in result["client_details"]
+    )
     e=result["explanation"]
     evidence_html="".join(f"<li>{_html(x)}</li>" for x in e["evidence"])
-    dns_html="".join(f"<span class='dns-ip'>{_html(ip)}</span>" for ip in result['dns']) or "<span class='sub'>No A/AAAA result</span>"
+    dns_html="".join(f"<a class='dns-ip link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in result['dns']) or "<span class='sub'>No A/AAAA result</span>"
     return f"""
 <div class='card'><h2>{_html(result['domain'])}</h2>
 <div><span class='tag {result['badge_class']}'>{_html(result['classification'])}</span>
@@ -831,7 +839,7 @@ def get_recent():
             device_rows = []
             for key, count in sorted(clients.items(), key=lambda kv: kv[1], reverse=True)[:6]:
                 d = client_display(c, key, count)
-                device_rows.append({"name": d.get("hostname") or d.get("name") or d.get("vendor") or d.get("display_name") or key, "icon": d.get("icon", "📦"), "vendor_logo": d.get("vendor_logo", "")})
+                device_rows.append({"device_key": d.get("device_key", key), "identifier": d.get("identifier", key), "name": d.get("hostname") or d.get("name") or d.get("vendor") or d.get("display_name") or key, "icon": d.get("icon", "📦"), "vendor_logo": d.get("vendor_logo", "")})
             out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "devices": device_rows, "classification": cls, "badge_class": badge, "severity_class": severity})
     return out
 
@@ -846,6 +854,72 @@ def get_clients():
     return out
 
 
+def domains_for_device(c, device_key, limit=25):
+    rows = c.execute("SELECT domain,requests,clients_json,last_seen FROM domains ORDER BY requests DESC").fetchall()
+    out = []
+    for domain, requests_count, clients_json, last_seen in rows:
+        try:
+            clients = json.loads(clients_json or "{}")
+        except Exception:
+            clients = {}
+        if device_key in clients:
+            out.append({"domain": domain, "requests": int(clients.get(device_key, 0)), "last_seen": last_seen})
+            if len(out) >= limit:
+                break
+    return out
+
+
+def device_detail(device_key):
+    if not device_key:
+        return None
+    with sqlite3.connect(DB_PATH) as c:
+        row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,first_seen,last_seen,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
+        if not row:
+            return None
+        d = {"device_key": row[0], "name": row[1], "hostname": row[2], "mac": row[3], "vendor": row[4], "type": row[5], "icon": row[6], "confidence": row[7], "source": row[8], "first_seen": row[9], "last_seen": row[10], "request_count": row[11], "vendor_logo": vendor_logo_url(row[4])}
+        d["ips"] = [{"ip": r[0], "first_seen": r[1], "last_seen": r[2], "requests": r[3]} for r in c.execute("SELECT ip,first_seen,last_seen,requests FROM device_ips WHERE device_key=? ORDER BY last_seen DESC", (device_key,)).fetchall()]
+        d["domains"] = domains_for_device(c, device_key)
+    return d
+
+
+def ip_detail(ip):
+    if not is_ip(ip):
+        return None
+    with sqlite3.connect(DB_PATH) as c:
+        rows = c.execute("SELECT d.device_key,d.name,d.hostname,d.mac,d.vendor,d.device_type,d.icon,d.confidence,d.source,di.first_seen,di.last_seen,di.requests FROM device_ips di JOIN devices d ON d.device_key=di.device_key WHERE di.ip=? ORDER BY di.last_seen DESC", (ip,)).fetchall()
+        devices = []
+        device_keys = set()
+        for r in rows:
+            device_keys.add(r[0])
+            devices.append({"device_key": r[0], "name": r[1], "hostname": r[2], "mac": r[3], "vendor": r[4], "type": r[5], "icon": r[6], "confidence": r[7], "source": r[8], "first_seen": r[9], "last_seen": r[10], "requests": r[11], "vendor_logo": vendor_logo_url(r[4])})
+        domains = []
+        for domain, requests_count, clients_json, last_seen in c.execute("SELECT domain,requests,clients_json,last_seen FROM domains ORDER BY requests DESC").fetchall():
+            try:
+                clients = json.loads(clients_json or "{}")
+            except Exception:
+                clients = {}
+            count = sum(int(clients.get(k, 0)) for k in device_keys)
+            if count:
+                domains.append({"domain": domain, "requests": count, "last_seen": last_seen})
+                if len(domains) >= 50:
+                    break
+    return {"ip": ip, "devices": devices, "domains": domains}
+
+
+def detail_html_device(d):
+    primary = d.get("hostname") or d.get("name") or d.get("vendor") or d.get("device_key")
+    logo = vendor_visual(d.get("vendor"), d.get("vendor_logo"), True, d.get("icon", "◈"))
+    ips = "".join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(x['ip'], safe='')}'>{_html(x['ip'])}</a>" for x in d['ips']) or "—"
+    domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No domain activity recorded.</td></tr>"
+    return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><div class='device' style='margin-bottom:14px'><span>{logo}</span><span><h2 style='margin:0'>{_html(primary)}</h2><div class='sub'>{_html(d.get('vendor') or 'Unknown vendor')}</div><div class='confidence'>{_html(d.get('type'))} · {_html(d.get('confidence'))}</div></span></div><div class='grid'><div><div class='kv'><b>MAC:</b> <span class='mono'>{_html(d.get('mac') or '—')}</span></div><div class='kv'><b>Hostname:</b> <span class='mono'>{_html(d.get('hostname') or '—')}</span></div><div class='kv'><b>Source:</b> {_html(d.get('source') or '—')}</div></div><div><div class='kv'><b>First seen:</b> {_html(d.get('first_seen') or '—')}</div><div class='kv'><b>Last seen:</b> {_html(d.get('last_seen') or '—')}</div><div class='kv'><b>Total queries:</b> {_html(d.get('request_count'))}</div></div></div><h3>IP history</h3><div class='dns-list'>{ips}</div><h3>Top DNS activity</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
+
+
+def detail_html_ip(d):
+    devices = "".join(f"<tr><td><a class='link-device' href='/device?key={quote(x['device_key'], safe='')}'>{vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'))}{_html(x.get('hostname') or x.get('name') or x.get('vendor') or x['device_key'])}</a></td><td class='mono'><a class='link-device' href='/device?key={quote(x['device_key'], safe='')}'>{_html(x.get('mac') or '—')}</a></td><td>{x['requests']}</td></tr>" for x in d['devices']) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
+    domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No DNS activity recorded.</td></tr>"
+    return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><h2 class='mono'>{_html(d['ip'])}</h2><p class='muted'>IP observation · {len(d['devices'])} known device(s)</p><h3>Known devices</h3><table><thead><tr><th>Device</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{devices}</tbody></table><h3>Domains contacted</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
+
+
 def recent_html(recent):
     return "".join(f"<tr><td><a href='/search?q={quote(r['domain'], safe='')}'>{_html(r['domain'])}</a></td><td>{r['requests']}</td><td>{r['clients']}</td><td><span class='dot dot-{r['severity_class']}'></span><span class='tag {r['badge_class']}'>{_html(r['classification'])}</span></td></tr>" for r in recent)
 
@@ -853,12 +927,16 @@ def recent_html(recent):
 def clients_html(clients):
     rows = []
     for c in clients:
-        primary = c.get('hostname') or c.get('name') or c.get('vendor') or c.get('display_name') or c.get('identifier')
+        key = c.get('identifier','')
+        href = quote(key, safe='')
+        primary = c.get('hostname') or c.get('name') or c.get('vendor') or c.get('display_name') or key
         secondary = []
         if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}</div>")
-        if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'>HOST {_html(c['hostname'])}</div>")
-        if c.get('mac'): secondary.append(f"<div class='technical mono'>{_html(c['mac'])}</div>")
-        rows.append(f"<tr><td><div class='device'><span>{vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))}</span><span><div class='device-name'>{_html(primary)}</div>{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(c['identifier'])}</td><td>{''.join(f"<span class='client-chip mono'>{_html(ip)}</span>" for ip in c['ips']) or '—'}</td><td>{c['requests']}</td></tr>")
+        if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'><a class='link-device' href='/device?key={href}'>HOST {_html(c['hostname'])}</a></div>")
+        if c.get('mac'): secondary.append(f"<div class='technical mono'><a class='link-device' href='/device?key={href}'>{_html(c['mac'])}</a></div>")
+        visual = vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))
+        ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get('ips', [])) or '—'
+        rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={href}'>{visual}</a><span><a class='link-device' href='/device?key={href}'><div class='device-name'>{_html(primary)}</div></a>{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td><a class='mono link-device' href='/device?key={href}'>{_html(c['identifier'])}</a></td><td>{ips}</td><td>{c['requests']}</td></tr>")
     return ''.join(rows)
 
 
@@ -970,6 +1048,24 @@ def api_state():
     except Exception as e:
         print("state error:", repr(e), flush=True)
         return jsonify({"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "inspect_html": None, "error": str(e)}), 200
+
+
+@app.route("/device")
+def device_view():
+    key = request.args.get("key", "").strip()
+    d = device_detail(key)
+    if not d:
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>Device not found</h2><p class='error'>No device exists for this identity.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_device(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None)
+
+
+@app.route("/ip")
+def ip_view():
+    addr = request.args.get("addr", "").strip()
+    d = ip_detail(addr)
+    if not d:
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>IP not found</h2><p class='error'>No valid IP observation exists for this address.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_ip(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None)
 
 
 @app.route("/health")

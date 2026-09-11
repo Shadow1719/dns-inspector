@@ -2,6 +2,14 @@
 
 Read-only local DNS visibility tool for AdGuard Home.
 
+
+## v0.5.3
+- Fixed Docker image packaging so bundled vendor logos under `static/vendor-logos/` are actually included in the image.
+- Device names, hostnames, MACs, device chips, IP addresses, and DNS address chips are clickable.
+- Added dedicated device view (`/device`) with identity, IP history, and top DNS activity.
+- Added dedicated IP view (`/ip`) with known devices and domains contacted.
+- Domain links remain available through the existing Inspect view.
+
 ## v0.5.2
 - bundles supported vendor marks locally under `static/vendor-logos/`, so the UI no longer depends on a third-party CDN for vendor imagery
 - uses the vendor mark as the leading device visual when available, replacing the generic box for known vendors
