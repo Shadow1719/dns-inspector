@@ -2,7 +2,7 @@
 
 Read-only local DNS visibility tool for AdGuard Home.
 
-## v0.4.5
+## v0.4.6
 - keeps MAC addresses as stable device identity when available
 - stores DHCP IPs as observations and preserves historical IPs per device
 - uses TrueNAS `neighbors.txt` to correlate IP → MAC
