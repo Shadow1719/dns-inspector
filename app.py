@@ -52,26 +52,35 @@ IP_RE = re.compile(r"^[0-9a-f:.]+$")
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><title>DNS Inspector</title>
 <style>
-body{font-family:system-ui;background:#111;color:#eee;margin:30px;max-width:1300px}
-input,button{background:#222;color:#eee;border:1px solid #555;padding:9px;border-radius:6px}
-input{width:70%}button{cursor:pointer}.card{background:#191919;border:1px solid #333;border-radius:10px;padding:18px;margin-top:18px}
-small,.muted{color:#aaa}.tag{display:inline-block;padding:4px 8px;border-radius:12px;background:#333;margin:3px}.green{background:#174d2a}.yellow{background:#5a4610}.orange{background:#6a3510}.red{background:#6a1717}.blue{background:#16395c}.gray{background:#444}
-table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #333;text-align:left;vertical-align:top}a{color:#8ab4f8}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.kv{padding:7px 0;border-bottom:1px solid #2b2b2b}.kv b{display:inline-block;min-width:140px}
-pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.9em;color:#888}.error{color:#ff9b9b}.live{color:#7ee787;font-weight:700}
-.device{display:flex;align-items:center;gap:10px}.icon{font-size:1.5rem}.confidence{font-size:.82em;color:#aaa}.client-chip{display:inline-block;background:#252525;border:1px solid #3b3b3b;border-radius:9px;padding:4px 7px;margin:2px;font-size:.9em}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}.dot-green{background:#3fb950}.dot-blue{background:#58a6ff}.dot-yellow{background:#d29922}.dot-orange{background:#db6d28}.dot-red{background:#f85149}.dot-gray{background:#8b949e}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.sub{font-size:.9em;color:#bbb}.right{float:right}
-@media(max-width:900px){.grid{grid-template-columns:1fr}input{width:60%}}
+:root{color-scheme:dark}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:28px;max-width:1450px;margin-inline:auto}
+h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}
+.toolbar{display:flex;gap:8px;align-items:center;margin:20px 0 4px}.toolbar input{flex:1;min-width:0}.toolbar button{white-space:nowrap}
+input,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;padding:10px 13px;border-radius:8px;font:inherit}button{cursor:pointer}button:hover{border-color:#58a6ff}
+.card{background:#11161d;border:1px solid #30363d;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
+.card h2{margin-top:0;letter-spacing:-.01em}
+table{width:100%;border-collapse:collapse}td,th{padding:11px 10px;border-bottom:1px solid #21262d;text-align:left;vertical-align:middle}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:#8b949e}tr:last-child td{border-bottom:0}
+a{color:#79c0ff;text-decoration:none}a:hover{text-decoration:underline}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.kv{padding:8px 0;border-bottom:1px solid #21262d}.kv b{display:inline-block;min-width:140px}
+pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88em;color:#8b949e}.error{color:#ff9b9b}
+.tag{display:inline-block;padding:4px 9px;border-radius:999px;background:#30363d;margin:2px;font-size:.82rem}.green{background:#174d2a}.yellow{background:#5a4610}.orange{background:#6a3510}.red{background:#6a1717}.blue{background:#16395c}.gray{background:#30363d}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.dot-green{background:#3fb950}.dot-blue{background:#58a6ff}.dot-yellow{background:#d29922}.dot-orange{background:#db6d28}.dot-red{background:#f85149}.dot-gray{background:#8b949e}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.sub{font-size:.82rem;color:#8b949e}.right{float:right}
+.device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
+.device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .mini-icon{font-size:.9rem}
+.client-chip{display:inline-block;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 7px;margin:2px;font-size:.85em}
+.glance-domain{font-weight:650}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
+@media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 </style></head><body>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
 <p class="muted">Read-only view of AdGuard Home Query Log. This app never changes AdGuard settings. <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · <span id="last-update">last update {{updated}}</span></p>
-<form action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
+<form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <div id="inspect-root">
 {% if result %}{{ inspect_html|safe }}{% endif %}
 </div>
-<div class="card"><h2>Recent domains</h2>
-<table><thead><tr><th>Domain</th><th>Requests</th><th>Clients</th><th>Classification</th></tr></thead>
+<div class="card"><h2>At a glance</h2>
+<table><thead><tr><th>Domain</th><th>Activity</th><th>Devices</th><th>Classification</th></tr></thead>
 <tbody id="recent-body">{{ recent_html|safe }}</tbody></table></div>
 <div class="card"><h2>Clients / Devices</h2>
 <table><thead><tr><th>Device</th><th>Identity</th><th>Current / recent IPs</th><th>Requests</th></tr></thead>
@@ -88,14 +97,18 @@ function dot(cls){ return `<span class="dot dot-${esc(cls)}"></span>`; }
 function severityClass(r){ return r.severity_class || 'gray'; }
 function deviceRow(c){
   const ips = (c.ips || []).map(x=>`<span class="client-chip mono">${esc(x)}</span>`).join(' ');
-  const mac = c.mac ? `<div class="sub mono">MAC ${esc(c.mac)}</div>` : '';
-  const host = c.hostname ? `<div class="sub mono">HOST ${esc(c.hostname)}</div>` : '';
-  const vendor = c.vendor ? `<div class="sub">VENDOR ${esc(c.vendor)}</div>` : '';
-  const source = c.source ? `<div class="sub">${esc(c.source)}</div>` : '';
-  return `<tr><td><div class="device"><span class="icon">${esc(c.icon)}</span><span><b>${esc(c.display_name)}</b>${host}${vendor}<br><span class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</span>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span>${mac}</td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  const host = c.hostname ? `<div class="technical mono">HOST ${esc(c.hostname)}</div>` : '';
+  const vendor = c.vendor ? `<div class="sub">${esc(c.vendor)}</div>` : '';
+  const mac = c.mac ? `<div class="technical mono">${esc(c.mac)}</div>` : '';
+  const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
+  const primary = c.hostname || c.name || c.vendor || c.display_name || c.identifier;
+  return `<tr><td><div class="device"><span class="icon">${esc(c.icon)}</span><span><div class="device-name">${esc(primary)}</div>${vendor}${host}${mac}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span></td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
-  document.getElementById('recent-body').innerHTML = rows.map(r => `<tr><td><a href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a></td><td>${esc(r.requests)}</td><td>${esc(r.clients)}</td><td>${dot(severityClass(r))}<span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`).join('');
+  document.getElementById('recent-body').innerHTML = rows.map(r => {
+    const devices = (r.devices || []).map(d => `<span class="device-chip"><span class="mini-icon">${esc(d.icon || '📦')}</span>${esc(d.name)}</span>`).join('');
+    return `<tr><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
+  }).join('');
 }
 function renderClients(rows){ document.getElementById('clients-body').innerHTML = rows.map(deviceRow).join(''); }
 async function refresh(){
@@ -685,9 +698,9 @@ def client_display(c, device_key, count):
     if row:
         _, name, hostname, mac, vendor, dtype, icon, confidence, source, total = row
         ips = device_ip_list(c, device_key)
-        display = name or hostname or device_key
-        return {"device_key": device_key, "identifier": device_key, "display_name": display, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
-    return {"device_key": device_key, "identifier": device_key, "display_name": device_key, "hostname": "", "mac": "", "vendor": "", "type": "IoT / Unknown", "icon": "📦", "confidence_label": "low", "source": "historical", "requests": count, "ips": [], "total_requests": count}
+        display = hostname or name or vendor or device_key
+        return {"device_key": device_key, "identifier": device_key, "display_name": hostname or name or vendor or display, "name": name, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
+    return {"device_key": device_key, "identifier": device_key, "display_name": device_key, "name": "", "hostname": "", "mac": "", "vendor": "", "type": "IoT / Unknown", "icon": "📦", "confidence_label": "low", "source": "historical", "requests": count, "ips": [], "total_requests": count}
 
 
 def inspect_html(result):
@@ -769,7 +782,11 @@ def get_recent():
             r = rdap_lookup(domain)
             cls, badge, severity = classify(t, r)
             clients = canonicalize_client_map(json.loads(clients_json or "{}"))
-            out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "classification": cls, "badge_class": badge, "severity_class": severity})
+            device_rows = []
+            for key, count in sorted(clients.items(), key=lambda kv: kv[1], reverse=True)[:6]:
+                d = client_display(c, key, count)
+                device_rows.append({"name": d.get("hostname") or d.get("name") or d.get("vendor") or d.get("display_name") or key, "icon": d.get("icon", "📦")})
+            out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "devices": device_rows, "classification": cls, "badge_class": badge, "severity_class": severity})
     return out
 
 
@@ -779,7 +796,7 @@ def get_clients():
         out = []
         for device_key, name, hostname, mac, vendor, dtype, icon, confidence, source, count in rows:
             ips = device_ip_list(c, device_key)
-            out.append({"identifier": device_key, "display_name": name or hostname or device_key, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips})
+            out.append({"identifier": device_key, "name": name, "display_name": hostname or name or vendor or device_key, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips})
     return out
 
 
@@ -788,7 +805,15 @@ def recent_html(recent):
 
 
 def clients_html(clients):
-    return "".join(f"<tr><td><div class='device'><span class='icon'>{_html(c['icon'])}</span><span><b>{_html(c['display_name'])}</b><br><span class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</span></span></div></td><td class='mono'>{_html(c['identifier'])}{f"<div class='sub mono'>MAC {_html(c['mac'])}</div>" if c['mac'] else ''}</td><td>{''.join(f"<span class='client-chip mono'>{_html(ip)}</span>" for ip in c['ips']) or '—'}</td><td>{c['requests']}</td></tr>" for c in clients)
+    rows = []
+    for c in clients:
+        primary = c.get('hostname') or c.get('name') or c.get('vendor') or c.get('display_name') or c.get('identifier')
+        secondary = []
+        if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}</div>")
+        if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'>HOST {_html(c['hostname'])}</div>")
+        if c.get('mac'): secondary.append(f"<div class='technical mono'>{_html(c['mac'])}</div>")
+        rows.append(f"<tr><td><div class='device'><span class='icon'>{_html(c['icon'])}</span><span><div class='device-name'>{_html(primary)}</div>{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(c['identifier'])}</td><td>{''.join(f"<span class='client-chip mono'>{_html(ip)}</span>" for ip in c['ips']) or '—'}</td><td>{c['requests']}</td></tr>")
+    return ''.join(rows)
 
 
 def state_payload(q=""):
