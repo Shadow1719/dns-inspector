@@ -962,7 +962,7 @@ def resolve_dns(domain, records=None):
                 ips.append(value)
     return ips[:12]
 
-def inline_external_button(url, title, icon="↗"):
+def inline_inline_external_button(url, title, icon="↗"):
     glyph = "<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='11' cy='11' r='6.5'></circle><path d='M16 16l5 5'></path></svg>" if icon == "" else _html(icon)
     return f"<a class='inline-tool' href='{_html(url)}' title='{_html(title)}' target='_blank' rel='noopener noreferrer'>{glyph}</a>"
 
@@ -998,9 +998,9 @@ def domain_external_tools(domain):
     if not host:
         return ''
     buttons = [
-        external_button(netify_url(host), 'Netify'),
-        external_button(dnschecker_url(host), 'DNS records'),
-        external_button(f"https://www.google.com/search?q={quote(host, safe='')}", 'Search'),
+        inline_external_button(netify_url(host), 'Netify'),
+        inline_external_button(dnschecker_url(host), 'DNS records'),
+        inline_external_button(f"https://www.google.com/search?q={quote(host, safe='')}", 'Search'),
     ]
     return "<div class='external-tools'><span class='sub' style='align-self:center'>External:</span>" + ''.join(buttons) + "</div>"
 
@@ -1016,11 +1016,11 @@ def inspect_html(result):
         name = _html(name_value)
         name_html = f"<a class='link-device' href='/device?key={key}'><div class='device-name'>{name}</div></a>" if linked_name else f"<div class='device-name'>{name}</div>"
         logo = vendor_visual(c.get("vendor"), c.get("vendor_logo"), True, c.get("icon", "◈"))
-        vendor_tools = inline_external_button(vendor_lookup_url(c.get('vendor')), "Vendor lookup", "") if c.get('vendor') else ""
+        vendor_tools = inline_inline_external_button(vendor_lookup_url(c.get('vendor')), "Vendor lookup", "") if c.get('vendor') else ""
         vendor = f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}{vendor_tools}</div>" if c.get("vendor") else ""
         host = f"<div class='sub mono'><a class='link-device' href='/device?key={key}'>HOST {_html(c['hostname'])}</a></div>" if c.get("hostname") and c.get("hostname") != c.get("display_name") else ""
         mac = _html(c.get("mac") or "—")
-        mac_tools = inline_external_button(mac_lookup_url(c.get("mac")), "MAC vendor lookup", "") if c.get("mac") else ""
+        mac_tools = inline_inline_external_button(mac_lookup_url(c.get("mac")), "MAC vendor lookup", "") if c.get("mac") else ""
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get("ips", [])) or '—'
         client_rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={key}'>{logo}</a><span>{name_html}{vendor}{host}<div class='confidence'>{_html(c.get('type'))} · {_html(c.get('confidence_label'))}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     clients_html = ''.join(client_rows)
@@ -1282,8 +1282,8 @@ def detail_html_device(d):
     domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No domain activity recorded.</td></tr>"
     device_tools = []
     search_url = device_search_url(primary, d.get('hostname'), d.get('vendor'))
-    if search_url: device_tools.append(external_button(search_url, 'Search device'))
-    if d.get('mac'): device_tools.append(external_button(mac_lookup_url(d['mac']), 'MAC lookup'))
+    if search_url: device_tools.append(inline_external_button(search_url, 'Search device'))
+    if d.get('mac'): device_tools.append(inline_external_button(mac_lookup_url(d['mac']), 'MAC lookup'))
     return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><div class='device' style='margin-bottom:14px'><span>{logo}</span><span><h2 style='margin:0'>{_html(primary)}</h2><div class='sub'>{_html(d.get('vendor') or 'Unknown vendor')}</div><div class='confidence'>{_html(d.get('type'))} · {_html(d.get('confidence'))}</div></span></div><div class='external-tools'>{''.join(device_tools)}</div><div class='grid'><div><div class='kv'><b>MAC:</b> <span class='mono'>{_html(d.get('mac') or '—')}</span></div><div class='kv'><b>Hostname:</b> <span class='mono'>{_html(d.get('hostname') or '—')}</span></div><div class='kv'><b>Source:</b> {_html(d.get('source') or '—')}</div></div><div><div class='kv'><b>First seen:</b> {_html(d.get('first_seen') or '—')}</div><div class='kv'><b>Last seen:</b> {_html(d.get('last_seen') or '—')}</div><div class='kv'><b>Total queries:</b> {_html(d.get('request_count'))}</div></div></div><h3>IP history</h3><div class='dns-list'>{ips}</div><h3>Top DNS activity</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
 
 
@@ -1295,7 +1295,7 @@ def detail_html_ip(d):
         primary = linked_primary or x.get('vendor') or x['device_key']
         label = f"<a class='link-device' href='/device?key={href}'>{_html(primary)}</a>" if linked_primary else _html(primary)
         visual = vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'))
-        device_rows.append(f"<tr><td>{visual}{label}</td><td class='mono'>{_html(x.get('mac') or '—')} {inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>")
+        device_rows.append(f"<tr><td>{visual}{label}</td><td class='mono'>{_html(x.get('mac') or '—')} {inline_inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>")
     devices = ''.join(device_rows) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
     domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No DNS activity recorded.</td></tr>"
     return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><h2 class='mono'>{_html(d['ip'])}</h2><p class='muted'>IP observation · {len(d['devices'])} known device(s)</p><h3>Known devices</h3><table><thead><tr><th>Device</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{devices}</tbody></table><h3>Domains contacted</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
@@ -1313,12 +1313,12 @@ def clients_html(clients):
         primary = linked_primary or c.get('vendor') or key
         primary_html = f"<a class='link-device' href='/device?key={href}'><div class='device-name'>{_html(primary)}</div></a>" if linked_primary else f"<div class='device-name'>{_html(primary)}</div>"
         secondary = []
-        if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}{inline_external_button(vendor_lookup_url(c.get('vendor')), 'Vendor lookup', '')}</div>")
+        if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}{inline_inline_external_button(vendor_lookup_url(c.get('vendor')), 'Vendor lookup', '')}</div>")
         if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'><a class='link-device' href='/device?key={href}'>HOST {_html(c['hostname'])}</a></div>")
         visual = vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get('ips', [])) or '—'
         mac = _html(c.get('mac') or '—')
-        mac_tools = inline_external_button(mac_lookup_url(c.get('mac')), 'MAC vendor lookup', '') if c.get('mac') else ''
+        mac_tools = inline_inline_external_button(mac_lookup_url(c.get('mac')), 'MAC vendor lookup', '') if c.get('mac') else ''
         rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={href}'>{visual}</a><span>{primary_html}{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     return ''.join(rows)
 
