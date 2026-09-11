@@ -417,3 +417,10 @@ DNS Inspector is an independent project. External services and datasets used for
 - Replaces platform-dependent stock emoji device icons with consistent local SVG device-type icons.
 - Removes global click interception so native IP/device/domain links navigate normally.
 - Keeps IP detail focused on known devices and domains contacted.
+
+
+## v0.6.8
+- External lookup controls consistently use a magnifying-glass icon.
+- Native hover titles/ARIA labels explain where each external lookup goes (Netify, DNS records, Google Search, MAC vendor, vendor/device search).
+- Internal links consistently open DNS Inspector domain, device, or IP detail views.
+- Fixed the HOST link so it opens the device detail view instead of behaving like an IP link.
