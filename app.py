@@ -1053,6 +1053,71 @@ def _html(v):
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
 
 
+def classify(tracker, rdap):
+    cat = (tracker.get("category") or "").lower()
+    if cat == "advertising":
+        return "Advertising", "orange", "orange"
+    if cat in {"site_analytics", "social_media", "extensions"}:
+        return "Tracker / telemetry", "yellow", "yellow"
+    if cat:
+        return "Known TrackerDB service", "green", "green"
+    if rdap.get("org"):
+        return "Known ownership", "blue", "blue"
+    return "Unknown", "gray", "gray"
+
+
+def device_hint(name, hostname, info):
+    text = " ".join([str(name or ""), str(hostname or ""), json.dumps(info or {})]).lower()
+    if any(x in text for x in ("webos", "smart tv", "smart-tv", "oled", "qn ed", "lgtv", "television")):
+        return "TV", "📺", "high"
+    if any(x in text for x in ("aircon", "air conditioner", "air-conditioner", "lg ac", "climat")):
+        return "AC", "❄️", "high"
+    if any(x in text for x in ("dryer", "tumble")):
+        return "Dryer", "🧺", "medium"
+    if any(x in text for x in ("washer", "washing machine")):
+        return "Washing machine", "🧺", "medium"
+    if any(x in text for x in ("iphone", "ipad", "android", "pixel", "galaxy")):
+        return "Phone / Tablet", "📱", "medium"
+    if any(x in text for x in ("macbook", "laptop", "windows", "desktop", "pc")):
+        return "Computer", "💻", "medium"
+    if any(x in text for x in ("playstation", "xbox", "switch")):
+        return "Console", "🎮", "medium"
+    if any(x in text for x in ("camera", "cam-", "ipc")):
+        return "Camera", "📷", "medium"
+    if any(x in text for x in ("speaker", "sonos", "echo", "homepod")):
+        return "Speaker", "🔊", "medium"
+    if any(x in text for x in ("router", "gateway", "switch", "access point", "ap-")):
+        return "Network", "🛜", "medium"
+    return "IoT / Unknown", "📦", "low"
+
+
+def device_ip_list(c, device_key):
+    rows = c.execute("SELECT ip,last_seen FROM device_ips WHERE device_key=? ORDER BY last_seen DESC LIMIT 6", (device_key,)).fetchall()
+    return [r[0] for r in rows]
+
+
+VENDOR_LOGOS = {
+    "dell": "/static/vendor-logos/dell.svg",
+    "lg innotek": "/static/vendor-logos/lg.svg",
+    "lge": "/static/vendor-logos/lg.svg",
+    "lg": "/static/vendor-logos/lg.svg",
+    "zte": "/static/vendor-logos/zte.svg",
+    "bosch": "/static/vendor-logos/bosch.svg",
+    "roborock": "/static/vendor-logos/roborock.svg",
+    "beijing roborock technology": "/static/vendor-logos/roborock.svg",
+    "petkit": "/static/vendor-logos/petkit.svg",
+}
+
+def vendor_logo_url(vendor):
+    text = str(vendor or "").lower()
+    for key, url in VENDOR_LOGOS.items():
+        if key in text:
+            return url
+    return ""
+
+
+
+
 def vendor_visual(vendor, logo_url="", large=False, fallback="◈"):
     cls = "vendor-logo-lg" if large else "vendor-logo"
     mark_cls = "vendor-mark-lg" if large else "vendor-mark"

@@ -1,3 +1,7 @@
+## v0.5.8
+
+Hotfix release: restored classification/device helper functions accidentally omitted from v0.5.7, which caused `NameError: classify is not defined` and HTTP 500 responses when opening the dashboard/Inspect view. Also removes the duplicate RDAP background refresh call present in the initial 0.5.7 build.
+
 # DNS Inspector
 
 Read-only local DNS visibility tool for AdGuard Home.
