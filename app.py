@@ -66,7 +66,7 @@ h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949
 input,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;padding:10px 13px;border-radius:8px;font:inherit}button{cursor:pointer}button:hover{border-color:#58a6ff}
 .card{background:#11161d;border:1px solid #30363d;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
 .card h2{margin-top:0;letter-spacing:-.01em}
-table{width:100%;border-collapse:collapse}td,th{padding:11px 10px;border-bottom:1px solid #21262d;text-align:left;vertical-align:middle}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:#8b949e}tr:last-child td{border-bottom:0}
+table{width:100%;border-collapse:collapse}td,th{padding:11px 10px;border-bottom:1px solid #21262d;text-align:left;vertical-align:middle}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:#8b949e}.sortable{cursor:pointer;user-select:none}.sortable:hover{color:#e6edf3}.sortable::after{content:" ↕";opacity:.35}.sortable.sort-asc::after{content:" ↑";opacity:1}.sortable.sort-desc::after{content:" ↓";opacity:1}tr:last-child td{border-bottom:0}
 a{color:#79c0ff;text-decoration:none}a:hover{text-decoration:underline}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.kv{padding:8px 0;border-bottom:1px solid #21262d}.kv b{display:inline-block;min-width:140px}
 pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88em;color:#8b949e}.error{color:#ff9b9b}
@@ -77,21 +77,43 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .mini-icon{font-size:.9rem}
 .client-chip{display:inline-block;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 7px;margin:2px;font-size:.85em}
 .glance-domain{font-weight:650}.external-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.external-tool{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid #30363d;border-radius:7px;background:#161b22;color:#8b949e;font-size:.74rem;text-decoration:none}.external-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tools{display:inline-flex;gap:5px;margin-left:6px;vertical-align:middle}.inline-tool{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#8b949e;font-size:.72rem;text-decoration:none}.inline-tool svg,.external-tool svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.inline-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.external-tool.icon-only{width:20px;height:20px;padding:0;justify-content:center}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
+.tabs{display:flex;gap:6px;margin:18px 0 0;padding:0 4px;position:sticky;top:0;z-index:5;background:#0d1117}
+.tab-btn{border:1px solid #30363d;background:#161b22;color:#8b949e;padding:9px 14px;border-radius:9px 9px 0 0;cursor:pointer;font-weight:700}
+.tab-btn:hover{border-color:#58a6ff;color:#c9d1d9}.tab-btn.active{background:#11161d;color:#e6edf3;border-bottom-color:#11161d}
+.tab-panel{display:none}.tab-panel.active{display:block}
+.chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.chart-card{min-height:260px}.chart-list{display:flex;flex-direction:column;gap:9px;margin-top:10px}.bar-row{display:grid;grid-template-columns:minmax(120px,1fr) 3fr auto;gap:10px;align-items:center;font-size:.84rem}.bar-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bar-track{height:12px;background:#161b22;border:1px solid #30363d;border-radius:999px;overflow:hidden}.bar-fill{height:100%;background:#58a6ff;border-radius:999px;min-width:2px}.bar-value{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#c9d1d9;min-width:70px;text-align:right}.stats-note{color:#8b949e;font-size:.8rem;margin-top:10px}
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 </style></head><body>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
 <p class="muted">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
-<div id="inspect-root">
-{% if result %}{{ inspect_html|safe }}{% endif %}
+<div class="tabs" role="tablist" aria-label="DNS Inspector sections">
+  <button class="tab-btn active" data-tab="overview" role="tab">Overview</button>
+  <button class="tab-btn" data-tab="devices" role="tab">Devices</button>
+  <button class="tab-btn" data-tab="analytics" role="tab">Analytics</button>
 </div>
-<div class="card"><h2>At a glance</h2>
-<table><thead><tr><th>Domain</th><th>Activity</th><th>Devices</th><th>Classification</th></tr></thead>
-<tbody id="recent-body">{{ recent_html|safe }}</tbody></table></div>
-<div class="card"><h2>Clients / Devices</h2>
-<table><thead><tr><th>Device</th><th>Identity</th><th>Current / recent IPs</th><th>Requests</th></tr></thead>
-<tbody id="clients-body">{{ clients_html|safe }}</tbody></table>
-<p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
+<section id="tab-overview" class="tab-panel active" data-panel="overview">
+  <div id="inspect-root">
+  {% if result %}{{ inspect_html|safe }}{% endif %}
+  </div>
+  <div class="card"><h2>At a glance</h2>
+  <table id="recent-table"><thead><tr><th class="sortable" data-sort-key="domain" data-sort-type="text">Domain</th><th class="sortable" data-sort-key="activity" data-sort-type="number">Activity</th><th class="sortable" data-sort-key="devices" data-sort-type="number">Devices</th><th class="sortable" data-sort-key="classification" data-sort-type="text">Classification</th></tr></thead>
+  <tbody id="recent-body">{{ recent_html|safe }}</tbody></table></div>
+</section>
+<section id="tab-devices" class="tab-panel" data-panel="devices">
+  <div class="card"><h2>Clients / Devices</h2>
+  <table id="clients-table"><thead><tr><th class="sortable" data-sort-key="device" data-sort-type="text">Device</th><th class="sortable" data-sort-key="identity" data-sort-type="text">Identity</th><th class="sortable" data-sort-key="ips" data-sort-type="text">Current / recent IPs</th><th class="sortable" data-sort-key="requests" data-sort-type="number">Requests</th></tr></thead>
+  <tbody id="clients-body">{{ clients_html|safe }}</tbody></table>
+  <p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
+</section>
+<section id="tab-analytics" class="tab-panel" data-panel="analytics">
+  <div class="chart-grid">
+    <div class="card chart-card"><h2>Most requested domains</h2><div id="chart-domains" class="chart-list"></div><div class="stats-note">Based on recorded DNS requests.</div></div>
+    <div class="card chart-card"><h2>Most active devices</h2><div id="chart-devices" class="chart-list"></div><div class="stats-note">Ranked by total recorded requests.</div></div>
+    <div class="card chart-card"><h2>Most active vendors</h2><div id="chart-vendors" class="chart-list"></div><div class="stats-note">Aggregated from identified devices.</div></div>
+    <div class="card chart-card"><h2>Most active IPs</h2><div id="chart-ips" class="chart-list"></div><div class="stats-note">Aggregated from device IP observations.</div></div>
+  </div>
+</section>
 <script>
 const refreshMs = {{refresh_seconds_ms}};
 const currentQuery = {{ q|tojson }};
@@ -120,21 +142,60 @@ function deviceRow(c){
   const primaryHtml = linkedPrimary ? deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device') : `<div class="device-name">${esc(primary)}</div>`;
   const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark-lg">${esc(c.icon || '◈')}</span>`;
   const visualHtml = linkedPrimary ? deviceLink(c, visual) : visual;
-  return `<tr><td><div class="device">${visualHtml}<span>${primaryHtml}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  return `<tr data-sort-device="${esc(primary)}" data-sort-identity="${esc(c.mac || '')}" data-sort-ips="${esc((c.ips || []).join(' '))}" data-sort-requests="${Number(c.requests)||0}"><td><div class="device">${visualHtml}<span>${primaryHtml}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => {
     const devices = (r.devices || []).map(d => `<a class="device-chip link-device" href="${deviceHref(d)}">${d.vendor_logo ? `<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">` : `<span class="mini-icon">${esc(d.icon || '📦')}</span>`}${esc(d.name)}</a>`).join('');
-    return `<tr><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
+    return `<tr data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
+  }).join('');
+  reapplyTableSorts();
+}
+function renderClients(rows){ document.getElementById('clients-body').innerHTML = rows.map(deviceRow).join(''); reapplyTableSorts(); }
+let tableSortState = {recent:{key:null,dir:1}, clients:{key:null,dir:1}};
+function rowSortValue(row,key,type){ const raw=row.dataset['sort'+key.charAt(0).toUpperCase()+key.slice(1)] ?? ''; return type==='number' ? (Number(raw)||0) : String(raw).toLowerCase(); }
+function applySort(table,key,dir){ const th=[...table.querySelectorAll('th.sortable')].find(x=>x.dataset.sortKey===key); if(!th)return; table.querySelectorAll('th.sortable').forEach(x=>x.classList.remove('sort-asc','sort-desc')); th.classList.add(dir===1?'sort-asc':'sort-desc'); const type=th.dataset.sortType||'text'; const body=table.tBodies[0]; [...body.rows].sort((a,b)=>{const av=rowSortValue(a,key,type),bv=rowSortValue(b,key,type); if(av<bv)return -1*dir; if(av>bv)return 1*dir; return 0;}).forEach(r=>body.appendChild(r)); }
+function bindSortableTables(){ document.querySelectorAll('th.sortable').forEach(th=>{ th.onclick=()=>{ const table=th.closest('table'); const name=table.id==='recent-table'?'recent':'clients'; const key=th.dataset.sortKey; const same=tableSortState[name].key===key; tableSortState[name]={key,dir:same?-tableSortState[name].dir:1}; applySort(table,key,tableSortState[name].dir); }; }); }
+function reapplyTableSorts(){ const r=document.getElementById('recent-table'),c=document.getElementById('clients-table'); if(r&&tableSortState.recent.key)applySort(r,tableSortState.recent.key,tableSortState.recent.dir); if(c&&tableSortState.clients.key)applySort(c,tableSortState.clients.key,tableSortState.clients.dir); }
+function setActiveTab(name){
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
+  try{ localStorage.setItem('dnsInspectorTab', name); }catch(e){}
+}
+function chartBars(elId, items){
+  const el=document.getElementById(elId); if(!el) return;
+  if(!items || !items.length){ el.innerHTML='<div class="sub">No data yet.</div>'; return; }
+  const max=Math.max(...items.map(x=>Number(x.value)||0),1);
+  el.innerHTML=items.map(x=>{
+    const pct=Math.max(2, Math.round(((Number(x.value)||0)/max)*100));
+    const label=esc(x.label);
+    const left=x.href ? `<a class="bar-label" href="${esc(x.href)}">${label}</a>` : `<span class="bar-label">${label}</span>`;
+    return `<div class="bar-row">${left}<div class="bar-track"><div class="bar-fill" style="width:${pct}%"></div></div><span class="bar-value">${esc(x.value)}</span></div>`;
   }).join('');
 }
-function renderClients(rows){ document.getElementById('clients-body').innerHTML = rows.map(deviceRow).join(''); }
+function renderStats(stats){
+  if(!stats) return;
+  chartBars('chart-domains', stats.domains);
+  chartBars('chart-devices', stats.devices);
+  chartBars('chart-vendors', stats.vendors);
+  chartBars('chart-ips', stats.ips);
+}
+document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => setActiveTab(b.dataset.tab)));
+document.addEventListener('click',(ev)=>{ const a=ev.target.closest('a.link-ip, a.link-device, a.glance-domain'); if(!a)return; ev.preventDefault(); ev.stopPropagation(); window.location.assign(a.href); });
+bindSortableTables();
+const hasInspectContent = !!document.getElementById('inspect-root')?.textContent.trim();
+try{
+  const saved=localStorage.getItem('dnsInspectorTab');
+  if(!currentQuery && !hasInspectContent && saved && ['overview','devices','analytics'].includes(saved)) setActiveTab(saved);
+  else if(currentQuery || hasInspectContent) setActiveTab('overview');
+}catch(e){}
+renderStats({{ stats|tojson }});
 async function refresh(){
   try{
     const url = '/api/state' + (currentQuery ? '?q=' + encodeURIComponent(currentQuery) : '');
     const r = await fetch(url, {cache:'no-store'}); if(!r.ok) return;
     const data = await r.json();
-    renderRecent(data.recent); renderClients(data.clients);
+    renderRecent(data.recent); renderClients(data.clients); renderStats(data.stats);
     if(data.inspect_html !== null){ document.getElementById('inspect-root').innerHTML = data.inspect_html; }
     const stamp = formatUpdated(data.updated); document.getElementById('last-update-time').textContent = stamp.time; document.getElementById('last-update-date').textContent = stamp.date;
   }catch(e){ console.debug('refresh failed', e); }
@@ -1071,14 +1132,20 @@ def _html(v):
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
 
 
-def classify(tracker, rdap):
+def classify(tracker, rdap, netify=None):
+    """Classify using multiple cached evidence sources without over-claiming."""
+    netify = netify or {}
     cat = (tracker.get("category") or "").lower()
+    app_name = (netify.get("application") or "").strip()
+    company = (netify.get("company_name") or "").strip()
     if cat == "advertising":
         return "Advertising", "orange", "orange"
     if cat in {"site_analytics", "social_media", "extensions"}:
-        return "Tracker / telemetry", "yellow", "yellow"
+        return "Telemetry / tracking", "yellow", "yellow"
     if cat:
-        return "Known TrackerDB service", "green", "green"
+        return "Known service", "green", "green"
+    if app_name or company:
+        return "Known service", "green", "green"
     if rdap.get("org"):
         return "Known ownership", "blue", "blue"
     return "Unknown", "gray", "gray"
@@ -1176,6 +1243,7 @@ def build_explanation(domain, tracker, rdap, client_details, netify=None):
     if cat == "advertising": summary, tone, confidence = "Likely advertising / ad delivery.", "orange", "High"
     elif cat in {"site_analytics", "social_media", "extensions"}: summary, tone, confidence = "Likely telemetry or tracking.", "yellow", "High"
     elif cat: summary, tone, confidence = "Known third-party service.", "green", "Medium"
+    elif netify and (netify.get("application") or netify.get("company_name")): summary, tone, confidence = "Known service identified by Netify.", "green", "Medium"
     elif rdap.get("org"): summary, tone, confidence = "Known infrastructure with ownership data.", "blue", "Medium"
     else: summary, tone, confidence = "Purpose is not established from available signals.", "gray", "Low"
     return {"summary": summary, "tone": tone, "confidence": confidence, "evidence": evidence or ["No strong identifying signals are available yet"]}
@@ -1193,7 +1261,7 @@ def inspect_domain(domain):
         rdap = rdap_lookup(domain)
         netify = netify_lookup(domain)
         dns_records = dns_records_lookup(domain)
-        classification, badge, severity = classify(tracker, rdap)
+        classification, badge, severity = classify(tracker, rdap, netify)
         clients_map = canonicalize_client_map(json.loads(row[4] or "{}"))
         client_details = [client_display(c, key, count) for key, count in sorted(clients_map.items(), key=lambda kv: kv[1], reverse=True)]
 
@@ -1221,7 +1289,10 @@ def get_recent():
         for domain, requests_count, clients_json in rows:
             t = tracker_lookup(domain)
             r = rdap_lookup(domain)
-            cls, badge, severity = classify(t, r)
+            n = netify_lookup(domain)
+            cls, badge, severity = classify(t, r, n)
+            if _cache_needs_refresh("netify_cache", domain, NETIFY_CACHE_HOURS):
+                threading.Thread(target=refresh_domain_enrichment, args=(domain,), daemon=True).start()
             clients = canonicalize_client_map(json.loads(clients_json or "{}"))
             device_rows = []
             for key, count in sorted(clients.items(), key=lambda kv: kv[1], reverse=True)[:6]:
@@ -1319,7 +1390,18 @@ def detail_html_ip(d):
     return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><h2 class='mono'>{_html(d['ip'])}</h2><p class='muted'>IP observation · {len(d['devices'])} known device(s)</p><h3>Known devices</h3><table><thead><tr><th>Device</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{devices}</tbody></table><h3>Domains contacted</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
 
 def recent_html(recent):
-    return "".join(f"<tr><td><a href='/search?q={quote(r['domain'], safe='')}'>{_html(r['domain'])}</a></td><td>{r['requests']}</td><td>{r['clients']}</td><td><span class='dot dot-{r['severity_class']}'></span><span class='tag {r['badge_class']}'>{_html(r['classification'])}</span></td></tr>" for r in recent)
+    rows = []
+    for r in recent:
+        rows.append(
+            f"<tr data-sort-domain='{_html(r['domain'])}' data-sort-activity='{int(r['requests'])}' data-sort-devices='{int(r['clients'])}' data-sort-classification='{_html(r['classification'])}'>"
+            f"<td><a class='glance-domain' href='/search?q={quote(r['domain'], safe='')}'>{_html(r['domain'])}</a><div class='glance-meta'><span>{int(r['requests'])} requests</span><span>·</span><span>{int(r['clients'])} device{'s' if int(r['clients']) != 1 else ''}</span></div></td>"
+            f"<td><b>{int(r['requests'])}</b> requests</td><td class='glance-devices'><div class='device-list'>"
+            + ''.join(f"<a class='device-chip link-device' href='/device?key={quote(d.get('identifier') or d.get('device_key') or '', safe='')}'>{vendor_visual(d.get('vendor',''), d.get('vendor_logo',''), False, d.get('icon','📦'))}{_html(d.get('name') or d.get('identifier') or '')}</a>" for d in r.get('devices', []))
+            + ("<span class='sub'>No identified devices</span>" if not r.get('devices') else "")
+            + f"</div></td><td><span class='dot dot-{r['severity_class']}'></span><span class='tag {r['badge_class']}'>{_html(r['classification'])}</span></td></tr>"
+        )
+    return ''.join(rows)
+
 
 
 def clients_html(clients):
@@ -1342,11 +1424,25 @@ def clients_html(clients):
     return ''.join(rows)
 
 
+def get_stats(limit=10):
+    with sqlite3.connect(DB_PATH) as c:
+        top_domains = c.execute("SELECT domain,requests FROM domains ORDER BY requests DESC LIMIT ?", (limit,)).fetchall()
+        top_devices = c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key),request_count FROM devices ORDER BY request_count DESC LIMIT ?", (limit,)).fetchall()
+        top_vendors = c.execute("SELECT vendor,SUM(request_count) AS total FROM devices WHERE TRIM(vendor)<>'' GROUP BY vendor ORDER BY total DESC LIMIT ?", (limit,)).fetchall()
+        top_ips = c.execute("SELECT ip,SUM(requests) AS total FROM device_ips GROUP BY ip ORDER BY total DESC LIMIT ?", (limit,)).fetchall()
+    return {
+        "domains": [{"label": d, "value": int(v), "href": "/search?q=" + quote(d, safe="")} for d, v in top_domains],
+        "devices": [{"label": label, "value": int(v), "href": "/device?key=" + quote(key, safe="")} for key, label, v in top_devices],
+        "vendors": [{"label": v, "value": int(total), "href": ""} for v, total in top_vendors],
+        "ips": [{"label": ip, "value": int(total), "href": "/ip?addr=" + quote(ip, safe="")} for ip, total in top_ips],
+    }
+
+
 def state_payload(q=""):
     # UI refresh is intentionally read-only against our local SQLite state.
     # AdGuard polling is performed by the background worker every POLL_SECONDS.
     result = inspect_domain(q) if q else None
-    return {"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "inspect_html": inspect_html(result) if result else None}
+    return {"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "stats": get_stats(), "inspect_html": inspect_html(result) if result else None}
 
 
 def client_display(c, device_key, count):
@@ -1455,7 +1551,7 @@ def index():
     result = inspect_domain(q) if q else None
     recent = get_recent()
     clients = get_clients()
-    return render_template_string(HTML, q=q, result=result, inspect_html=inspect_html(result) if result else "", recent_html=recent_html(recent), clients_html=clients_html(clients), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None)
+    return render_template_string(HTML, q=q, result=result, inspect_html=inspect_html(result) if result else "", recent_html=recent_html(recent), clients_html=clients_html(clients), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
 
 
 @app.route("/search")
@@ -1469,7 +1565,7 @@ def api_state():
         return jsonify(state_payload(request.args.get("q", "").strip()))
     except Exception as e:
         print("state error:", repr(e), flush=True)
-        return jsonify({"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "inspect_html": None, "error": str(e)}), 200
+        return jsonify({"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "stats": get_stats(), "inspect_html": None, "error": str(e)}), 200
 
 
 @app.route("/device")
@@ -1477,8 +1573,8 @@ def device_view():
     key = request.args.get("key", "").strip()
     d = device_detail(key)
     if not d:
-        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>Device not found</h2><p class='error'>No device exists for this identity.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None), 404
-    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_device(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None)
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>Device not found</h2><p class='error'>No device exists for this identity.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_device(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
 
 
 @app.route("/ip")
@@ -1486,8 +1582,8 @@ def ip_view():
     addr = request.args.get("addr", "").strip()
     d = ip_detail(addr)
     if not d:
-        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>IP not found</h2><p class='error'>No valid IP observation exists for this address.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None), 404
-    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_ip(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), error=None)
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>IP not found</h2><p class='error'>No valid IP observation exists for this address.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_ip(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
 
 
 @app.route("/health")
