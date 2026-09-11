@@ -34,6 +34,9 @@ TRACKERDB_URL = os.getenv(
 )
 TRACKERDB_REFRESH_HOURS = int(os.getenv("TRACKERDB_REFRESH_HOURS", "24"))
 RDAP_URL = os.getenv("RDAP_URL", "https://rdap.org/domain/").rstrip("/")
+MACVENDOR_URL = os.getenv("MACVENDOR_URL", "https://api.macvendors.com").rstrip("/")
+MACVENDOR_CACHE_HOURS = int(os.getenv("MACVENDOR_CACHE_HOURS", "168"))
+HOSTNAME_CACHE_HOURS = int(os.getenv("HOSTNAME_CACHE_HOURS", "24"))
 
 app = Flask(__name__)
 db_lock = threading.Lock()
@@ -86,9 +89,10 @@ function severityClass(r){ return r.severity_class || 'gray'; }
 function deviceRow(c){
   const ips = (c.ips || []).map(x=>`<span class="client-chip mono">${esc(x)}</span>`).join(' ');
   const mac = c.mac ? `<div class="sub mono">MAC ${esc(c.mac)}</div>` : '';
-  const host = c.hostname ? `<div class="sub">${esc(c.hostname)}</div>` : '';
+  const host = c.hostname ? `<div class="sub mono">HOST ${esc(c.hostname)}</div>` : '';
+  const vendor = c.vendor ? `<div class="sub">VENDOR ${esc(c.vendor)}</div>` : '';
   const source = c.source ? `<div class="sub">${esc(c.source)}</div>` : '';
-  return `<tr><td><div class="device"><span class="icon">${esc(c.icon)}</span><span><b>${esc(c.display_name)}</b>${host}<br><span class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</span>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span>${mac}</td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  return `<tr><td><div class="device"><span class="icon">${esc(c.icon)}</span><span><b>${esc(c.display_name)}</b>${host}${vendor}<br><span class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</span>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span>${mac}</td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => `<tr><td><a href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a></td><td>${esc(r.requests)}</td><td>${esc(r.clients)}</td><td>${dot(severityClass(r))}<span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`).join('');
@@ -129,6 +133,10 @@ def init_db():
             classification TEXT NOT NULL DEFAULT 'Unknown', company TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS rdap_cache(
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, json TEXT NOT NULL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS mac_vendor_cache(
+            mac TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, vendor TEXT NOT NULL DEFAULT '')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS hostname_cache(
+            ip TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, hostname TEXT NOT NULL DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS client_cache(
             identifier TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
             last_seen TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0, info_json TEXT NOT NULL DEFAULT '{}',
@@ -142,6 +150,7 @@ def init_db():
             mac TEXT NOT NULL DEFAULT '', device_type TEXT NOT NULL DEFAULT 'IoT / Unknown', icon TEXT NOT NULL DEFAULT '📦',
             confidence TEXT NOT NULL DEFAULT 'low', source TEXT NOT NULL DEFAULT '', last_seen TEXT NOT NULL,
             request_count INTEGER NOT NULL DEFAULT 0, info_json TEXT NOT NULL DEFAULT '{}')""")
+        add_column_if_missing(c, "devices", "vendor", "TEXT NOT NULL DEFAULT ''")
         c.execute("""CREATE TABLE IF NOT EXISTS device_ips(
             device_key TEXT NOT NULL, ip TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
             requests INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(device_key,ip))""")
@@ -266,6 +275,83 @@ def neighbor_mac_for_ips(ips):
         if mac:
             return mac
     return ""
+
+
+def hostname_for_ip(ip):
+    if not is_ip(ip):
+        return ""
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            row = c.execute("SELECT fetched_at,hostname FROM hostname_cache WHERE ip=?", (ip,)).fetchone()
+        if row:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
+            if age.total_seconds() < HOSTNAME_CACHE_HOURS * 3600:
+                return row[1]
+    except Exception:
+        pass
+    hostname = ""
+    try:
+        hostname = socket.gethostbyaddr(ip)[0].rstrip(".")
+        # Ignore an IP echo or empty result; those are not useful hostnames.
+        if hostname == ip:
+            hostname = ""
+    except Exception:
+        hostname = ""
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.execute("INSERT OR REPLACE INTO hostname_cache(ip,fetched_at,hostname) VALUES(?,?,?)", (ip, utcnow(), hostname))
+            c.commit()
+    except Exception:
+        pass
+    return hostname
+
+
+def mac_vendor_lookup(mac):
+    mac = normalize_mac(mac)
+    if not mac:
+        return ""
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            row = c.execute("SELECT fetched_at,vendor FROM mac_vendor_cache WHERE mac=?", (mac,)).fetchone()
+        if row:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
+            if age.total_seconds() < MACVENDOR_CACHE_HOURS * 3600:
+                return row[1]
+    except Exception:
+        pass
+    vendor = ""
+    try:
+        r = requests.get(f"{MACVENDOR_URL}/{quote(mac, safe='')}", timeout=8)
+        if r.status_code == 200:
+            vendor = r.text.strip()
+    except Exception as e:
+        print("MAC vendor lookup error:", repr(e), flush=True)
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.execute("INSERT OR REPLACE INTO mac_vendor_cache(mac,fetched_at,vendor) VALUES(?,?,?)", (mac, utcnow(), vendor))
+            c.commit()
+    except Exception:
+        pass
+    return vendor
+
+
+def enrich_device_network_identity(c, device_key, ips, mac, hostname_hint=""):
+    hostname = str(hostname_hint or "").strip()
+    if not hostname:
+        for ip in ips or []:
+            hostname = hostname_for_ip(ip)
+            if hostname:
+                break
+    vendor = mac_vendor_lookup(mac) if mac else ""
+    row = c.execute("SELECT hostname,mac,vendor FROM devices WHERE device_key=?", (device_key,)).fetchone()
+    if not row:
+        return hostname, vendor
+    # Keep an AdGuard-provided hostname ahead of reverse DNS unless the DB is empty.
+    final_hostname = row[0] or hostname
+    final_mac = mac or row[1]
+    final_vendor = vendor or row[2]
+    c.execute("UPDATE devices SET hostname=?, mac=?, vendor=? WHERE device_key=?", (final_hostname, final_mac, final_vendor, device_key))
+    return final_hostname, final_vendor
 
 
 def is_ip(value):
@@ -418,7 +504,9 @@ def ingest(force=False):
                 else:
                     c.execute("""INSERT INTO client_cache(identifier,name,source,last_seen,request_count,info_json,device_key,mac,hostname)
                                  VALUES(?,?,?,?,?,?,?,?,?)""", (ident, cname, source, now, 1, json.dumps(info), device_key, mac, hostname))
-                upsert_device(c, device_key, cname, hostname, mac, ips or ([ident] if is_ip(ident) else []), source, info, now)
+                device_ips_now = ips or ([ident] if is_ip(ident) else [])
+                upsert_device(c, device_key, cname, hostname, mac, device_ips_now, source, info, now)
+                enrich_device_network_identity(c, device_key, device_ips_now, mac, hostname)
                 c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at) VALUES(?,?)", (fp, now))
                 new_count += 1
             # Keep the dedupe table bounded while retaining enough history for repeated 500-entry query-log snapshots.
@@ -457,7 +545,9 @@ def refresh_runtime_clients():
             c.execute("""UPDATE client_cache SET name=?, source=?, info_json=?, device_key=?, mac=?, hostname=? WHERE identifier=?""",
                       (name or cname, source, json.dumps(info), device_key or current_device_key, mac, hostname, ident))
             if device_key:
-                upsert_device(c, device_key, name or cname, hostname, mac, ips or ([ident] if is_ip(ident) else []), source, info, now, increment=False)
+                device_ips_now = ips or ([ident] if is_ip(ident) else [])
+                upsert_device(c, device_key, name or cname, hostname, mac, device_ips_now, source, info, now, increment=False)
+                enrich_device_network_identity(c, device_key, device_ips_now, mac, hostname)
         c.commit()
 
 
@@ -591,20 +681,20 @@ def device_ip_list(c, device_key):
 
 
 def client_display(c, device_key, count):
-    row = c.execute("SELECT device_key,name,hostname,mac,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
+    row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
     if row:
-        _, name, hostname, mac, dtype, icon, confidence, source, total = row
+        _, name, hostname, mac, vendor, dtype, icon, confidence, source, total = row
         ips = device_ip_list(c, device_key)
         display = name or hostname or device_key
-        return {"device_key": device_key, "identifier": device_key, "display_name": display, "hostname": hostname, "mac": mac, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
-    return {"device_key": device_key, "identifier": device_key, "display_name": device_key, "hostname": "", "mac": "", "type": "IoT / Unknown", "icon": "📦", "confidence_label": "low", "source": "historical", "requests": count, "ips": [], "total_requests": count}
+        return {"device_key": device_key, "identifier": device_key, "display_name": display, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
+    return {"device_key": device_key, "identifier": device_key, "display_name": device_key, "hostname": "", "mac": "", "vendor": "", "type": "IoT / Unknown", "icon": "📦", "confidence_label": "low", "source": "historical", "requests": count, "ips": [], "total_requests": count}
 
 
 def inspect_html(result):
     if not result:
         return ""
     clients_html = "".join(
-        f"<tr><td>{c['icon']} <b>{_html(c['display_name'])}</b><div class='sub'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></td><td class='mono'>{_html(', '.join(c['ips']) or '—')}</td><td class='mono'>{_html(c['mac'] or '—')}</td><td>{c['requests']}</td></tr>"
+        f"<tr><td>{c['icon']} <b>{_html(c['display_name'])}</b>{f"<div class='sub mono'>HOST {_html(c['hostname'])}</div>" if c.get('hostname') else ''}{f"<div class='sub'>VENDOR {_html(c['vendor'])}</div>" if c.get('vendor') else ''}<div class='sub'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></td><td class='mono'>{_html(', '.join(c['ips']) or '—')}</td><td class='mono'>{_html(c['mac'] or '—')}</td><td>{c['requests']}</td></tr>"
         for c in result["client_details"]
     )
     return f"""
@@ -685,11 +775,11 @@ def get_recent():
 
 def get_clients():
     with sqlite3.connect(DB_PATH) as c:
-        rows = c.execute("SELECT device_key,name,hostname,mac,device_type,icon,confidence,source,request_count FROM devices ORDER BY request_count DESC").fetchall()
+        rows = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices ORDER BY request_count DESC").fetchall()
         out = []
-        for device_key, name, hostname, mac, dtype, icon, confidence, source, count in rows:
+        for device_key, name, hostname, mac, vendor, dtype, icon, confidence, source, count in rows:
             ips = device_ip_list(c, device_key)
-            out.append({"identifier": device_key, "display_name": name or hostname or device_key, "hostname": hostname, "mac": mac, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips})
+            out.append({"identifier": device_key, "display_name": name or hostname or device_key, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips})
     return out
 
 
@@ -761,6 +851,11 @@ def reconcile_neighbors():
                 migrated[new_key] = migrated.get(new_key, 0) + count
             if did_change:
                 c.execute("UPDATE domains SET clients_json=? WHERE domain=?", (json.dumps(migrated), domain))
+        # Enrich every known device once we have its stable MAC and/or IPs. Cached lookups keep this lightweight.
+        device_rows = c.execute("SELECT device_key,mac,hostname FROM devices").fetchall()
+        for dkey, dmac, dhost in device_rows:
+            ips = [r[0] for r in c.execute("SELECT ip FROM device_ips WHERE device_key=? ORDER BY last_seen DESC LIMIT 6", (dkey,)).fetchall()]
+            enrich_device_network_identity(c, dkey, ips, dmac, dhost)
         c.commit()
     if changed:
         print(f"Reconciled {changed} legacy IP device(s) using neighbors.txt.", flush=True)

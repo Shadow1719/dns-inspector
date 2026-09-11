@@ -2,19 +2,21 @@
 
 Read-only local DNS visibility tool for AdGuard Home.
 
+## v0.4.5
+- keeps MAC addresses as stable device identity when available
+- stores DHCP IPs as observations and preserves historical IPs per device
+- uses TrueNAS `neighbors.txt` to correlate IP → MAC
+- discovers device hostnames from AdGuard client information when available
+- falls back to reverse DNS (PTR) for known device IPs and caches the result
+- looks up the registered MAC vendor/manufacturer and caches the result locally
+- shows hostname and MAC vendor in device views
+- continues to keep the UI read-only against AdGuard Home
+- browser refresh reads local SQLite state; AdGuard polling is performed by the background worker
+
 ## v0.4.4
-- app version is read dynamically from `VERSION` and shown in the web UI
-- browser refreshes data every 10s by default without reloading the page or losing scroll position (`UI_REFRESH_SECONDS`)
-- the UI refresh triggers a read-only AdGuard Query Log poll, while background polling continues independently (`POLL_SECONDS`)
-- repeated Query Log entries are deduplicated so counters do not inflate on every refresh
-- recent domains show a severity dot and clearer classifications
-- client identity is kept separate from DHCP IP observations
-- when AdGuard exposes MAC/client identifiers, the MAC becomes the stable device key; IPs are retained as changing observations
-- consumes AdGuard `/control/clients` read-only data to enrich names/hostnames
-- shows per-domain device/IP/MAC activity when inspecting a hostname
-- adds conservative device-type hints and icons (TV, AC, dryer, phone/tablet, computer, console, camera, speaker, network, IoT)
-- confidence is intentionally conservative; unknown does not mean malicious
-- no writes to AdGuard Home and no blocking decisions
+- fixed duplicate legacy IP + MAC device rows after neighbor reconciliation
+- canonicalized IP-keyed clients to MAC-keyed clients in inspected domain views
+- added one-click Reset button for hostname inspection
 
 ## Environment
 - `AGH_URL`
@@ -26,18 +28,14 @@ Read-only local DNS visibility tool for AdGuard Home.
 - `TRACKERDB_PATH`
 - `TRACKERDB_REFRESH_HOURS`
 - `RDAP_URL`
+- `NEIGHBORS_PATH` (default `/data/neighbors.txt`)
+- `MACVENDOR_URL` (default `https://api.macvendors.com`)
+- `MACVENDOR_CACHE_HOURS` (default `168`)
+- `HOSTNAME_CACHE_HOURS` (default `24`)
 
 ## Device identity
-The app prefers a stable AdGuard client identifier or MAC address when AdGuard exposes one. IP addresses are stored as observations and are not treated as permanent device identities, which keeps DHCP changes from corrupting the device history.
+The app prefers a stable AdGuard client identifier or MAC address when AdGuard exposes one. IP addresses are stored as observations and are not treated as permanent device identities.
 
+Hostnames are discovered from AdGuard client information when available; otherwise the app attempts a reverse-DNS lookup for the device IP and caches the result.
 
-### v0.4.4
-- improves AdGuard runtime-client identity extraction (IP, hostname, client identifier, MAC when exposed)
-- keeps DHCP IPs as observations rather than permanent device identities
-- UI refresh reads local SQLite state; AdGuard polling is performed only by the background worker
-- shows client source and richer device identity details in the Clients / Devices table
-
-
-### v0.4.4
-- adds a one-click Reset button to leave a hostname inspection and return to the main overview
-- does not alter stored query history or AdGuard configuration
+MAC vendor lookup is informational only. It does not identify a specific device model; it identifies the organization registered for the MAC prefix.
