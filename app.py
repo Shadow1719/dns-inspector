@@ -66,7 +66,7 @@ h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949
 input,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;padding:10px 13px;border-radius:8px;font:inherit}button{cursor:pointer}button:hover{border-color:#58a6ff}
 .card{background:#11161d;border:1px solid #30363d;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
 .card h2{margin-top:0;letter-spacing:-.01em}
-table{width:100%;border-collapse:collapse}td,th{padding:11px 10px;border-bottom:1px solid #21262d;text-align:left;vertical-align:middle}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:#8b949e}.sortable{cursor:pointer;user-select:none}.sortable:hover{color:#e6edf3}.sortable::after{content:" ↕";opacity:.35}.sortable.sort-asc::after{content:" ↑";opacity:1}.sortable.sort-desc::after{content:" ↓";opacity:1}tr:last-child td{border-bottom:0}
+table{width:100%;border-collapse:collapse;table-layout:fixed}#recent-table th:nth-child(1),#recent-table td:nth-child(1){width:34%}#recent-table th:nth-child(2),#recent-table td:nth-child(2){width:10%}#recent-table th:nth-child(3),#recent-table td:nth-child(3){width:31%}#recent-table th:nth-child(4),#recent-table td:nth-child(4){width:9%}#recent-table th:nth-child(5),#recent-table td:nth-child(5){width:7%}#recent-table th:nth-child(6),#recent-table td:nth-child(6){width:9%}#recent-table th,#recent-table td{overflow:hidden;text-overflow:ellipsis;vertical-align:top}td,th{padding:11px 10px;border-bottom:1px solid #21262d;text-align:left;vertical-align:middle}th{font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:#8b949e}.sortable{cursor:pointer;user-select:none}.sortable:hover{color:#e6edf3}.sortable::after{content:" ↕";opacity:.35}.sortable.sort-asc::after{content:" ↑";opacity:1}.sortable.sort-desc::after{content:" ↓";opacity:1}tr:last-child td{border-bottom:0}
 a{color:#79c0ff;text-decoration:none}a:hover{text-decoration:underline}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.kv{padding:8px 0;border-bottom:1px solid #21262d}.kv b{display:inline-block;min-width:140px}
 pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88em;color:#8b949e}.error{color:#ff9b9b}
@@ -260,7 +260,8 @@ def init_db():
             device_key TEXT NOT NULL, ip TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
             requests INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(device_key,ip))""")
         c.execute("""CREATE TABLE IF NOT EXISTS processed_queries(
-            fingerprint TEXT PRIMARY KEY, seen_at TEXT NOT NULL)""")
+            fingerprint TEXT PRIMARY KEY, seen_at TEXT NOT NULL, status_counted INTEGER NOT NULL DEFAULT 0)""")
+        add_column_if_missing(c, "processed_queries", "status_counted", "INTEGER NOT NULL DEFAULT 0")
         c.execute("CREATE INDEX IF NOT EXISTS idx_processed_seen ON processed_queries(seen_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")
         c.commit()
@@ -553,16 +554,35 @@ def query_fingerprint(entry):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+BLOCKED_REASONS = {
+    "FilteredBlackList",
+    "FilteredSafeBrowsing",
+    "FilteredParental",
+    "FilteredBlockedService",
+}
+ALLOWED_REASONS = {
+    "NotFilteredWhiteList",
+    "NotFilteredNotFound",
+    "Rewrite",
+    "RewriteEtcHosts",
+    "RewriteRule",
+    "FilteredSafeSearch",
+}
+UNKNOWN_REASONS = {
+    "NotFilteredError",
+    "FilteredInvalid",
+}
+
 def query_status(reason, original_response=None):
     reason = str(reason or "")
-    if reason.startswith("Filtered"):
+    if reason in BLOCKED_REASONS:
         return "Blocked"
-    if reason in {"NotFilteredWhiteList", "NotFilteredNotFound", "Rewrite", "RewriteEtcHosts", "RewriteRule", "FilteredSafeSearch"}:
+    if reason in ALLOWED_REASONS:
         return "Allowed"
-    if reason in {"NotFilteredError", "FilteredInvalid"}:
+    if reason in UNKNOWN_REASONS:
         return "Unknown"
-    if original_response:
-        return "Allowed"
+    # Do not infer "allowed" merely because an answer exists.  AdGuard's
+    # reason is the authoritative signal for query-log status.
     return "Unknown"
 
 
@@ -620,14 +640,34 @@ def ingest(force=False):
         now = utcnow()
         with db_lock, sqlite3.connect(DB_PATH) as c:
             new_count = 0
+            status_backfilled = 0
             for e in entries:
                 fp = query_fingerprint(e)
-                if c.execute("SELECT 1 FROM processed_queries WHERE fingerprint=?", (fp,)).fetchone():
-                    continue
+                existing = c.execute("SELECT status_counted FROM processed_queries WHERE fingerprint=?", (fp,)).fetchone()
                 domain = ((e.get("question") or {}).get("name") or "").rstrip(".").lower()
+
+                # A previous Inspector version already counted this request but
+                # did not persist AdGuard's status. Backfill the status counters
+                # when the same query is still present in the rolling Query Log.
+                if existing:
+                    if int(existing[0] or 0) == 0 and domain:
+                        qstatus = query_status(e.get("reason"), e.get("answer"))
+                        row = c.execute("SELECT blocked_requests,allowed_requests,unknown_requests FROM domains WHERE domain=?", (domain,)).fetchone()
+                        if row:
+                            blocked, allowed, unknown = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
+                            if qstatus == "Blocked": blocked += 1
+                            elif qstatus == "Allowed": allowed += 1
+                            else: unknown += 1
+                            c.execute("UPDATE domains SET blocked_requests=?, allowed_requests=?, unknown_requests=?, last_status=?, last_reason=? WHERE domain=?", (blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), domain))
+                            status_backfilled += 1
+                        c.execute("UPDATE processed_queries SET status_counted=1 WHERE fingerprint=?", (fp,))
+                    elif existing and int(existing[0] or 0) == 0:
+                        c.execute("UPDATE processed_queries SET status_counted=1 WHERE fingerprint=?", (fp,))
+                    continue
+
                 ident, cname, source, info, device_key, mac, ips, hostname = client_info_from_entry(e)
                 if not domain:
-                    c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at) VALUES(?,?)", (fp, now))
+                    c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at,status_counted) VALUES(?,?,1)", (fp, now))
                     continue
                 qstatus = query_status(e.get("reason"), e.get("answer"))
                 row = c.execute("SELECT clients_json,blocked_requests,allowed_requests,unknown_requests FROM domains WHERE domain=?", (domain,)).fetchone()
@@ -654,7 +694,7 @@ def ingest(force=False):
                 device_ips_now = ips or ([ident] if is_ip(ident) else [])
                 upsert_device(c, device_key, cname, hostname, mac, device_ips_now, source, info, now)
                 enrich_device_network_identity(c, device_key, device_ips_now, mac, hostname)
-                c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at) VALUES(?,?)", (fp, now))
+                c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at,status_counted) VALUES(?,?,1)", (fp, now))
                 new_count += 1
             # Keep the dedupe table bounded while retaining enough history for repeated 500-entry query-log snapshots.
             c.execute("DELETE FROM processed_queries WHERE rowid IN (SELECT rowid FROM processed_queries ORDER BY seen_at DESC LIMIT -1 OFFSET 100000)")
@@ -662,8 +702,8 @@ def ingest(force=False):
         refresh_runtime_clients()
         reconcile_neighbors()
         last_ingest_at = time.time()
-        if new_count:
-            print(f"Ingested {new_count} new DNS queries.", flush=True)
+        if new_count or status_backfilled:
+            print(f"Ingested {new_count} new DNS queries; backfilled {status_backfilled} query statuses.", flush=True)
     except Exception as e:
         print("ingest error:", repr(e), flush=True)
 
@@ -1291,15 +1331,17 @@ def device_type_visual(device_type="", icon="📦", large=False):
 
 
 def vendor_logo_url(vendor):
-    """Return only an official vendor favicon bundled locally at build time.
+    """Prefer an official vendor favicon bundled at build time.
 
-    We intentionally do not fall back to the hand-drawn SVG vendor marks here:
-    vendor identity should be represented by the vendor's own site favicon.
-    If the official favicon could not be fetched during the build, the normal
-    device-type icon is used instead.
+    If a vendor blocks favicon fetching during CI, fall back to the bundled
+    vendor mark so a known vendor never collapses to the generic gray device
+    icon. The fallback is local and never fetched by the browser.
     """
     text = str(vendor or "").lower()
     for key, url in VENDOR_FAVICONS.items():
+        if key in text and _local_static_exists(url):
+            return url
+    for key, url in VENDOR_LOGOS.items():
         if key in text and _local_static_exists(url):
             return url
     return ""
