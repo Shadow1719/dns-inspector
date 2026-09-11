@@ -3,6 +3,13 @@
 Read-only local DNS visibility tool for AdGuard Home.
 
 
+## v0.5.4
+- fixes the dashboard column mapping so IPs appear under IP(s) and MAC addresses under MAC
+- keeps internal navigation separate from external lookups
+- adds dedicated external lookup buttons for MAC vendor lookup and device search
+- adds domain-level external buttons for Netify hostname intelligence, DNSChecker records, and web search
+- opens external lookups in a new tab without changing the read-only local navigation model
+
 ## v0.5.3
 - Fixed Docker image packaging so bundled vendor logos under `static/vendor-logos/` are actually included in the image.
 - Device names, hostnames, MACs, device chips, IP addresses, and DNS address chips are clickable.
