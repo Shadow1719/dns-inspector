@@ -2,6 +2,14 @@
 
 Read-only local DNS visibility tool for AdGuard Home.
 
+## v0.5.0
+- adds explainable “Why is this here?” signals with evidence and confidence levels
+- uses severity-aware colors for telemetry, advertising, known services, ownership, and unknown domains
+- presents DNS addresses as readable IP chips instead of a dense comma-separated line
+- makes the live timestamp human-readable with separate time and date styling
+- shows vendor logos for supported manufacturers with a generic fallback
+- keeps the UI read-only and preserves MAC-based device identity
+
 ## v0.4.6
 - keeps MAC addresses as stable device identity when available
 - stores DHCP IPs as observations and preserves historical IPs per device

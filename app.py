@@ -55,7 +55,7 @@ HTML = """
 :root{color-scheme:dark}
 *{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:28px;max-width:1450px;margin-inline:auto}
-h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}
+h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}.updated-time{color:#58a6ff;font-weight:700}.updated-date{color:#8b949e}.signal{border-left:3px solid #30363d;padding:10px 12px;background:#0d1117;border-radius:8px}.signal-green{border-color:#3fb950}.signal-blue{border-color:#58a6ff}.signal-yellow{border-color:#d29922}.signal-orange{border-color:#db6d28}.signal-red{border-color:#f85149}.signal-gray{border-color:#8b949e}.signal-title{font-weight:750;margin-bottom:5px}.evidence{margin:6px 0 0;padding-left:18px;color:#c9d1d9}.evidence li{margin:3px 0}.confidence-high{color:#3fb950;font-weight:700}.confidence-medium{color:#d29922;font-weight:700}.confidence-low{color:#8b949e;font-weight:700}.dns-list{display:flex;flex-wrap:wrap;gap:6px}.dns-ip{display:inline-block;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#161b22;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}.vendor-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:6px;border-radius:4px}.vendor-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:6px;border-radius:5px;background:#30363d;font-size:.7rem}
 .toolbar{display:flex;gap:8px;align-items:center;margin:20px 0 4px}.toolbar input{flex:1;min-width:0}.toolbar button{white-space:nowrap}
 input,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;padding:10px 13px;border-radius:8px;font:inherit}button{cursor:pointer}button:hover{border-color:#58a6ff}
 .card{background:#11161d;border:1px solid #30363d;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
@@ -74,7 +74,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 </style></head><body>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
-<p class="muted">Read-only view of AdGuard Home Query Log. This app never changes AdGuard settings. <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · <span id="last-update">last update {{updated}}</span></p>
+<p class="muted">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <div id="inspect-root">
 {% if result %}{{ inspect_html|safe }}{% endif %}
@@ -95,10 +95,11 @@ function esc(v){
 }
 function dot(cls){ return `<span class="dot dot-${esc(cls)}"></span>`; }
 function severityClass(r){ return r.severity_class || 'gray'; }
+function formatUpdated(iso){ const d=new Date(iso); if(Number.isNaN(d.getTime())) return {time:String(iso),date:''}; return {time:d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}), date:d.toLocaleDateString([], {year:'numeric',month:'short',day:'numeric'})}; }
 function deviceRow(c){
   const ips = (c.ips || []).map(x=>`<span class="client-chip mono">${esc(x)}</span>`).join(' ');
-  const host = c.hostname ? `<div class="technical mono">HOST ${esc(c.hostname)}</div>` : '';
-  const vendor = c.vendor ? `<div class="sub">${esc(c.vendor)}</div>` : '';
+  const host = c.hostname && c.hostname !== (c.hostname || c.name || c.vendor || c.display_name || c.identifier) ? `<div class="technical mono">HOST ${esc(c.hostname)}</div>` : '';
+  const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)}</div>` : '';
   const mac = c.mac ? `<div class="technical mono">${esc(c.mac)}</div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
   const primary = c.hostname || c.name || c.vendor || c.display_name || c.identifier;
@@ -106,7 +107,7 @@ function deviceRow(c){
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => {
-    const devices = (r.devices || []).map(d => `<span class="device-chip"><span class="mini-icon">${esc(d.icon || '📦')}</span>${esc(d.name)}</span>`).join('');
+    const devices = (r.devices || []).map(d => `<span class="device-chip">${d.vendor_logo ? `<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">` : `<span class="mini-icon">${esc(d.icon || '📦')}</span>`}${esc(d.name)}</span>`).join('');
     return `<tr><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
   }).join('');
 }
@@ -118,10 +119,11 @@ async function refresh(){
     const data = await r.json();
     renderRecent(data.recent); renderClients(data.clients);
     if(data.inspect_html !== null){ document.getElementById('inspect-root').innerHTML = data.inspect_html; }
-    document.getElementById('last-update').textContent = 'last update ' + data.updated;
+    const stamp = formatUpdated(data.updated); document.getElementById('last-update-time').textContent = stamp.time; document.getElementById('last-update-date').textContent = stamp.date;
   }catch(e){ console.debug('refresh failed', e); }
   finally{ setTimeout(refresh, refreshMs); }
 }
+const initialStamp = formatUpdated({{ updated|tojson }}); document.getElementById('last-update-time').textContent = initialStamp.time; document.getElementById('last-update-date').textContent = initialStamp.date;
 setTimeout(refresh, refreshMs);
 </script>
 </body></html>
@@ -693,26 +695,44 @@ def device_ip_list(c, device_key):
     return [r[0] for r in rows]
 
 
+VENDOR_LOGOS = {
+    "dell": "https://cdn.simpleicons.org/dell",
+    "lg innotek": "https://cdn.simpleicons.org/lg",
+    "lge": "https://cdn.simpleicons.org/lg",
+    "lg": "https://cdn.simpleicons.org/lg",
+    "zte": "https://cdn.simpleicons.org/zte",
+    "bosch": "https://cdn.simpleicons.org/bosch",
+    "roborock": "https://cdn.simpleicons.org/roborock",
+    "beijing roborock technology": "https://cdn.simpleicons.org/roborock",
+    "petkit": "https://cdn.simpleicons.org/petkit",
+}
+
+def vendor_logo_url(vendor):
+    text = str(vendor or "").lower()
+    for key, url in VENDOR_LOGOS.items():
+        if key in text:
+            return url
+    return ""
+
+
 def client_display(c, device_key, count):
     row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
     if row:
         _, name, hostname, mac, vendor, dtype, icon, confidence, source, total = row
         ips = device_ip_list(c, device_key)
         display = hostname or name or vendor or device_key
-        return {"device_key": device_key, "identifier": device_key, "display_name": hostname or name or vendor or display, "name": name, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
+        return {"device_key": device_key, "identifier": device_key, "display_name": hostname or name or vendor or display, "name": name, "hostname": hostname, "mac": mac, "vendor": vendor, "vendor_logo": vendor_logo_url(vendor), "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
     return {"device_key": device_key, "identifier": device_key, "display_name": device_key, "name": "", "hostname": "", "mac": "", "vendor": "", "type": "IoT / Unknown", "icon": "📦", "confidence_label": "low", "source": "historical", "requests": count, "ips": [], "total_requests": count}
 
 
 def inspect_html(result):
-    if not result:
-        return ""
-    clients_html = "".join(
-        f"<tr><td>{c['icon']} <b>{_html(c['display_name'])}</b>{f"<div class='sub mono'>HOST {_html(c['hostname'])}</div>" if c.get('hostname') else ''}{f"<div class='sub'>VENDOR {_html(c['vendor'])}</div>" if c.get('vendor') else ''}<div class='sub'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></td><td class='mono'>{_html(', '.join(c['ips']) or '—')}</td><td class='mono'>{_html(c['mac'] or '—')}</td><td>{c['requests']}</td></tr>"
-        for c in result["client_details"]
-    )
+    if not result: return ""
+    clients_html = "".join(f"<tr><td><div class='device'><span class='icon'>{_html(c['icon'])}</span><span><div class='device-name'>{_html(c['display_name'])}</div>{f"<div class='sub'>{('<img class=\"vendor-logo\" src=\"' + _html(c.get('vendor_logo')) + '\" alt=\"\" loading=\"lazy\">') if c.get('vendor_logo') else ''}{_html(c['vendor'])}</div>" if c.get('vendor') else ''}{f"<div class='sub mono'>HOST {_html(c['hostname'])}</div>" if c.get('hostname') and c.get('hostname') != c.get('display_name') else ''}{f"<div class='technical mono'>{_html(c['mac'])}</div>" if c.get('mac') else ''}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(', '.join(c['ips']) or '—')}</td><td class='mono'>{_html(c['mac'] or '—')}</td><td>{c['requests']}</td></tr>" for c in result["client_details"])
+    e=result["explanation"]
+    evidence_html="".join(f"<li>{_html(x)}</li>" for x in e["evidence"])
+    dns_html="".join(f"<span class='dns-ip'>{_html(ip)}</span>" for ip in result['dns']) or "<span class='sub'>No A/AAAA result</span>"
     return f"""
-<div class='card'>
-<h2>{_html(result['domain'])}</h2>
+<div class='card'><h2>{_html(result['domain'])}</h2>
 <div><span class='tag {result['badge_class']}'>{_html(result['classification'])}</span>
 {f"<span class='tag'>{_html(result['tracker'].get('category'))}</span>" if result['tracker'].get('category') else ''}
 {f"<span class='tag'>{_html(result['tracker'].get('name'))}</span>" if result['tracker'].get('name') else ''}</div>
@@ -721,12 +741,11 @@ def inspect_html(result):
 <div class='kv'><b>Country:</b> {_html(result['company']['country'] or '—')}</div>
 <div class='kv'><b>Website:</b> {f"<a href='{_html(result['company']['website_url'])}' target='_blank'>{_html(result['company']['website_url'])}</a>" if result['company']['website_url'] else '—'}</div>
 <div class='kv'><b>RDAP:</b> {_html(result['rdap'].get('org') or 'Not available')}</div></div>
-<div><h3>What it does</h3>
-<p>{_html(result['tracker'].get('description') or (f"TrackerDB classifies this endpoint under {result['tracker'].get('category')}." if result['tracker'].get('category') else 'No TrackerDB description is available. Ownership was checked separately with RDAP; the hostname\'s exact purpose cannot be established from DNS alone.'))}</p>
-{f"<p><a href='{_html(result['tracker'].get('website_url'))}' target='_blank'>Tracker / service website</a></p>" if result['tracker'].get('website_url') else ''}</div></div>
-<h3>Infrastructure</h3><div class='grid'><div><div class='kv'><b>DNS:</b> {_html(', '.join(result['dns']) or 'No A/AAAA result')}</div><div class='kv'><b>RDAP name:</b> {_html(result['rdap'].get('name') or '—')}</div></div>
+<div><h3>Why is this here?</h3>
+<div class='signal signal-{e['tone']}'><div class='signal-title'>{_html(e['summary'])}</div><ul class='evidence'>{evidence_html}</ul><div>Confidence: <span class='confidence-{e['confidence'].lower()}'>{_html(e['confidence'])}</span></div></div></div></div>
+<h3>Infrastructure</h3><div class='grid'><div><div class='kv'><b>DNS:</b><div class='dns-list'>{dns_html}</div></div><div class='kv'><b>RDAP name:</b> {_html(result['rdap'].get('name') or '—')}</div></div>
 <div><div class='kv'><b>TrackerDB domain:</b> {_html(result['tracker'].get('matched_domain') or 'No match')}</div><div class='kv'><b>Source snapshot:</b> WhoTracks.me / Ghostery TrackerDB</div></div></div>
-<h3>Local activity</h3><p><b>Requests:</b> {result['requests']} &nbsp; <b>Clients:</b> {len(result['clients'])}</p>
+<h3>Local activity</h3><p><b>Requests:</b> {result['requests']} &nbsp; <b>Clients:</b> {len(result['clients'])} &nbsp; <b>DNS addresses:</b> {len(result['dns'])}</p>
 <table><thead><tr><th>Device</th><th>IP(s)</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{clients_html}</tbody></table>
 <p class='source'>Stable identity prefers MAC or a non-IP AdGuard client identifier, then a named hostname; IPs are observations and may change with DHCP. AdGuard runtime clients can come from rDNS/hosts/ARP/DHCP sources.</p>
 </div>"""
@@ -754,6 +773,24 @@ def canonicalize_client_map(clients):
     return merged
 
 
+def build_explanation(domain, tracker, rdap, client_details):
+    cat = (tracker.get("category") or "").lower()
+    vendors = sorted({c.get("vendor", "") for c in client_details if c.get("vendor")})
+    hostnames = sorted({c.get("hostname", "") for c in client_details if c.get("hostname")})
+    evidence = []
+    if client_details: evidence.append(f"{len(client_details)} local device(s) contacted this domain")
+    if vendors: evidence.append("Vendor signals: " + ", ".join(vendors[:3]))
+    if hostnames: evidence.append("Known hostnames: " + ", ".join(hostnames[:3]))
+    if tracker.get("matched_domain"): evidence.append(f"TrackerDB match: {tracker.get('matched_domain')}")
+    if rdap.get("org"): evidence.append(f"RDAP ownership: {rdap.get('org')}")
+    if cat == "advertising": summary, tone, confidence = "Likely advertising / ad delivery.", "orange", "High"
+    elif cat in {"site_analytics", "social_media", "extensions"}: summary, tone, confidence = "Likely telemetry or tracking.", "yellow", "High"
+    elif cat: summary, tone, confidence = "Known third-party service.", "green", "Medium"
+    elif rdap.get("org"): summary, tone, confidence = "Known infrastructure with ownership data.", "blue", "Medium"
+    else: summary, tone, confidence = "Purpose is not established from available signals.", "gray", "Low"
+    return {"summary": summary, "tone": tone, "confidence": confidence, "evidence": evidence or ["No strong identifying signals are available yet"]}
+
+
 def inspect_domain(domain):
     domain = domain.lower().rstrip(".")
     with sqlite3.connect(DB_PATH) as c:
@@ -770,6 +807,7 @@ def inspect_domain(domain):
         "classification": classification, "badge_class": badge, "severity_class": severity, "tracker": tracker,
         "company": {"name": tracker.get("company_name") or rdap.get("org") or "", "description": tracker.get("description", ""), "website_url": tracker.get("company_website", "") or tracker.get("website_url", ""), "country": tracker.get("country", "")},
         "rdap": rdap, "dns": resolve_dns(domain), "client_details": client_details,
+        "explanation": build_explanation(domain, tracker, rdap, client_details),
     }
 
 
@@ -785,7 +823,7 @@ def get_recent():
             device_rows = []
             for key, count in sorted(clients.items(), key=lambda kv: kv[1], reverse=True)[:6]:
                 d = client_display(c, key, count)
-                device_rows.append({"name": d.get("hostname") or d.get("name") or d.get("vendor") or d.get("display_name") or key, "icon": d.get("icon", "📦")})
+                device_rows.append({"name": d.get("hostname") or d.get("name") or d.get("vendor") or d.get("display_name") or key, "icon": d.get("icon", "📦"), "vendor_logo": d.get("vendor_logo", "")})
             out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "devices": device_rows, "classification": cls, "badge_class": badge, "severity_class": severity})
     return out
 
@@ -796,7 +834,7 @@ def get_clients():
         out = []
         for device_key, name, hostname, mac, vendor, dtype, icon, confidence, source, count in rows:
             ips = device_ip_list(c, device_key)
-            out.append({"identifier": device_key, "name": name, "display_name": hostname or name or vendor or device_key, "hostname": hostname, "mac": mac, "vendor": vendor, "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips})
+            out.append({"identifier": device_key, "name": name, "display_name": hostname or name or vendor or device_key, "hostname": hostname, "mac": mac, "vendor": vendor, "vendor_logo": vendor_logo_url(vendor), "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips})
     return out
 
 
