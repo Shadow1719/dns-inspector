@@ -634,6 +634,23 @@ def _html(v):
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
 
 
+def canonicalize_client_map(clients):
+    """Collapse legacy IP client keys into MAC keys using the current neighbor snapshot.
+    This is read-only and makes the UI correct immediately, even before the background
+    reconciliation transaction has run.
+    """
+    neighbors = load_neighbors()
+    merged = {}
+    for key, count in clients.items():
+        new_key = key
+        if str(key).startswith("ip:"):
+            mac = neighbors.get(str(key)[3:])
+            if mac:
+                new_key = "mac:" + mac
+        merged[new_key] = merged.get(new_key, 0) + count
+    return merged
+
+
 def inspect_domain(domain):
     domain = domain.lower().rstrip(".")
     with sqlite3.connect(DB_PATH) as c:
@@ -643,7 +660,7 @@ def inspect_domain(domain):
         tracker = tracker_lookup(domain)
         rdap = rdap_lookup(domain)
         classification, badge, severity = classify(tracker, rdap)
-        clients_map = json.loads(row[4] or "{}")
+        clients_map = canonicalize_client_map(json.loads(row[4] or "{}"))
         client_details = [client_display(c, key, count) for key, count in sorted(clients_map.items(), key=lambda kv: kv[1], reverse=True)]
     return {
         "domain": row[0], "first_seen": row[1], "last_seen": row[2], "requests": row[3], "clients": clients_map,
@@ -661,7 +678,8 @@ def get_recent():
             t = tracker_lookup(domain)
             r = rdap_lookup(domain)
             cls, badge, severity = classify(t, r)
-            out.append({"domain": domain, "requests": requests_count, "clients": len(json.loads(clients_json or "{}")), "classification": cls, "badge_class": badge, "severity_class": severity})
+            clients = canonicalize_client_map(json.loads(clients_json or "{}"))
+            out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "classification": cls, "badge_class": badge, "severity_class": severity})
     return out
 
 
@@ -753,8 +771,10 @@ def worker():
     init_db()
     load_neighbors(force=True)
     refresh_runtime_clients()
-    reconcile_neighbors()
+    # First migrate legacy client identifiers, then reconcile IP identities to MACs.
+    # Doing this in the opposite order can reintroduce the old ip:* keys.
     migrate_legacy_domain_clients()
+    reconcile_neighbors()
     refresh_trackerdb()
     while True:
         started = time.time()
@@ -766,7 +786,6 @@ def worker():
 @app.route("/")
 def index():
     q = request.args.get("q", "").strip()
-    ingest(force=False)
     result = inspect_domain(q) if q else None
     recent = get_recent()
     clients = get_clients()
