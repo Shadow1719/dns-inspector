@@ -393,6 +393,17 @@ This prevents the Inspector from becoming a second DNS policy engine and lets th
 
 DNS Inspector is an independent project. External services and datasets used for enrichment are subject to their own terms, licenses and availability.
 
+## v0.6.4
+
+- kept **Classification** and moved it two columns to the right in Overview;
+- added **Status** with Allowed / Blocked / Mixed / Unknown semantics derived from AdGuard query-log reasons;
+- added **Severity** as a conservative presentation layer: Info / Low / Medium / High / Unknown;
+- preserved **Unknown ≠ Malicious**; severity is an interpretation aid, not a blocking verdict;
+- added a local browser favicon for DNS Inspector;
+- vendor visuals now prefer official vendor favicons downloaded during the GitHub Actions build and bundled locally in the Docker image; existing local SVG marks remain as fallback;
+- added persistent per-domain DNS status counters and latest reason with backward-compatible SQLite migration;
+- preserved the existing read-only AdGuard architecture.
+
 ## v0.6.1
 
 - Click-to-sort headers on Overview and Devices tables (ascending/descending).
@@ -400,9 +411,3 @@ DNS Inspector is an independent project. External services and datasets used for
 - Classification keeps conservative semantics: Advertising, Telemetry / tracking, Known service, Known ownership, and Unknown.
 - Robust client-side navigation for IP, device and domain links.
 
-
-## 0.6.3
-
-- Added a local SVG favicon for the DNS Inspector web UI.
-- The favicon is served from the application itself (`/static/favicon.svg`), so it does not depend on an external CDN or third-party asset host.
-- Added the favicon directly to the container image via the existing `static` directory packaging.

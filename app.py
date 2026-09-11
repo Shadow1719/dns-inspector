@@ -56,7 +56,7 @@ MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
 
 HTML = """
-<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><title>DNS Inspector</title>
+<!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><title>DNS Inspector</title>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
@@ -71,7 +71,7 @@ a{color:#79c0ff;text-decoration:none}a:hover{text-decoration:underline}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.kv{padding:8px 0;border-bottom:1px solid #21262d}.kv b{display:inline-block;min-width:140px}
 pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88em;color:#8b949e}.error{color:#ff9b9b}
 .tag{display:inline-block;padding:4px 9px;border-radius:999px;background:#30363d;margin:2px;font-size:.82rem}.green{background:#174d2a}.yellow{background:#5a4610}.orange{background:#6a3510}.red{background:#6a1717}.blue{background:#16395c}.gray{background:#30363d}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.dot-green{background:#3fb950}.dot-blue{background:#58a6ff}.dot-yellow{background:#d29922}.dot-orange{background:#db6d28}.dot-red{background:#f85149}.dot-gray{background:#8b949e}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.dot-green{background:#3fb950}.dot-blue{background:#58a6ff}.dot-yellow{background:#d29922}.dot-orange{background:#db6d28}.dot-red{background:#f85149}.dot-gray{background:#8b949e}.status-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:999px;font-size:.78rem;font-weight:700}.status-allowed{background:#174d2a;color:#7ee787}.status-blocked{background:#6a1717;color:#ffb4b4}.status-mixed{background:#5a4610;color:#f2cc60}.status-unknown{background:#30363d;color:#8b949e}.severity-info{color:#3fb950;font-weight:700}.severity-low{color:#d29922;font-weight:700}.severity-medium{color:#db6d28;font-weight:700}.severity-high{color:#f85149;font-weight:700}.severity-unknown{color:#8b949e;font-weight:700}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.sub{font-size:.82rem;color:#8b949e}.right{float:right}
 .device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .mini-icon{font-size:.9rem}
@@ -97,7 +97,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
   {% if result %}{{ inspect_html|safe }}{% endif %}
   </div>
   <div class="card"><h2>At a glance</h2>
-  <table id="recent-table"><thead><tr><th class="sortable" data-sort-key="domain" data-sort-type="text">Domain</th><th class="sortable" data-sort-key="activity" data-sort-type="number">Activity</th><th class="sortable" data-sort-key="devices" data-sort-type="number">Devices</th><th class="sortable" data-sort-key="classification" data-sort-type="text">Classification</th></tr></thead>
+  <table id="recent-table"><thead><tr><th class="sortable" data-sort-key="domain" data-sort-type="text">Domain</th><th class="sortable" data-sort-key="activity" data-sort-type="number">Activity</th><th class="sortable" data-sort-key="devices" data-sort-type="number">Devices</th><th class="sortable" data-sort-key="status" data-sort-type="text">Status</th><th class="sortable" data-sort-key="severity" data-sort-type="text">Severity</th><th class="sortable" data-sort-key="classification" data-sort-type="text">Classification</th></tr></thead>
   <tbody id="recent-body">{{ recent_html|safe }}</tbody></table></div>
 </section>
 <section id="tab-devices" class="tab-panel" data-panel="devices">
@@ -147,7 +147,7 @@ function deviceRow(c){
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => {
     const devices = (r.devices || []).map(d => `<a class="device-chip link-device" href="${deviceHref(d)}">${d.vendor_logo ? `<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">` : `<span class="mini-icon">${esc(d.icon || '📦')}</span>`}${esc(d.name)}</a>`).join('');
-    return `<tr data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
+    return `<tr data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
   }).join('');
   reapplyTableSorts();
 }
@@ -223,7 +223,7 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS domains(
             domain TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT,
             requests INTEGER NOT NULL DEFAULT 0, clients_json TEXT NOT NULL DEFAULT '{}',
-            classification TEXT NOT NULL DEFAULT 'Unknown', company TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '')""")
+            classification TEXT NOT NULL DEFAULT 'Unknown', company TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', blocked_requests INTEGER NOT NULL DEFAULT 0, allowed_requests INTEGER NOT NULL DEFAULT 0, unknown_requests INTEGER NOT NULL DEFAULT 0, last_status TEXT NOT NULL DEFAULT 'Unknown', last_reason TEXT NOT NULL DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS rdap_cache(
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, json TEXT NOT NULL)""")
         c.execute("""CREATE TABLE IF NOT EXISTS mac_vendor_cache(
@@ -248,7 +248,12 @@ def init_db():
             confidence TEXT NOT NULL DEFAULT 'low', source TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL DEFAULT '', last_seen TEXT NOT NULL,
             request_count INTEGER NOT NULL DEFAULT 0, info_json TEXT NOT NULL DEFAULT '{}')""")
         add_column_if_missing(c, "devices", "vendor", "TEXT NOT NULL DEFAULT ''")
-        add_column_if_missing(c, "devices", "first_seen", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(c, "devices", "first_seen", "TEXT NOT NULL DEFAULT ''" )
+        add_column_if_missing(c, "domains", "blocked_requests", "INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(c, "domains", "allowed_requests", "INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(c, "domains", "unknown_requests", "INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(c, "domains", "last_status", "TEXT NOT NULL DEFAULT 'Unknown'")
+        add_column_if_missing(c, "domains", "last_reason", "TEXT NOT NULL DEFAULT ''")
         c.execute("UPDATE devices SET first_seen=COALESCE(NULLIF(first_seen,''), last_seen) WHERE first_seen=''")
         c.execute("""CREATE TABLE IF NOT EXISTS device_ips(
             device_key TEXT NOT NULL, ip TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
@@ -547,6 +552,40 @@ def query_fingerprint(entry):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def query_status(reason, original_response=None):
+    reason = str(reason or "")
+    if reason.startswith("Filtered"):
+        return "Blocked"
+    if reason in {"NotFilteredWhiteList", "NotFilteredNotFound", "Rewrite", "RewriteEtcHosts", "RewriteRule", "FilteredSafeSearch"}:
+        return "Allowed"
+    if reason in {"NotFilteredError", "FilteredInvalid"}:
+        return "Unknown"
+    if original_response:
+        return "Allowed"
+    return "Unknown"
+
+
+def status_summary(blocked, allowed, unknown):
+    if blocked and allowed:
+        return "Mixed", "mixed"
+    if blocked:
+        return "Blocked", "blocked"
+    if allowed:
+        return "Allowed", "allowed"
+    return "Unknown", "unknown"
+
+
+def severity_for_classification(classification):
+    mapping = {
+        "Known service": ("Info", "info"),
+        "Known ownership": ("Info", "info"),
+        "Telemetry / tracking": ("Low", "low"),
+        "Advertising": ("Medium", "medium"),
+        "Suspicious": ("High", "high"),
+    }
+    return mapping.get(classification, ("Unknown", "unknown"))
+
+
 def upsert_device(c, device_key, name, hostname, mac, ips, source, info, now, increment=True):
     row = c.execute("SELECT request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
     dtype, icon, confidence = device_hint(name, hostname, info)
@@ -589,13 +628,21 @@ def ingest(force=False):
                 if not domain:
                     c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at) VALUES(?,?)", (fp, now))
                     continue
-                row = c.execute("SELECT clients_json FROM domains WHERE domain=?", (domain,)).fetchone()
+                qstatus = query_status(e.get("reason"), e.get("answer"))
+                row = c.execute("SELECT clients_json,blocked_requests,allowed_requests,unknown_requests FROM domains WHERE domain=?", (domain,)).fetchone()
                 clients = json.loads(row[0]) if row else {}
                 clients[device_key] = clients.get(device_key, 0) + 1
                 if row:
-                    c.execute("UPDATE domains SET last_seen=?, requests=requests+1, clients_json=? WHERE domain=?", (now, json.dumps(clients), domain))
+                    blocked, allowed, unknown = int(row[1] or 0), int(row[2] or 0), int(row[3] or 0)
+                    if qstatus == "Blocked": blocked += 1
+                    elif qstatus == "Allowed": allowed += 1
+                    else: unknown += 1
+                    c.execute("UPDATE domains SET last_seen=?, requests=requests+1, clients_json=?, blocked_requests=?, allowed_requests=?, unknown_requests=?, last_status=?, last_reason=? WHERE domain=?", (now, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), domain))
                 else:
-                    c.execute("INSERT INTO domains(domain,first_seen,last_seen,requests,clients_json) VALUES(?,?,?,?,?)", (domain, now, now, 1, json.dumps(clients)))
+                    blocked = 1 if qstatus == "Blocked" else 0
+                    allowed = 1 if qstatus == "Allowed" else 0
+                    unknown = 1 if qstatus == "Unknown" else 0
+                    c.execute("INSERT INTO domains(domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason) VALUES(?,?,?,?,?,?,?,?,?,?)", (domain, now, now, 1, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or "")))
                 old = c.execute("SELECT request_count FROM client_cache WHERE identifier=?", (ident,)).fetchone()
                 if old:
                     c.execute("""UPDATE client_cache SET name=?, source=?, last_seen=?, request_count=request_count+1, info_json=?, device_key=?, mac=?, hostname=? WHERE identifier=?""",
@@ -1108,7 +1155,7 @@ def inspect_html(result):
     dns_html = "".join(f"<a class='dns-ip link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in result['dns']) or "<span class='sub'>No A/AAAA result</span>"
     return f"""
 <div class='card'><h2>{_html(result['domain'])}</h2>
-<div><span class='tag {result['badge_class']}'>{_html(result['classification'])}</span>
+<div><span class='status-pill status-{result['status_class']}'>{_html(result['status'])}</span><span class='tag'>{_html(result['severity'])}</span><span class='tag {result['badge_class']}'>{_html(result['classification'])}</span>
 {f"<span class='tag'>{_html(result['tracker'].get('category'))}</span>" if result['tracker'].get('category') else ''}
 {f"<span class='tag'>{_html(result['tracker'].get('name'))}</span>" if result['tracker'].get('name') else ''}</div>
 {domain_external_tools(result['domain'])}
@@ -1193,14 +1240,32 @@ VENDOR_LOGOS = {
     "petkit": "/static/vendor-logos/petkit.svg",
 }
 
+VENDOR_FAVICONS = {
+    "dell": "/static/vendor-favicons/dell.ico",
+    "lg innotek": "/static/vendor-favicons/lg.ico",
+    "lge": "/static/vendor-favicons/lg.ico",
+    "lg": "/static/vendor-favicons/lg.ico",
+    "zte": "/static/vendor-favicons/zte.ico",
+    "bosch": "/static/vendor-favicons/bosch.ico",
+    "roborock": "/static/vendor-favicons/roborock.ico",
+    "beijing roborock technology": "/static/vendor-favicons/roborock.ico",
+    "petkit": "/static/vendor-favicons/petkit.ico",
+}
+
+def _local_static_exists(url):
+    if not url:
+        return False
+    return os.path.exists(os.path.join(BASE_DIR, url.lstrip("/")))
+
 def vendor_logo_url(vendor):
     text = str(vendor or "").lower()
+    for key, url in VENDOR_FAVICONS.items():
+        if key in text and _local_static_exists(url):
+            return url
     for key, url in VENDOR_LOGOS.items():
         if key in text:
             return url
     return ""
-
-
 
 
 def vendor_visual(vendor, logo_url="", large=False, fallback="◈"):
@@ -1252,9 +1317,10 @@ def build_explanation(domain, tracker, rdap, client_details, netify=None):
 def inspect_domain(domain):
     domain = domain.lower().rstrip(".")
     with sqlite3.connect(DB_PATH) as c:
-        row = c.execute("SELECT domain,first_seen,last_seen,requests,clients_json FROM domains WHERE domain=?", (domain,)).fetchone()
+        row = c.execute("SELECT domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason FROM domains WHERE domain=?", (domain,)).fetchone()
         if not row:
             return None
+        blocked_requests, allowed_requests, unknown_requests, last_status, last_reason = row[5], row[6], row[7], row[8], row[9]
         tracker = tracker_lookup(domain)
         # Slow external enrichment is read from local cache only. Missing or
         # expired data is refreshed asynchronously below.
@@ -1277,6 +1343,9 @@ def inspect_domain(domain):
     return {
         "domain": row[0], "first_seen": row[1], "last_seen": row[2], "requests": row[3], "clients": clients_map,
         "classification": classification, "badge_class": badge, "severity_class": severity, "tracker": tracker,
+        "status": status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))[0], "status_class": status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))[1],
+        "severity": severity_for_classification(classification)[0], "severity_text_class": severity_for_classification(classification)[1],
+        "status_counts": {"blocked": int(blocked_requests or 0), "allowed": int(allowed_requests or 0), "unknown": int(unknown_requests or 0)}, "last_status": last_status, "last_reason": last_reason,
         "company": {"name": tracker.get("company_name") or rdap.get("org") or netify.get("company_name") or netify.get("application") or "", "description": tracker.get("description", "") or netify.get("description", ""), "website_url": tracker.get("company_website", "") or tracker.get("website_url", "") or netify.get("website_url", ""), "country": tracker.get("country", "") or rdap.get("country", "") or netify.get("country", "")},
         "rdap": rdap, "netify": netify, "dns": dns, "dns_records": dns_records, "client_details": client_details,
         "explanation": build_explanation(domain, tracker, rdap, client_details, netify),
@@ -1284,9 +1353,9 @@ def inspect_domain(domain):
 
 def get_recent():
     with sqlite3.connect(DB_PATH) as c:
-        rows = c.execute("SELECT domain,requests,clients_json FROM domains ORDER BY requests DESC LIMIT 50").fetchall()
+        rows = c.execute("SELECT domain,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status FROM domains ORDER BY requests DESC LIMIT 50").fetchall()
         out = []
-        for domain, requests_count, clients_json in rows:
+        for domain, requests_count, clients_json, blocked_requests, allowed_requests, unknown_requests, last_status in rows:
             t = tracker_lookup(domain)
             r = rdap_lookup(domain)
             n = netify_lookup(domain)
@@ -1298,7 +1367,9 @@ def get_recent():
             for key, count in sorted(clients.items(), key=lambda kv: kv[1], reverse=True)[:6]:
                 d = client_display(c, key, count)
                 device_rows.append({"device_key": d.get("device_key", key), "identifier": d.get("identifier", key), "name": d.get("hostname") or d.get("name") or d.get("vendor") or d.get("display_name") or key, "icon": d.get("icon", "📦"), "vendor_logo": d.get("vendor_logo", "")})
-            out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "devices": device_rows, "classification": cls, "badge_class": badge, "severity_class": severity})
+            status, status_class = status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))
+            sev, sev_class = severity_for_classification(cls)
+            out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "devices": device_rows, "classification": cls, "badge_class": badge, "severity_class": severity, "severity": sev, "severity_text_class": sev_class, "status": status, "status_class": status_class, "last_status": last_status})
     return out
 
 
@@ -1393,12 +1464,12 @@ def recent_html(recent):
     rows = []
     for r in recent:
         rows.append(
-            f"<tr data-sort-domain='{_html(r['domain'])}' data-sort-activity='{int(r['requests'])}' data-sort-devices='{int(r['clients'])}' data-sort-classification='{_html(r['classification'])}'>"
+            f"<tr data-sort-domain='{_html(r['domain'])}' data-sort-activity='{int(r['requests'])}' data-sort-devices='{int(r['clients'])}' data-sort-status='{_html(r['status'])}' data-sort-severity='{_html(r['severity'])}' data-sort-classification='{_html(r['classification'])}'>"
             f"<td><a class='glance-domain' href='/search?q={quote(r['domain'], safe='')}'>{_html(r['domain'])}</a><div class='glance-meta'><span>{int(r['requests'])} requests</span><span>·</span><span>{int(r['clients'])} device{'s' if int(r['clients']) != 1 else ''}</span></div></td>"
             f"<td><b>{int(r['requests'])}</b> requests</td><td class='glance-devices'><div class='device-list'>"
             + ''.join(f"<a class='device-chip link-device' href='/device?key={quote(d.get('identifier') or d.get('device_key') or '', safe='')}'>{vendor_visual(d.get('vendor',''), d.get('vendor_logo',''), False, d.get('icon','📦'))}{_html(d.get('name') or d.get('identifier') or '')}</a>" for d in r.get('devices', []))
             + ("<span class='sub'>No identified devices</span>" if not r.get('devices') else "")
-            + f"</div></td><td><span class='dot dot-{r['severity_class']}'></span><span class='tag {r['badge_class']}'>{_html(r['classification'])}</span></td></tr>"
+            + f"</div></td><td><span class='status-pill status-{r['status_class']}'>{_html(r['status'])}</span></td><td><span class='severity-{r['severity_text_class']}'>{_html(r['severity'])}</span></td><td><span class='dot dot-{r['severity_class']}'></span><span class='tag {r['badge_class']}'>{_html(r['classification'])}</span></td></tr>"
         )
     return ''.join(rows)
 
