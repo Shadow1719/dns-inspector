@@ -1330,6 +1330,16 @@ def state_payload(q=""):
     return {"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "inspect_html": inspect_html(result) if result else None}
 
 
+def client_display(c, device_key, count):
+    row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
+    if row:
+        _, name, hostname, mac, vendor, dtype, icon, confidence, source, total = row
+        ips = device_ip_list(c, device_key)
+        display = hostname or name or vendor or device_key
+        return {"device_key": device_key, "identifier": device_key, "display_name": hostname or name or vendor or display, "name": name, "hostname": hostname, "mac": mac, "vendor": vendor, "vendor_logo": vendor_logo_url(vendor), "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
+    return {"device_key": device_key, "identifier": device_key, "display_name": device_key, "name": "", "hostname": "", "mac": "", "vendor": "", "type": "IoT / Unknown", "icon": "📦", "confidence_label": "low", "source": "historical", "requests": count, "ips": [], "total_requests": count}
+
+
 def reconcile_neighbors():
     """Merge legacy IP-keyed devices into MAC-keyed devices using neighbors.txt."""
     neighbors = load_neighbors()
@@ -1361,7 +1371,16 @@ def reconcile_neighbors():
                 c.execute("""INSERT INTO devices(device_key,name,hostname,mac,device_type,icon,confidence,source,last_seen,request_count,info_json)
                              VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                           (new_key, old[0], old[1], mac, old[3], old[4], old[5], old[6], old[7], old[8], old[9]))
-            c.execute("UPDATE device_ips SET device_key=? WHERE device_key=?", (new_key, old_key))
+            # Move IP observations without violating the UNIQUE(device_key, ip) constraint.
+            old_ips = c.execute("SELECT ip,last_seen FROM device_ips WHERE device_key=?", (old_key,)).fetchall()
+            for old_ip, old_ip_seen in old_ips:
+                existing = c.execute("SELECT last_seen FROM device_ips WHERE device_key=? AND ip=?", (new_key, old_ip)).fetchone()
+                if existing:
+                    keep_seen = existing[0] if (existing[0] or "") >= (old_ip_seen or "") else old_ip_seen
+                    c.execute("UPDATE device_ips SET last_seen=? WHERE device_key=? AND ip=?", (keep_seen, new_key, old_ip))
+                    c.execute("DELETE FROM device_ips WHERE device_key=? AND ip=?", (old_key, old_ip))
+                else:
+                    c.execute("UPDATE device_ips SET device_key=? WHERE device_key=? AND ip=?", (new_key, old_key, old_ip))
             c.execute("DELETE FROM devices WHERE device_key=?", (old_key,))
             changed += 1
 
