@@ -20,7 +20,7 @@ try:
 except Exception:
     APP_VERSION = os.getenv("APP_VERSION", "dev")
 
-AGH_URL = os.getenv("AGH_URL", "http://192.168.1.100:30004").rstrip("/")
+AGH_URL = os.getenv("AGH_URL", "").rstrip("/")
 AGH_USER = os.getenv("AGH_USER", "")
 AGH_PASS = os.getenv("AGH_PASS", "")
 POLL_SECONDS = max(5, int(os.getenv("POLL_SECONDS", "10")))
@@ -37,7 +37,9 @@ RDAP_URL = os.getenv("RDAP_URL", "https://rdap.org/domain/").rstrip("/")
 MACVENDOR_URL = os.getenv("MACVENDOR_URL", "https://api.macvendors.com").rstrip("/")
 MACVENDOR_CACHE_HOURS = int(os.getenv("MACVENDOR_CACHE_HOURS", "168"))
 HOSTNAME_CACHE_HOURS = int(os.getenv("HOSTNAME_CACHE_HOURS", "24"))
-NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "168"))
+NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "360"))
+RDAP_CACHE_HOURS = int(os.getenv("RDAP_CACHE_HOURS", "720"))
+DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "168"))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
 app = Flask(__name__)
@@ -47,6 +49,8 @@ last_ingest_at = 0.0
 neighbors_lock = threading.Lock()
 neighbors_cache = {}
 neighbors_mtime = None
+enrichment_lock = threading.Lock()
+enrichment_refreshing = set()
 
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
@@ -110,9 +114,12 @@ function deviceRow(c){
   const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)} ${externalButton(`https://www.google.com/search?q=${encodeURIComponent(c.vendor)}`,'','')}</div>` : '';
   const mac = c.mac ? `<div class="technical mono">${esc(c.mac)} ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}</div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
-  const primary = c.hostname || c.name || c.vendor || c.display_name || c.identifier;
+  const linkedPrimary = c.hostname || c.name || c.display_name || '';
+  const primary = linkedPrimary || c.vendor || c.identifier;
+  const primaryHtml = linkedPrimary ? deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device') : `<div class="device-name">${esc(primary)}</div>`;
   const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark-lg">${esc(c.icon || '◈')}</span>`;
-  return `<tr><td><div class="device">${deviceLink(c, visual)}<span>${deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device')}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  const visualHtml = linkedPrimary ? deviceLink(c, visual) : visual;
+  return `<tr><td><div class="device">${visualHtml}<span>${primaryHtml}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => {
@@ -650,7 +657,7 @@ def _netify_value(obj, *keys):
     return ""
 
 
-def netify_lookup(domain):
+def netify_lookup(domain, force=False):
     """Best-effort enrichment from Netify's public hostname pages.
     Netify's paid Hostname API requires a key, so the Inspector uses the public
     hostname/application pages as secondary evidence and caches the result.
@@ -663,10 +670,12 @@ def netify_lookup(domain):
             row = c.execute("SELECT fetched_at,json FROM netify_cache WHERE domain=?", (domain,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
-            if age.total_seconds() < NETIFY_CACHE_HOURS * 3600:
+            if (not force) or age.total_seconds() < NETIFY_CACHE_HOURS * 3600:
                 return json.loads(row[1])
     except Exception:
         pass
+    if not force:
+        return {}
 
     result = {}
     candidates = [domain]
@@ -793,7 +802,7 @@ def netify_lookup(domain):
     return result
 
 
-def rdap_lookup(domain):
+def rdap_lookup(domain, force=False):
     domain = str(domain or '').strip('.').lower()
     candidates = [domain]
     apex = apex_domain(domain)
@@ -805,11 +814,13 @@ def rdap_lookup(domain):
                 row = c.execute("SELECT fetched_at,json FROM rdap_cache WHERE domain=?", (candidate,)).fetchone()
             if row:
                 age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
-                if age.total_seconds() < 86400:
+                if (not force) or age.total_seconds() < RDAP_CACHE_HOURS * 3600:
                     cached = json.loads(row[1])
                     if cached.get("org") or candidate == apex:
                         cached["queried_domain"] = candidate
                         return cached
+            if not force:
+                continue
 
             r = requests.get(f"{RDAP_URL}/{quote(candidate, safe='')}", timeout=8, allow_redirects=True)
             result = {}
@@ -850,7 +861,7 @@ def rdap_lookup(domain):
     return {}
 
 
-def dns_records_lookup(domain):
+def dns_records_lookup(domain, force=False):
     """Resolve useful public DNS records through DNS-over-HTTPS.
     DNSChecker remains an external verification link; the Inspector uses direct
     DNS queries so its fields can be populated automatically without scraping UI.
@@ -863,10 +874,12 @@ def dns_records_lookup(domain):
             row = c.execute("SELECT fetched_at,json FROM dns_records_cache WHERE domain=?", (domain,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
-            if age.total_seconds() < 86400:
+            if (not force) or age.total_seconds() < DNS_RECORDS_CACHE_HOURS * 3600:
                 return json.loads(row[1])
     except Exception:
         pass
+    if not force:
+        return {}
 
     records = {}
     for rtype in ("A", "AAAA", "CNAME", "NS", "MX", "TXT", "SOA", "CAA", "SRV"):
@@ -898,94 +911,56 @@ def dns_records_lookup(domain):
     return records
 
 
-def resolve_dns(domain):
-    ips = []
+def _cache_needs_refresh(table, domain, max_age_hours):
+    """Return True when a cache row is missing or older than its TTL."""
     try:
-        for item in socket.getaddrinfo(domain, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
-            ip = item[4][0]
-            if ip not in ips:
-                ips.append(ip)
+        with sqlite3.connect(DB_PATH) as c:
+            row = c.execute(f"SELECT fetched_at FROM {table} WHERE domain=?", (domain,)).fetchone()
+        if not row:
+            return True
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
+        return age.total_seconds() >= max_age_hours * 3600
     except Exception:
-        pass
+        return True
+
+
+def refresh_domain_enrichment(domain):
+    """Refresh slow external enrichment in the background, never in the request path."""
+    domain = str(domain or '').strip('.').lower()
+    if not domain:
+        return
+    with enrichment_lock:
+        if domain in enrichment_refreshing:
+            return
+        enrichment_refreshing.add(domain)
+
+    def run():
+        try:
+            netify_lookup(domain, force=True)
+            rdap_lookup(domain, force=True)
+            dns_records_lookup(domain, force=True)
+        except Exception as e:
+            print("enrichment refresh error:", repr(e), flush=True)
+        finally:
+            with enrichment_lock:
+                enrichment_refreshing.discard(domain)
+
+    threading.Thread(target=run, daemon=True, name=f"enrich:{domain}").start()
+
+
+def resolve_dns(domain, records=None):
+    """Return A/AAAA values exclusively from the local DNS-record cache.
+    A missing cache is intentionally not resolved synchronously; the background
+    enrichment worker will populate it without delaying the page.
+    """
+    records = records or {}
+    ips = []
+    for rtype in ("A", "AAAA"):
+        for value in records.get(rtype, []) or []:
+            value = str(value).strip()
+            if value and value not in ips:
+                ips.append(value)
     return ips[:12]
-
-
-def classify(tracker, rdap):
-    cat = (tracker.get("category") or "").lower()
-    if cat == "advertising":
-        return "Advertising", "orange", "orange"
-    if cat in {"site_analytics", "social_media", "extensions"}:
-        return "Tracker / telemetry", "yellow", "yellow"
-    if cat:
-        return "Known TrackerDB service", "green", "green"
-    if rdap.get("org"):
-        return "Known ownership", "blue", "blue"
-    return "Unknown", "gray", "gray"
-
-
-def device_hint(name, hostname, info):
-    text = " ".join([str(name or ""), str(hostname or ""), json.dumps(info or {})]).lower()
-    if any(x in text for x in ("webos", "smart tv", "smart-tv", "oled", "qn ed", "lgtv", "television")):
-        return "TV", "📺", "high"
-    if any(x in text for x in ("aircon", "air conditioner", "air-conditioner", "lg ac", "climat")):
-        return "AC", "❄️", "high"
-    if any(x in text for x in ("dryer", "tumble")):
-        return "Dryer", "🧺", "medium"
-    if any(x in text for x in ("washer", "washing machine")):
-        return "Washing machine", "🧺", "medium"
-    if any(x in text for x in ("iphone", "ipad", "android", "pixel", "galaxy")):
-        return "Phone / Tablet", "📱", "medium"
-    if any(x in text for x in ("macbook", "laptop", "windows", "desktop", "pc")):
-        return "Computer", "💻", "medium"
-    if any(x in text for x in ("playstation", "xbox", "switch")):
-        return "Console", "🎮", "medium"
-    if any(x in text for x in ("camera", "cam-", "ipc")):
-        return "Camera", "📷", "medium"
-    if any(x in text for x in ("speaker", "sonos", "echo", "homepod")):
-        return "Speaker", "🔊", "medium"
-    if any(x in text for x in ("router", "gateway", "switch", "access point", "ap-")):
-        return "Network", "🛜", "medium"
-    return "IoT / Unknown", "📦", "low"
-
-
-def device_ip_list(c, device_key):
-    rows = c.execute("SELECT ip,last_seen FROM device_ips WHERE device_key=? ORDER BY last_seen DESC LIMIT 6", (device_key,)).fetchall()
-    return [r[0] for r in rows]
-
-
-VENDOR_LOGOS = {
-    "dell": "/static/vendor-logos/dell.svg",
-    "lg innotek": "/static/vendor-logos/lg.svg",
-    "lge": "/static/vendor-logos/lg.svg",
-    "lg": "/static/vendor-logos/lg.svg",
-    "zte": "/static/vendor-logos/zte.svg",
-    "bosch": "/static/vendor-logos/bosch.svg",
-    "roborock": "/static/vendor-logos/roborock.svg",
-    "beijing roborock technology": "/static/vendor-logos/roborock.svg",
-    "petkit": "/static/vendor-logos/petkit.svg",
-}
-
-def vendor_logo_url(vendor):
-    text = str(vendor or "").lower()
-    for key, url in VENDOR_LOGOS.items():
-        if key in text:
-            return url
-    return ""
-
-
-def client_display(c, device_key, count):
-    row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
-    if row:
-        _, name, hostname, mac, vendor, dtype, icon, confidence, source, total = row
-        ips = device_ip_list(c, device_key)
-        display = hostname or name or vendor or device_key
-        return {"device_key": device_key, "identifier": device_key, "display_name": hostname or name or vendor or display, "name": name, "hostname": hostname, "mac": mac, "vendor": vendor, "vendor_logo": vendor_logo_url(vendor), "type": dtype, "icon": icon, "confidence_label": confidence, "source": source, "requests": count, "ips": ips, "total_requests": total}
-    return {"device_key": device_key, "identifier": device_key, "display_name": device_key, "name": "", "hostname": "", "mac": "", "vendor": "", "type": "IoT / Unknown", "icon": "📦", "confidence_label": "low", "source": "historical", "requests": count, "ips": [], "total_requests": count}
-
-
-def external_button(url, label, icon="↗"):
-    return f"<a class='external-tool' href='{_html(url)}' target='_blank' rel='noopener noreferrer'>{_html(icon)} {_html(label)}</a>"
-
 
 def inline_external_button(url, title, icon="↗"):
     glyph = "<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='11' cy='11' r='6.5'></circle><path d='M16 16l5 5'></path></svg>" if icon == "" else _html(icon)
@@ -1036,7 +1011,10 @@ def inspect_html(result):
     client_rows = []
     for c in result["client_details"]:
         key = quote(c.get("device_key", ""), safe="")
-        name = _html(c.get("display_name") or c.get("name") or c.get("vendor") or c.get("device_key") or "Unknown")
+        linked_name = c.get("display_name") or c.get("name") or ""
+        name_value = linked_name or c.get("vendor") or c.get("device_key") or "Unknown"
+        name = _html(name_value)
+        name_html = f"<a class='link-device' href='/device?key={key}'><div class='device-name'>{name}</div></a>" if linked_name else f"<div class='device-name'>{name}</div>"
         logo = vendor_visual(c.get("vendor"), c.get("vendor_logo"), True, c.get("icon", "◈"))
         vendor_tools = inline_external_button(vendor_lookup_url(c.get('vendor')), "Vendor lookup", "") if c.get('vendor') else ""
         vendor = f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}{vendor_tools}</div>" if c.get("vendor") else ""
@@ -1044,7 +1022,7 @@ def inspect_html(result):
         mac = _html(c.get("mac") or "—")
         mac_tools = inline_external_button(mac_lookup_url(c.get("mac")), "MAC vendor lookup", "") if c.get("mac") else ""
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get("ips", [])) or '—'
-        client_rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={key}'>{logo}</a><span><a class='link-device' href='/device?key={key}'><div class='device-name'>{name}</div></a>{vendor}{host}<div class='confidence'>{_html(c.get('type'))} · {_html(c.get('confidence_label'))}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
+        client_rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={key}'>{logo}</a><span>{name_html}{vendor}{host}<div class='confidence'>{_html(c.get('type'))} · {_html(c.get('confidence_label'))}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     clients_html = ''.join(client_rows)
     e = result["explanation"]
     evidence_html = "".join(f"<li>{_html(x)}</li>" for x in e["evidence"])
@@ -1127,19 +1105,31 @@ def inspect_domain(domain):
         if not row:
             return None
         tracker = tracker_lookup(domain)
+        # Slow external enrichment is read from local cache only. Missing or
+        # expired data is refreshed asynchronously below.
         rdap = rdap_lookup(domain)
         netify = netify_lookup(domain)
+        dns_records = dns_records_lookup(domain)
         classification, badge, severity = classify(tracker, rdap)
         clients_map = canonicalize_client_map(json.loads(row[4] or "{}"))
         client_details = [client_display(c, key, count) for key, count in sorted(clients_map.items(), key=lambda kv: kv[1], reverse=True)]
+
+    needs_refresh = (
+        _cache_needs_refresh("netify_cache", domain, NETIFY_CACHE_HOURS)
+        or _cache_needs_refresh("rdap_cache", apex_domain(domain), RDAP_CACHE_HOURS)
+        or _cache_needs_refresh("dns_records_cache", domain, DNS_RECORDS_CACHE_HOURS)
+    )
+    if needs_refresh:
+        refresh_domain_enrichment(domain)
+
+    dns = resolve_dns(domain, dns_records)
     return {
         "domain": row[0], "first_seen": row[1], "last_seen": row[2], "requests": row[3], "clients": clients_map,
         "classification": classification, "badge_class": badge, "severity_class": severity, "tracker": tracker,
         "company": {"name": tracker.get("company_name") or rdap.get("org") or netify.get("company_name") or netify.get("application") or "", "description": tracker.get("description", "") or netify.get("description", ""), "website_url": tracker.get("company_website", "") or tracker.get("website_url", "") or netify.get("website_url", ""), "country": tracker.get("country", "") or rdap.get("country", "") or netify.get("country", "")},
-        "rdap": rdap, "netify": netify, "dns": resolve_dns(domain), "dns_records": dns_records_lookup(domain), "client_details": client_details,
+        "rdap": rdap, "netify": netify, "dns": dns, "dns_records": dns_records, "client_details": client_details,
         "explanation": build_explanation(domain, tracker, rdap, client_details, netify),
     }
-
 
 def get_recent():
     with sqlite3.connect(DB_PATH) as c:
@@ -1233,10 +1223,17 @@ def detail_html_device(d):
 
 
 def detail_html_ip(d):
-    devices = "".join(f"<tr><td><a class='link-device' href='/device?key={quote(x['device_key'], safe='')}'>{vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'))}{_html(x.get('hostname') or x.get('name') or x.get('vendor') or x['device_key'])}</a></td><td class='mono'>{_html(x.get('mac') or '—')} {inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>" for x in d['devices']) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
+    device_rows = []
+    for x in d['devices']:
+        href = quote(x['device_key'], safe='')
+        linked_primary = x.get('hostname') or x.get('name') or x.get('display_name') or ''
+        primary = linked_primary or x.get('vendor') or x['device_key']
+        label = f"<a class='link-device' href='/device?key={href}'>{_html(primary)}</a>" if linked_primary else _html(primary)
+        visual = vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'))
+        device_rows.append(f"<tr><td>{visual}{label}</td><td class='mono'>{_html(x.get('mac') or '—')} {inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>")
+    devices = ''.join(device_rows) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
     domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No DNS activity recorded.</td></tr>"
     return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><h2 class='mono'>{_html(d['ip'])}</h2><p class='muted'>IP observation · {len(d['devices'])} known device(s)</p><h3>Known devices</h3><table><thead><tr><th>Device</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{devices}</tbody></table><h3>Domains contacted</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
-
 
 def recent_html(recent):
     return "".join(f"<tr><td><a href='/search?q={quote(r['domain'], safe='')}'>{_html(r['domain'])}</a></td><td>{r['requests']}</td><td>{r['clients']}</td><td><span class='dot dot-{r['severity_class']}'></span><span class='tag {r['badge_class']}'>{_html(r['classification'])}</span></td></tr>" for r in recent)
@@ -1247,7 +1244,9 @@ def clients_html(clients):
     for c in clients:
         key = c.get('identifier','')
         href = quote(key, safe='')
-        primary = c.get('hostname') or c.get('name') or c.get('vendor') or c.get('display_name') or key
+        linked_primary = c.get('hostname') or c.get('name') or c.get('display_name') or ''
+        primary = linked_primary or c.get('vendor') or key
+        primary_html = f"<a class='link-device' href='/device?key={href}'><div class='device-name'>{_html(primary)}</div></a>" if linked_primary else f"<div class='device-name'>{_html(primary)}</div>"
         secondary = []
         if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}{inline_external_button(vendor_lookup_url(c.get('vendor')), 'Vendor lookup', '')}</div>")
         if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'><a class='link-device' href='/device?key={href}'>HOST {_html(c['hostname'])}</a></div>")
@@ -1255,7 +1254,7 @@ def clients_html(clients):
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get('ips', [])) or '—'
         mac = _html(c.get('mac') or '—')
         mac_tools = inline_external_button(mac_lookup_url(c.get('mac')), 'MAC vendor lookup', '') if c.get('mac') else ''
-        rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={href}'>{visual}</a><span><a class='link-device' href='/device?key={href}'><div class='device-name'>{_html(primary)}</div></a>{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
+        rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={href}'>{visual}</a><span>{primary_html}{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     return ''.join(rows)
 
 

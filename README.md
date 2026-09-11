@@ -74,7 +74,9 @@ Read-only local DNS visibility tool for AdGuard Home.
 - `MACVENDOR_CACHE_HOURS` (default `168`)
 - `HOSTNAME_CACHE_HOURS` (default `24`)
 - `NETIFY_URL` (default `https://www.netify.ai/resources/hostnames/`)
-- `NETIFY_CACHE_HOURS` (default `168`)
+- `NETIFY_CACHE_HOURS` (default `360` / 15 days)
+- `RDAP_CACHE_HOURS` (default `720` / 30 days)
+- `DNS_RECORDS_CACHE_HOURS` (default `168` / 7 days)
 
 ## Device identity
 The app prefers a stable AdGuard client identifier or MAC address when AdGuard exposes one. IP addresses are stored as observations and are not treated as permanent device identities.
@@ -93,3 +95,14 @@ Polish release before v0.6:
 - vendor names and MAC addresses are plain text, not hyperlinks;
 - external vendor/MAC lookup is represented by a compact magnifier button placed immediately to the right of the value;
 - keeps internal device/IP navigation separate from external lookups.
+
+## v0.5.7
+- Added persistent local enrichment caching for Netify, RDAP and DNS records.
+- Inspect pages now read cached enrichment immediately and never wait on slow external enrichment requests.
+- Missing or expired enrichment is refreshed in the background and stored in SQLite for the next visit.
+- Default cache TTLs: Netify 15 days, RDAP 30 days, DNS records 7 days; override with `NETIFY_CACHE_HOURS`, `RDAP_CACHE_HOURS`, and `DNS_RECORDS_CACHE_HOURS`.
+- DNS A/AAAA display reuses the DNS records cache instead of performing a second live lookup when cached records exist.
+- Vendor/MAC text is no longer treated as an internal device link when vendor is only the fallback identity; the external magnifier remains the lookup action.
+- Removed the hardcoded local AdGuard URL from the application defaults; configure `AGH_URL` explicitly in the container environment.
+
+The request path never performs a slow external enrichment fetch. Cached data is served immediately; missing or expired Netify/RDAP/DNS enrichment is refreshed by a deduplicated background worker.
