@@ -2,12 +2,21 @@
 
 Read-only local DNS visibility tool for AdGuard Home.
 
+## v0.5.2
+- bundles supported vendor marks locally under `static/vendor-logos/`, so the UI no longer depends on a third-party CDN for vendor imagery
+- uses the vendor mark as the leading device visual when available, replacing the generic box for known vendors
+- keeps a generic device icon only when no vendor mark is available
+
+## v0.5.1
+- makes device names, MAC identities, and IP addresses clickable for contextual inspection
+- adds device/IP-focused views while preserving the read-only architecture
+
 ## v0.5.0
 - adds explainable “Why is this here?” signals with evidence and confidence levels
 - uses severity-aware colors for telemetry, advertising, known services, ownership, and unknown domains
 - presents DNS addresses as readable IP chips instead of a dense comma-separated line
 - makes the live timestamp human-readable with separate time and date styling
-- shows vendor logos for supported manufacturers with a generic fallback
+- shows vendor marks for supported manufacturers with a generic fallback
 - keeps the UI read-only and preserves MAC-based device identity
 
 ## v0.4.6

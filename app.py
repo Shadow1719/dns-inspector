@@ -55,7 +55,7 @@ HTML = """
 :root{color-scheme:dark}
 *{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:28px;max-width:1450px;margin-inline:auto}
-h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}.updated-time{color:#58a6ff;font-weight:700}.updated-date{color:#8b949e}.signal{border-left:3px solid #30363d;padding:10px 12px;background:#0d1117;border-radius:8px}.signal-green{border-color:#3fb950}.signal-blue{border-color:#58a6ff}.signal-yellow{border-color:#d29922}.signal-orange{border-color:#db6d28}.signal-red{border-color:#f85149}.signal-gray{border-color:#8b949e}.signal-title{font-weight:750;margin-bottom:5px}.evidence{margin:6px 0 0;padding-left:18px;color:#c9d1d9}.evidence li{margin:3px 0}.confidence-high{color:#3fb950;font-weight:700}.confidence-medium{color:#d29922;font-weight:700}.confidence-low{color:#8b949e;font-weight:700}.dns-list{display:flex;flex-wrap:wrap;gap:6px}.dns-ip{display:inline-block;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#161b22;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}.vendor-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:6px;border-radius:4px}.vendor-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:6px;border-radius:5px;background:#30363d;font-size:.7rem}
+h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}.updated-time{color:#58a6ff;font-weight:700}.updated-date{color:#8b949e}.signal{border-left:3px solid #30363d;padding:10px 12px;background:#0d1117;border-radius:8px}.signal-green{border-color:#3fb950}.signal-blue{border-color:#58a6ff}.signal-yellow{border-color:#d29922}.signal-orange{border-color:#db6d28}.signal-red{border-color:#f85149}.signal-gray{border-color:#8b949e}.signal-title{font-weight:750;margin-bottom:5px}.evidence{margin:6px 0 0;padding-left:18px;color:#c9d1d9}.evidence li{margin:3px 0}.confidence-high{color:#3fb950;font-weight:700}.confidence-medium{color:#d29922;font-weight:700}.confidence-low{color:#8b949e;font-weight:700}.dns-list{display:flex;flex-wrap:wrap;gap:6px}.dns-ip{display:inline-block;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#161b22;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}.vendor-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:6px;border-radius:4px}.vendor-logo-lg{width:30px;height:30px;object-fit:contain;flex:0 0 30px}.vendor-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:6px;border-radius:5px;background:#30363d;font-size:.7rem}.vendor-mark-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;font-size:.75rem;font-weight:800}
 .toolbar{display:flex;gap:8px;align-items:center;margin:20px 0 4px}.toolbar input{flex:1;min-width:0}.toolbar button{white-space:nowrap}
 input,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;padding:10px 13px;border-radius:8px;font:inherit}button{cursor:pointer}button:hover{border-color:#58a6ff}
 .card{background:#11161d;border:1px solid #30363d;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
@@ -103,7 +103,7 @@ function deviceRow(c){
   const mac = c.mac ? `<div class="technical mono">${esc(c.mac)}</div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
   const primary = c.hostname || c.name || c.vendor || c.display_name || c.identifier;
-  return `<tr><td><div class="device"><span class="icon">${esc(c.icon)}</span><span><div class="device-name">${esc(primary)}</div>${vendor}${host}${mac}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span></td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark-lg">${esc(c.icon || '◈')}</span>`; return `<tr><td><div class="device"><span>${visual}</span><span><div class="device-name">${esc(primary)}</div>${vendor}${host}${mac}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td><span class="mono">${esc(c.identifier)}</span></td><td>${ips || '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => {
@@ -696,15 +696,15 @@ def device_ip_list(c, device_key):
 
 
 VENDOR_LOGOS = {
-    "dell": "https://cdn.simpleicons.org/dell",
-    "lg innotek": "https://cdn.simpleicons.org/lg",
-    "lge": "https://cdn.simpleicons.org/lg",
-    "lg": "https://cdn.simpleicons.org/lg",
-    "zte": "https://cdn.simpleicons.org/zte",
-    "bosch": "https://cdn.simpleicons.org/bosch",
-    "roborock": "https://cdn.simpleicons.org/roborock",
-    "beijing roborock technology": "https://cdn.simpleicons.org/roborock",
-    "petkit": "https://cdn.simpleicons.org/petkit",
+    "dell": "/static/vendor-logos/dell.svg",
+    "lg innotek": "/static/vendor-logos/lg.svg",
+    "lge": "/static/vendor-logos/lg.svg",
+    "lg": "/static/vendor-logos/lg.svg",
+    "zte": "/static/vendor-logos/zte.svg",
+    "bosch": "/static/vendor-logos/bosch.svg",
+    "roborock": "/static/vendor-logos/roborock.svg",
+    "beijing roborock technology": "/static/vendor-logos/roborock.svg",
+    "petkit": "/static/vendor-logos/petkit.svg",
 }
 
 def vendor_logo_url(vendor):
@@ -727,7 +727,7 @@ def client_display(c, device_key, count):
 
 def inspect_html(result):
     if not result: return ""
-    clients_html = "".join(f"<tr><td><div class='device'><span class='icon'>{_html(c['icon'])}</span><span><div class='device-name'>{_html(c['display_name'])}</div>{f"<div class='sub'>{('<img class=\"vendor-logo\" src=\"' + _html(c.get('vendor_logo')) + '\" alt=\"\" loading=\"lazy\">') if c.get('vendor_logo') else ''}{_html(c['vendor'])}</div>" if c.get('vendor') else ''}{f"<div class='sub mono'>HOST {_html(c['hostname'])}</div>" if c.get('hostname') and c.get('hostname') != c.get('display_name') else ''}{f"<div class='technical mono'>{_html(c['mac'])}</div>" if c.get('mac') else ''}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(', '.join(c['ips']) or '—')}</td><td class='mono'>{_html(c['mac'] or '—')}</td><td>{c['requests']}</td></tr>" for c in result["client_details"])
+    clients_html = "".join(f"<tr><td><div class='device'><span>{vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))}</span><span><div class='device-name'>{_html(c['display_name'])}</div>{f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}</div>" if c.get('vendor') else ''}{f"<div class='sub mono'>HOST {_html(c['hostname'])}</div>" if c.get('hostname') and c.get('hostname') != c.get('display_name') else ''}{f"<div class='technical mono'>{_html(c['mac'])}</div>" if c.get('mac') else ''}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(', '.join(c['ips']) or '—')}</td><td class='mono'>{_html(c['mac'] or '—')}</td><td>{c['requests']}</td></tr>" for c in result["client_details"])
     e=result["explanation"]
     evidence_html="".join(f"<li>{_html(x)}</li>" for x in e["evidence"])
     dns_html="".join(f"<span class='dns-ip'>{_html(ip)}</span>" for ip in result['dns']) or "<span class='sub'>No A/AAAA result</span>"
@@ -754,6 +754,14 @@ def inspect_html(result):
 def _html(v):
     s = str(v or "")
     return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;"))
+
+
+def vendor_visual(vendor, logo_url="", large=False, fallback="◈"):
+    cls = "vendor-logo-lg" if large else "vendor-logo"
+    mark_cls = "vendor-mark-lg" if large else "vendor-mark"
+    if logo_url:
+        return f"<img class=\"{cls}\" src=\"{_html(logo_url)}\" alt=\"\" loading=\"lazy\">"
+    return f"<span class=\"{mark_cls}\">{_html(fallback)}</span>"
 
 
 def canonicalize_client_map(clients):
@@ -850,7 +858,7 @@ def clients_html(clients):
         if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}</div>")
         if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'>HOST {_html(c['hostname'])}</div>")
         if c.get('mac'): secondary.append(f"<div class='technical mono'>{_html(c['mac'])}</div>")
-        rows.append(f"<tr><td><div class='device'><span class='icon'>{_html(c['icon'])}</span><span><div class='device-name'>{_html(primary)}</div>{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(c['identifier'])}</td><td>{''.join(f"<span class='client-chip mono'>{_html(ip)}</span>" for ip in c['ips']) or '—'}</td><td>{c['requests']}</td></tr>")
+        rows.append(f"<tr><td><div class='device'><span>{vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))}</span><span><div class='device-name'>{_html(primary)}</div>{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td class='mono'>{_html(c['identifier'])}</td><td>{''.join(f"<span class='client-chip mono'>{_html(ip)}</span>" for ip in c['ips']) or '—'}</td><td>{c['requests']}</td></tr>")
     return ''.join(rows)
 
 
