@@ -400,3 +400,9 @@ DNS Inspector is an independent project. External services and datasets used for
 - Classification keeps conservative semantics: Advertising, Telemetry / tracking, Known service, Known ownership, and Unknown.
 - Robust client-side navigation for IP, device and domain links.
 
+
+## 0.6.3
+
+- Added a local SVG favicon for the DNS Inspector web UI.
+- The favicon is served from the application itself (`/static/favicon.svg`), so it does not depend on an external CDN or third-party asset host.
+- Added the favicon directly to the container image via the existing `static` directory packaging.

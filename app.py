@@ -56,7 +56,7 @@ MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
 
 HTML = """
-<!doctype html><html><head><meta charset="utf-8"><title>DNS Inspector</title>
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><title>DNS Inspector</title>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
