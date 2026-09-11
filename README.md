@@ -393,7 +393,7 @@ This prevents the Inspector from becoming a second DNS policy engine and lets th
 
 DNS Inspector is an independent project. External services and datasets used for enrichment are subject to their own terms, licenses and availability.
 
-## v0.6.4
+## v0.6.5
 
 - kept **Classification** and moved it two columns to the right in Overview;
 - added **Status** with Allowed / Blocked / Mixed / Unknown semantics derived from AdGuard query-log reasons;
@@ -411,3 +411,9 @@ DNS Inspector is an independent project. External services and datasets used for
 - Classification keeps conservative semantics: Advertising, Telemetry / tracking, Known service, Known ownership, and Unknown.
 - Robust client-side navigation for IP, device and domain links.
 
+
+
+### v0.6.5
+- Replaces platform-dependent stock emoji device icons with consistent local SVG device-type icons.
+- Removes global click interception so native IP/device/domain links navigate normally.
+- Keeps IP detail focused on known devices and domains contacted.
