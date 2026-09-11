@@ -2,6 +2,15 @@
 
 Read-only local DNS visibility tool for AdGuard Home.
 
+## v0.5.5
+- completes domain **Who** enrichment by using Netify public hostname intelligence as secondary evidence when TrackerDB/RDAP do not identify the owner
+- falls back to the registered/apex domain for RDAP when a hostname-level lookup is unavailable
+- extracts RDAP organization/country/registrar fields when available
+- caches Netify enrichment locally to avoid repeated requests on UI refresh
+- moves vendor lookup to a magnifying-glass action directly beside the vendor name
+- removes internal navigation links from MAC and vendor text; only the magnifying-glass lookup is clickable
+- keeps device name, hostname, IP and other contextual navigation unchanged
+
 
 ## v0.5.4
 - fixes the dashboard column mapping so IPs appear under IP(s) and MAC addresses under MAC
@@ -64,6 +73,8 @@ Read-only local DNS visibility tool for AdGuard Home.
 - `MACVENDOR_URL` (default `https://api.macvendors.com`)
 - `MACVENDOR_CACHE_HOURS` (default `168`)
 - `HOSTNAME_CACHE_HOURS` (default `24`)
+- `NETIFY_URL` (default `https://www.netify.ai/resources/hostnames/`)
+- `NETIFY_CACHE_HOURS` (default `168`)
 
 ## Device identity
 The app prefers a stable AdGuard client identifier or MAC address when AdGuard exposes one. IP addresses are stored as observations and are not treated as permanent device identities.
@@ -71,3 +82,14 @@ The app prefers a stable AdGuard client identifier or MAC address when AdGuard e
 Hostnames are discovered from AdGuard client information when available; otherwise the app attempts a reverse-DNS lookup for the device IP and caches the result.
 
 MAC vendor lookup is informational only. It does not identify a specific device model; it identifies the organization registered for the MAC prefix.
+
+## v0.5.6
+
+Polish release before v0.6:
+- enriches domain inspection with Netify public hostname/application evidence when available;
+- adds direct DNS-over-HTTPS record enrichment (A/AAAA/CNAME/NS/MX/TXT/SOA/CAA/SRV) with local cache;
+- keeps DNSChecker as an external verification link rather than scraping its UI;
+- populates the existing Who/Infrastructure fields from the strongest available TrackerDB, RDAP, Netify and DNS signals;
+- vendor names and MAC addresses are plain text, not hyperlinks;
+- external vendor/MAC lookup is represented by a compact magnifier button placed immediately to the right of the value;
+- keeps internal device/IP navigation separate from external lookups.

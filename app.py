@@ -37,6 +37,8 @@ RDAP_URL = os.getenv("RDAP_URL", "https://rdap.org/domain/").rstrip("/")
 MACVENDOR_URL = os.getenv("MACVENDOR_URL", "https://api.macvendors.com").rstrip("/")
 MACVENDOR_CACHE_HOURS = int(os.getenv("MACVENDOR_CACHE_HOURS", "168"))
 HOSTNAME_CACHE_HOURS = int(os.getenv("HOSTNAME_CACHE_HOURS", "24"))
+NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "168"))
+NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
 app = Flask(__name__)
 db_lock = threading.Lock()
@@ -70,7 +72,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .mini-icon{font-size:.9rem}
 .client-chip{display:inline-block;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 7px;margin:2px;font-size:.85em}
-.glance-domain{font-weight:650}.external-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.external-tool{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid #30363d;border-radius:7px;background:#161b22;color:#8b949e;font-size:.74rem;text-decoration:none}.external-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tools{display:inline-flex;gap:5px;margin-left:7px;vertical-align:middle}.inline-tool{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#8b949e;font-size:.72rem;text-decoration:none}.inline-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
+.glance-domain{font-weight:650}.external-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.external-tool{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid #30363d;border-radius:7px;background:#161b22;color:#8b949e;font-size:.74rem;text-decoration:none}.external-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tools{display:inline-flex;gap:5px;margin-left:6px;vertical-align:middle}.inline-tool{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#8b949e;font-size:.72rem;text-decoration:none}.inline-tool svg,.external-tool svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.inline-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.external-tool.icon-only{width:20px;height:20px;padding:0;justify-content:center}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 </style></head><body>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
@@ -100,16 +102,17 @@ function deviceHref(c){ return `/device?key=${encodeURIComponent(c.device_key ||
 function ipHref(ip){ return `/ip?addr=${encodeURIComponent(ip)}`; }
 function deviceLink(c, label, extra=''){ return `<a class="link-device ${extra}" href="${deviceHref(c)}">${label}</a>`; }
 function ipLink(ip){ return `<a class="client-chip mono link-ip" href="${ipHref(ip)}">${esc(ip)}</a>`; }
-function externalButton(url,label,icon='↗'){ return `<a class="external-tool" href="${esc(url)}" target="_blank" rel="noopener noreferrer">${icon} ${esc(label)}</a>`; }
+function magnifierSvg(){ return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l5 5"></path></svg>`; }
+function externalButton(url,label,icon='↗'){ const glyph = icon === '' ? magnifierSvg() : esc(icon); return `<a class="external-tool ${label ? '' : 'icon-only'}" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(label || 'External lookup')}">${glyph}${label ? ' ' + esc(label) : ''}</a>`; }
 function deviceRow(c){
   const ips = (c.ips || []).map(ipLink).join(' ');
   const host = c.hostname && c.hostname !== (c.name || c.vendor || c.display_name || c.identifier) ? `<div class="technical mono"><a class="link-ip" href="${deviceHref(c)}">HOST ${esc(c.hostname)}</a></div>` : '';
-  const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)}</div>` : '';
-  const mac = c.mac ? `<div class="technical mono"><a class="link-device" href="${deviceHref(c)}">${esc(c.mac)}</a> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'MAC lookup','↗')}</div>` : '';
+  const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)} ${externalButton(`https://www.google.com/search?q=${encodeURIComponent(c.vendor)}`,'','')}</div>` : '';
+  const mac = c.mac ? `<div class="technical mono">${esc(c.mac)} ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}</div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
   const primary = c.hostname || c.name || c.vendor || c.display_name || c.identifier;
   const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark-lg">${esc(c.icon || '◈')}</span>`;
-  return `<tr><td><div class="device">${deviceLink(c, visual)}<span>${deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device')}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono"><a class="link-device" href="${deviceHref(c)}">${esc(c.mac)}</a></span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'↗','')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  return `<tr><td><div class="device">${deviceLink(c, visual)}<span>${deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device')}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 function renderRecent(rows){
   document.getElementById('recent-body').innerHTML = rows.map(r => {
@@ -158,6 +161,10 @@ def init_db():
             mac TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, vendor TEXT NOT NULL DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS hostname_cache(
             ip TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, hostname TEXT NOT NULL DEFAULT '')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS netify_cache(
+            domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, json TEXT NOT NULL DEFAULT '{}')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS dns_records_cache(
+            domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, json TEXT NOT NULL DEFAULT '{}')""")
         c.execute("""CREATE TABLE IF NOT EXISTS client_cache(
             identifier TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '',
             last_seen TEXT NOT NULL, request_count INTEGER NOT NULL DEFAULT 0, info_json TEXT NOT NULL DEFAULT '{}',
@@ -614,36 +621,281 @@ def tracker_lookup(domain):
     return {}
 
 
-def rdap_lookup(domain):
+def apex_domain(domain):
+    labels = [x for x in str(domain or '').strip('.').lower().split('.') if x]
+    if len(labels) <= 2:
+        return '.'.join(labels)
+    # Conservative fallback for common two-label public suffixes.
+    if len(labels) >= 3 and labels[-2] in {"co", "com", "net", "org", "gov", "ac"} and len(labels[-1]) <= 3:
+        return '.'.join(labels[-3:])
+    return '.'.join(labels[-2:])
+
+
+def _strip_html_text(html):
+    text = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.I)
+    text = re.sub(r"<style[\s\S]*?</style>", " ", text, flags=re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return (text.replace("&amp;", "&").replace("&quot;", '"')
+            .replace("&#39;", "'").replace("&nbsp;", " ").strip())
+
+
+def _netify_value(obj, *keys):
+    if not isinstance(obj, dict):
+        return ""
+    for key in keys:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def netify_lookup(domain):
+    """Best-effort enrichment from Netify's public hostname pages.
+    Netify's paid Hostname API requires a key, so the Inspector uses the public
+    hostname/application pages as secondary evidence and caches the result.
+    """
+    domain = str(domain or '').strip('.').lower()
+    if not domain:
+        return {}
     try:
         with sqlite3.connect(DB_PATH) as c:
-            row = c.execute("SELECT fetched_at,json FROM rdap_cache WHERE domain=?", (domain,)).fetchone()
+            row = c.execute("SELECT fetched_at,json FROM netify_cache WHERE domain=?", (domain,)).fetchone()
+        if row:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
+            if age.total_seconds() < NETIFY_CACHE_HOURS * 3600:
+                return json.loads(row[1])
+    except Exception:
+        pass
+
+    result = {}
+    candidates = [domain]
+    apex = apex_domain(domain)
+    if apex and apex != domain:
+        candidates.append(apex)
+    try:
+        for candidate in candidates:
+            url = f"{NETIFY_URL}{quote(candidate, safe='.-_')}"
+            r = session.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 DNS-Inspector/" + APP_VERSION})
+            if not r.ok:
+                continue
+            html = r.text
+            text = _strip_html_text(html)
+
+            # Netify pages expose several facts as labelled fields. Keep the parser
+            # deliberately generic so minor wording/layout changes do not break it.
+            for label, key in (("Application", "application"), ("Platform", "platform"),
+                               ("Network", "network"), ("ASN", "asn"), ("Company", "company_name"),
+                               ("Country", "country"), ("Website", "website_url")):
+                if result.get(key):
+                    continue
+                m = re.search(rf"\b{re.escape(label)}\s*[:\-]\s*([^|;]{{2,180}})", text, re.I)
+                if m:
+                    value = m.group(1).strip(" .,:;")
+                    if value:
+                        result[key] = value
+
+            # Structured data is more stable than page prose when Netify changes its UI.
+            structured = []
+            for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.I | re.S):
+                try:
+                    data = json.loads(block.strip())
+                    structured.extend(data if isinstance(data, list) else [data])
+                except Exception:
+                    pass
+            for obj in structured:
+                if not isinstance(obj, dict):
+                    continue
+                if not result.get("application"):
+                    result["application"] = _netify_value(obj, "name", "headline")
+                if not result.get("description"):
+                    result["description"] = _netify_value(obj, "description")
+                if not result.get("website_url"):
+                    result["website_url"] = _netify_value(obj, "url")
+                author = obj.get("author") or obj.get("publisher")
+                if isinstance(author, dict) and not result.get("company_name"):
+                    result["company_name"] = _netify_value(author, "name")
+
+            # Common Netify wording on hostname pages.
+            patterns = [
+                r"is associated with (?:the )?(.+?) application",
+                r"associated with (?:the )?(.+?) application",
+            ]
+            for pat in patterns:
+                m = re.search(pat, text, re.I)
+                if m:
+                    app_name = m.group(1).strip(" .,:;-")
+                    if app_name:
+                        result["application"] = app_name
+                        break
+
+            # Extract useful hostname/network facts when present on the public page.
+            if not result.get("ips"):
+                ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
+                if ips:
+                    result["ips"] = list(dict.fromkeys(ips))[:32]
+            if not result.get("country"):
+                country_map = {
+                    "korean": "South Korea", "south korean": "South Korea", "american": "United States",
+                    "german": "Germany", "japanese": "Japan", "chinese": "China", "french": "France",
+                    "british": "United Kingdom", "canadian": "Canada"
+                }
+                m = re.search(r"([A-Za-z][A-Za-z -]{2,30}) is a ([A-Za-z -]+)-based", text)
+                if m:
+                    result["country"] = country_map.get(m.group(2).strip().lower(), "")
+                    if not result.get("company_name"):
+                        result["company_name"] = m.group(1).strip()
+                    if not result.get("description"):
+                        result["description"] = text[max(0, m.start()):m.end()+180]
+
+            # Netify application pages can expose the primary domain/website.
+            if result.get("application") and not result.get("website_url"):
+                slug = re.sub(r"[^a-z0-9]+", "-", result["application"].lower()).strip("-")
+                if slug:
+                    try:
+                        ar = session.get(
+                            f"https://www.netify.ai/resources/applications/{quote(slug, safe='-')}",
+                            timeout=10,
+                            headers={"User-Agent": "Mozilla/5.0 DNS-Inspector/" + APP_VERSION},
+                        )
+                        if ar.ok:
+                            at = _strip_html_text(ar.text)
+                            pm = re.search(r"Primary Domains\s+(.{0,1000})", at, re.I)
+                            if pm:
+                                domains = re.findall(r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}\b", pm.group(1).lower())
+                                if domains:
+                                    result["website_url"] = "https://" + domains[0]
+                    except Exception:
+                        pass
+
+            # Useful fallbacks for the UI: Netify application names often encode the owner.
+            app = result.get("application", "")
+            if not result.get("company_name") and app:
+                for marker, owner in (("LG Smart TV", "LG Electronics"), ("LG TV", "LG Electronics"),
+                                      ("Samsung", "Samsung Electronics"), ("Bosch", "Bosch"),
+                                      ("Roborock", "Roborock"), ("PETKIT", "PETKIT")):
+                    if marker.lower() in app.lower():
+                        result["company_name"] = owner
+                        break
+
+            if result:
+                result["source_url"] = url
+                break
+    except Exception as e:
+        print("Netify lookup error:", repr(e), flush=True)
+
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.execute("INSERT OR REPLACE INTO netify_cache(domain,fetched_at,json) VALUES(?,?,?)", (domain, utcnow(), json.dumps(result)))
+            c.commit()
+    except Exception:
+        pass
+    return result
+
+
+def rdap_lookup(domain):
+    domain = str(domain or '').strip('.').lower()
+    candidates = [domain]
+    apex = apex_domain(domain)
+    if apex and apex != domain:
+        candidates.append(apex)
+    for candidate in candidates:
+        try:
+            with sqlite3.connect(DB_PATH) as c:
+                row = c.execute("SELECT fetched_at,json FROM rdap_cache WHERE domain=?", (candidate,)).fetchone()
+            if row:
+                age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
+                if age.total_seconds() < 86400:
+                    cached = json.loads(row[1])
+                    if cached.get("org") or candidate == apex:
+                        cached["queried_domain"] = candidate
+                        return cached
+
+            r = requests.get(f"{RDAP_URL}/{quote(candidate, safe='')}", timeout=8, allow_redirects=True)
+            result = {}
+            if r.ok:
+                data = r.json()
+                result = {"org": "", "name": data.get("name", ""), "handle": data.get("handle", ""), "country": "", "registrar": ""}
+                for ent in data.get("entities") or []:
+                    v = ent.get("vcardArray")
+                    if isinstance(v, list) and len(v) == 2:
+                        for item in v[1]:
+                            if not item:
+                                continue
+                            if item[0] == "fn" and len(item) > 3 and not result["org"]:
+                                result["org"] = item[3]
+                            if item[0] == "adr" and len(item) > 3 and isinstance(item[3], list) and len(item[3]) >= 7:
+                                result["country"] = result["country"] or str(item[3][6] or "")
+                    if result["org"] and result["country"]:
+                        break
+                for ent in data.get("entities") or []:
+                    roles = ent.get("roles") or []
+                    if "registrar" in roles:
+                        v = ent.get("vcardArray")
+                        if isinstance(v, list) and len(v) == 2:
+                            for item in v[1]:
+                                if item and item[0] == "fn" and len(item) > 3:
+                                    result["registrar"] = item[3]
+                                    break
+                        if result["registrar"]:
+                            break
+            with sqlite3.connect(DB_PATH) as c:
+                c.execute("INSERT OR REPLACE INTO rdap_cache(domain,fetched_at,json) VALUES(?,?,?)", (candidate, utcnow(), json.dumps(result)))
+                c.commit()
+            if result.get("org") or candidate == apex:
+                result["queried_domain"] = candidate
+                return result
+        except Exception as e:
+            print("RDAP lookup error:", repr(e), flush=True)
+    return {}
+
+
+def dns_records_lookup(domain):
+    """Resolve useful public DNS records through DNS-over-HTTPS.
+    DNSChecker remains an external verification link; the Inspector uses direct
+    DNS queries so its fields can be populated automatically without scraping UI.
+    """
+    domain = str(domain or '').strip('.').lower()
+    if not domain:
+        return {}
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            row = c.execute("SELECT fetched_at,json FROM dns_records_cache WHERE domain=?", (domain,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
             if age.total_seconds() < 86400:
                 return json.loads(row[1])
-        r = requests.get(f"{RDAP_URL}/{quote(domain, safe='')}", timeout=8, allow_redirects=True)
-        result = {}
-        if r.ok:
-            data = r.json()
-            result = {"org": "", "name": data.get("name", ""), "handle": data.get("handle", "")}
-            for ent in data.get("entities") or []:
-                v = ent.get("vcardArray")
-                if isinstance(v, list) and len(v) == 2:
-                    for item in v[1]:
-                        if item and item[0] == "fn" and len(item) > 3:
-                            result["org"] = item[3]
-                            break
-                if result["org"]:
-                    break
-        # Cache both successful and negative lookups for 24h so live refresh does not hammer RDAP.
+    except Exception:
+        pass
+
+    records = {}
+    for rtype in ("A", "AAAA", "CNAME", "NS", "MX", "TXT", "SOA", "CAA", "SRV"):
+        values = []
+        try:
+            resp = session.get(
+                "https://dns.google/resolve",
+                params={"name": domain, "type": rtype},
+                headers={"Accept": "application/dns-json", "User-Agent": "DNS-Inspector/" + APP_VERSION},
+                timeout=6,
+            )
+            if resp.ok:
+                data = resp.json()
+                for ans in data.get("Answer") or []:
+                    value = str(ans.get("data", "")).strip()
+                    if value and value not in values:
+                        values.append(value)
+        except Exception:
+            pass
+        if values:
+            records[rtype] = values[:20]
+
+    try:
         with sqlite3.connect(DB_PATH) as c:
-            c.execute("INSERT OR REPLACE INTO rdap_cache(domain,fetched_at,json) VALUES(?,?,?)", (domain, utcnow(), json.dumps(result)))
+            c.execute("INSERT OR REPLACE INTO dns_records_cache(domain,fetched_at,json) VALUES(?,?,?)", (domain, utcnow(), json.dumps(records)))
             c.commit()
-        return result
-    except Exception as e:
-        print("RDAP lookup error:", repr(e), flush=True)
-    return {}
+    except Exception:
+        pass
+    return records
 
 
 def resolve_dns(domain):
@@ -736,7 +988,8 @@ def external_button(url, label, icon="↗"):
 
 
 def inline_external_button(url, title, icon="↗"):
-    return f"<a class='inline-tool' href='{_html(url)}' title='{_html(title)}' target='_blank' rel='noopener noreferrer'>{_html(icon)}</a>"
+    glyph = "<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='11' cy='11' r='6.5'></circle><path d='M16 16l5 5'></path></svg>" if icon == "" else _html(icon)
+    return f"<a class='inline-tool' href='{_html(url)}' title='{_html(title)}' target='_blank' rel='noopener noreferrer'>{glyph}</a>"
 
 
 def netify_url(hostname):
@@ -760,6 +1013,11 @@ def device_search_url(name, hostname='', vendor=''):
     return f"https://www.google.com/search?q={quote(q, safe='')}" if q else ''
 
 
+def vendor_lookup_url(vendor):
+    vendor = str(vendor or '').strip()
+    return f"https://www.google.com/search?q={quote(vendor, safe='')}" if vendor else ''
+
+
 def domain_external_tools(domain):
     host = str(domain or '').strip().rstrip('.').lower()
     if not host:
@@ -780,16 +1038,13 @@ def inspect_html(result):
         key = quote(c.get("device_key", ""), safe="")
         name = _html(c.get("display_name") or c.get("name") or c.get("vendor") or c.get("device_key") or "Unknown")
         logo = vendor_visual(c.get("vendor"), c.get("vendor_logo"), True, c.get("icon", "◈"))
-        vendor = f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}</div>" if c.get("vendor") else ""
+        vendor_tools = inline_external_button(vendor_lookup_url(c.get('vendor')), "Vendor lookup", "") if c.get('vendor') else ""
+        vendor = f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}{vendor_tools}</div>" if c.get("vendor") else ""
         host = f"<div class='sub mono'><a class='link-device' href='/device?key={key}'>HOST {_html(c['hostname'])}</a></div>" if c.get("hostname") and c.get("hostname") != c.get("display_name") else ""
-        device_tools = []
-        search_url = device_search_url(c.get("display_name") or c.get("name"), c.get("hostname"), c.get("vendor"))
-        if search_url:
-            device_tools.append(inline_external_button(search_url, "Search device externally", "↗"))
         mac = _html(c.get("mac") or "—")
-        mac_tools = inline_external_button(mac_lookup_url(c.get("mac")), "MAC vendor lookup", "↗") if c.get("mac") else ""
+        mac_tools = inline_external_button(mac_lookup_url(c.get("mac")), "MAC vendor lookup", "") if c.get("mac") else ""
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get("ips", [])) or '—'
-        client_rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={key}'>{logo}</a><span><a class='link-device' href='/device?key={key}'><div class='device-name'>{name}</div></a>{vendor}{host}<span class='inline-tools'>{''.join(device_tools)}</span><div class='confidence'>{_html(c.get('type'))} · {_html(c.get('confidence_label'))}</div></span></div></td><td>{ips}</td><td><span class='mono'><a class='link-device' href='/device?key={key}'>{mac}</a></span> {mac_tools}</td><td>{c['requests']}</td></tr>")
+        client_rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={key}'>{logo}</a><span><a class='link-device' href='/device?key={key}'><div class='device-name'>{name}</div></a>{vendor}{host}<div class='confidence'>{_html(c.get('type'))} · {_html(c.get('confidence_label'))}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     clients_html = ''.join(client_rows)
     e = result["explanation"]
     evidence_html = "".join(f"<li>{_html(x)}</li>" for x in e["evidence"])
@@ -807,8 +1062,8 @@ def inspect_html(result):
 <div class='kv'><b>RDAP:</b> {_html(result['rdap'].get('org') or 'Not available')}</div></div>
 <div><h3>Why is this here?</h3>
 <div class='signal signal-{e['tone']}'><div class='signal-title'>{_html(e['summary'])}</div><ul class='evidence'>{evidence_html}</ul><div>Confidence: <span class='confidence-{e['confidence'].lower()}'>{_html(e['confidence'])}</span></div></div></div></div>
-<h3>Infrastructure</h3><div class='grid'><div><div class='kv'><b>DNS:</b><div class='dns-list'>{dns_html}</div></div><div class='kv'><b>RDAP name:</b> {_html(result['rdap'].get('name') or '—')}</div></div>
-<div><div class='kv'><b>TrackerDB domain:</b> {_html(result['tracker'].get('matched_domain') or 'No match')}</div><div class='kv'><b>Source snapshot:</b> WhoTracks.me / Ghostery TrackerDB</div></div></div>
+<h3>Infrastructure</h3><div class='grid'><div><div class='kv'><b>DNS:</b><div class='dns-list'>{dns_html}</div></div><div class='kv'><b>CNAME:</b> {_html(' · '.join(result['dns_records'].get('CNAME', [])) or '—')}</div><div class='kv'><b>NS:</b> {_html(' · '.join(result['dns_records'].get('NS', [])) or '—')}</div><div class='kv'><b>RDAP name:</b> {_html(result['rdap'].get('name') or '—')}</div></div>
+<div><div class='kv'><b>Netify:</b> {_html(result['netify'].get('application') or 'No match')}</div><div class='kv'><b>Platform:</b> {_html(result['netify'].get('platform') or '—')}</div><div class='kv'><b>Network:</b> {_html(result['netify'].get('network') or '—')}</div><div class='kv'><b>ASN:</b> {_html(result['netify'].get('asn') or '—')}</div><div class='kv'><b>TrackerDB domain:</b> {_html(result['tracker'].get('matched_domain') or 'No match')}</div><div class='kv'><b>Source snapshot:</b> WhoTracks.me / Ghostery TrackerDB</div></div></div>
 <h3>Local activity</h3><p><b>Requests:</b> {result['requests']} &nbsp; <b>Clients:</b> {len(result['clients'])} &nbsp; <b>DNS addresses:</b> {len(result['dns'])}</p>
 <table><thead><tr><th>Device</th><th>IP(s)</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{clients_html}</tbody></table>
 <p class='source'>Stable identity prefers MAC or a non-IP AdGuard client identifier, then a named hostname; IPs are observations and may change with DHCP. AdGuard runtime clients can come from rDNS/hosts/ARP/DHCP sources.</p>
@@ -845,7 +1100,7 @@ def canonicalize_client_map(clients):
     return merged
 
 
-def build_explanation(domain, tracker, rdap, client_details):
+def build_explanation(domain, tracker, rdap, client_details, netify=None):
     cat = (tracker.get("category") or "").lower()
     vendors = sorted({c.get("vendor", "") for c in client_details if c.get("vendor")})
     hostnames = sorted({c.get("hostname", "") for c in client_details if c.get("hostname")})
@@ -855,6 +1110,8 @@ def build_explanation(domain, tracker, rdap, client_details):
     if hostnames: evidence.append("Known hostnames: " + ", ".join(hostnames[:3]))
     if tracker.get("matched_domain"): evidence.append(f"TrackerDB match: {tracker.get('matched_domain')}")
     if rdap.get("org"): evidence.append(f"RDAP ownership: {rdap.get('org')}")
+    if netify and netify.get("application"): evidence.append(f"Netify application: {netify.get('application')}")
+    if netify and netify.get("company_name"): evidence.append(f"Netify company: {netify.get('company_name')}")
     if cat == "advertising": summary, tone, confidence = "Likely advertising / ad delivery.", "orange", "High"
     elif cat in {"site_analytics", "social_media", "extensions"}: summary, tone, confidence = "Likely telemetry or tracking.", "yellow", "High"
     elif cat: summary, tone, confidence = "Known third-party service.", "green", "Medium"
@@ -871,15 +1128,16 @@ def inspect_domain(domain):
             return None
         tracker = tracker_lookup(domain)
         rdap = rdap_lookup(domain)
+        netify = netify_lookup(domain)
         classification, badge, severity = classify(tracker, rdap)
         clients_map = canonicalize_client_map(json.loads(row[4] or "{}"))
         client_details = [client_display(c, key, count) for key, count in sorted(clients_map.items(), key=lambda kv: kv[1], reverse=True)]
     return {
         "domain": row[0], "first_seen": row[1], "last_seen": row[2], "requests": row[3], "clients": clients_map,
         "classification": classification, "badge_class": badge, "severity_class": severity, "tracker": tracker,
-        "company": {"name": tracker.get("company_name") or rdap.get("org") or "", "description": tracker.get("description", ""), "website_url": tracker.get("company_website", "") or tracker.get("website_url", ""), "country": tracker.get("country", "")},
-        "rdap": rdap, "dns": resolve_dns(domain), "client_details": client_details,
-        "explanation": build_explanation(domain, tracker, rdap, client_details),
+        "company": {"name": tracker.get("company_name") or rdap.get("org") or netify.get("company_name") or netify.get("application") or "", "description": tracker.get("description", "") or netify.get("description", ""), "website_url": tracker.get("company_website", "") or tracker.get("website_url", "") or netify.get("website_url", ""), "country": tracker.get("country", "") or rdap.get("country", "") or netify.get("country", "")},
+        "rdap": rdap, "netify": netify, "dns": resolve_dns(domain), "dns_records": dns_records_lookup(domain), "client_details": client_details,
+        "explanation": build_explanation(domain, tracker, rdap, client_details, netify),
     }
 
 
@@ -975,7 +1233,7 @@ def detail_html_device(d):
 
 
 def detail_html_ip(d):
-    devices = "".join(f"<tr><td><a class='link-device' href='/device?key={quote(x['device_key'], safe='')}'>{vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'))}{_html(x.get('hostname') or x.get('name') or x.get('vendor') or x['device_key'])}</a></td><td class='mono'><a class='link-device' href='/device?key={quote(x['device_key'], safe='')}'>{_html(x.get('mac') or '—')}</a> {inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>" for x in d['devices']) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
+    devices = "".join(f"<tr><td><a class='link-device' href='/device?key={quote(x['device_key'], safe='')}'>{vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'))}{_html(x.get('hostname') or x.get('name') or x.get('vendor') or x['device_key'])}</a></td><td class='mono'>{_html(x.get('mac') or '—')} {inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>" for x in d['devices']) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
     domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No DNS activity recorded.</td></tr>"
     return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><h2 class='mono'>{_html(d['ip'])}</h2><p class='muted'>IP observation · {len(d['devices'])} known device(s)</p><h3>Known devices</h3><table><thead><tr><th>Device</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{devices}</tbody></table><h3>Domains contacted</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
 
@@ -991,15 +1249,13 @@ def clients_html(clients):
         href = quote(key, safe='')
         primary = c.get('hostname') or c.get('name') or c.get('vendor') or c.get('display_name') or key
         secondary = []
-        if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}</div>")
+        if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}{inline_external_button(vendor_lookup_url(c.get('vendor')), 'Vendor lookup', '')}</div>")
         if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'><a class='link-device' href='/device?key={href}'>HOST {_html(c['hostname'])}</a></div>")
         visual = vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get('ips', [])) or '—'
         mac = _html(c.get('mac') or '—')
-        mac_tools = inline_external_button(mac_lookup_url(c.get('mac')), 'MAC vendor lookup') if c.get('mac') else ''
-        search_url = device_search_url(primary, c.get('hostname'), c.get('vendor'))
-        device_tools = inline_external_button(search_url, 'Search device externally') if search_url else ''
-        rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={href}'>{visual}</a><span><a class='link-device' href='/device?key={href}'><div class='device-name'>{_html(primary)}</div></a>{''.join(secondary)}<span class='inline-tools'>{device_tools}</span><div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td>{ips}</td><td><span class='mono'><a class='link-device' href='/device?key={href}'>{mac}</a></span> {mac_tools}</td><td>{c['requests']}</td></tr>")
+        mac_tools = inline_external_button(mac_lookup_url(c.get('mac')), 'MAC vendor lookup', '') if c.get('mac') else ''
+        rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={href}'>{visual}</a><span><a class='link-device' href='/device?key={href}'><div class='device-name'>{_html(primary)}</div></a>{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     return ''.join(rows)
 
 
