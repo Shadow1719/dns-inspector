@@ -110,3 +110,22 @@ Polish release before v0.6:
 - Removed the hardcoded local AdGuard URL from the application defaults; configure `AGH_URL` explicitly in the container environment.
 
 The request path never performs a slow external enrichment fetch. Cached data is served immediately; missing or expired Netify/RDAP/DNS enrichment is refreshed by a deduplicated background worker.
+
+
+## v0.5.11
+Hotfix: fixed the external-link helper name used by domain/device inspection pages.
+
+
+## v0.5.12
+- Hardened navigation/rendering paths after 0.5.11 smoke-test review.
+- Added `devices.first_seen` migration/backfill for device detail views.
+- Prevented vendor-only labels from becoming internal device links; vendor/MAC remain external magnifier actions.
+- Preserved legacy IP→MAC reconciliation without device metadata loss.
+
+
+## v0.5.12
+- Added a migration/backfill for `devices.first_seen`, required by the device detail view.
+- Hardened vendor-only device labels so vendor text is never used as the internal device link.
+- Vendor/MAC lookups remain external magnifier actions.
+- Preserved first/last-seen metadata during legacy IP-to-MAC reconciliation.
+- Tightened rendering paths before the 0.6 feature work.

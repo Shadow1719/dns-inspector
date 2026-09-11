@@ -105,6 +105,7 @@ function formatUpdated(iso){ const d=new Date(iso); if(Number.isNaN(d.getTime())
 function deviceHref(c){ return `/device?key=${encodeURIComponent(c.device_key || c.identifier || '')}`; }
 function ipHref(ip){ return `/ip?addr=${encodeURIComponent(ip)}`; }
 function deviceLink(c, label, extra=''){ return `<a class="link-device ${extra}" href="${deviceHref(c)}">${label}</a>`; }
+function realDeviceLabel(c){ const vendor=String(c.vendor||'').trim().toLowerCase(); const identifier=String(c.device_key||c.identifier||'').trim().toLowerCase(); for(const v of [c.hostname,c.name,c.display_name]){ const t=String(v||'').trim(); if(t && t.toLowerCase()!==vendor && t.toLowerCase()!==identifier) return t; } return ''; }
 function ipLink(ip){ return `<a class="client-chip mono link-ip" href="${ipHref(ip)}">${esc(ip)}</a>`; }
 function magnifierSvg(){ return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l5 5"></path></svg>`; }
 function externalButton(url,label,icon='↗'){ const glyph = icon === '' ? magnifierSvg() : esc(icon); return `<a class="external-tool ${label ? '' : 'icon-only'}" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(label || 'External lookup')}">${glyph}${label ? ' ' + esc(label) : ''}</a>`; }
@@ -114,7 +115,7 @@ function deviceRow(c){
   const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)} ${externalButton(`https://www.google.com/search?q=${encodeURIComponent(c.vendor)}`,'','')}</div>` : '';
   const mac = c.mac ? `<div class="technical mono">${esc(c.mac)} ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}</div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
-  const linkedPrimary = c.hostname || c.name || c.display_name || '';
+  const linkedPrimary = realDeviceLabel(c);
   const primary = linkedPrimary || c.vendor || c.identifier;
   const primaryHtml = linkedPrimary ? deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device') : `<div class="device-name">${esc(primary)}</div>`;
   const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark-lg">${esc(c.icon || '◈')}</span>`;
@@ -183,9 +184,11 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS devices(
             device_key TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', hostname TEXT NOT NULL DEFAULT '',
             mac TEXT NOT NULL DEFAULT '', device_type TEXT NOT NULL DEFAULT 'IoT / Unknown', icon TEXT NOT NULL DEFAULT '📦',
-            confidence TEXT NOT NULL DEFAULT 'low', source TEXT NOT NULL DEFAULT '', last_seen TEXT NOT NULL,
+            confidence TEXT NOT NULL DEFAULT 'low', source TEXT NOT NULL DEFAULT '', first_seen TEXT NOT NULL DEFAULT '', last_seen TEXT NOT NULL,
             request_count INTEGER NOT NULL DEFAULT 0, info_json TEXT NOT NULL DEFAULT '{}')""")
         add_column_if_missing(c, "devices", "vendor", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(c, "devices", "first_seen", "TEXT NOT NULL DEFAULT ''")
+        c.execute("UPDATE devices SET first_seen=COALESCE(NULLIF(first_seen,''), last_seen) WHERE first_seen=''")
         c.execute("""CREATE TABLE IF NOT EXISTS device_ips(
             device_key TEXT NOT NULL, ip TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
             requests INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(device_key,ip))""")
@@ -488,15 +491,15 @@ def upsert_device(c, device_key, name, hostname, mac, ips, source, info, now, in
     dtype, icon, confidence = device_hint(name, hostname, info)
     if row:
         if increment:
-            c.execute("""UPDATE devices SET name=?, hostname=?, mac=?, device_type=?, icon=?, confidence=?, source=?, last_seen=?, request_count=request_count+1, info_json=? WHERE device_key=?""",
-                      (name, hostname, mac, dtype, icon, confidence, source, now, json.dumps(info), device_key))
+            c.execute("""UPDATE devices SET name=?, hostname=?, mac=?, device_type=?, icon=?, confidence=?, source=?, first_seen=CASE WHEN first_seen='' THEN ? ELSE first_seen END, last_seen=?, request_count=request_count+1, info_json=? WHERE device_key=?""",
+                      (name, hostname, mac, dtype, icon, confidence, source, now, now, json.dumps(info), device_key))
         else:
-            c.execute("""UPDATE devices SET name=?, hostname=?, mac=?, device_type=?, icon=?, confidence=?, source=?, last_seen=?, info_json=? WHERE device_key=?""",
-                      (name, hostname, mac, dtype, icon, confidence, source, now, json.dumps(info), device_key))
+            c.execute("""UPDATE devices SET name=?, hostname=?, mac=?, device_type=?, icon=?, confidence=?, source=?, first_seen=CASE WHEN first_seen='' THEN ? ELSE first_seen END, last_seen=?, info_json=? WHERE device_key=?""",
+                      (name, hostname, mac, dtype, icon, confidence, source, now, now, json.dumps(info), device_key))
     else:
-        c.execute("""INSERT INTO devices(device_key,name,hostname,mac,device_type,icon,confidence,source,last_seen,request_count,info_json)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                  (device_key, name, hostname, mac, dtype, icon, confidence, source, now, 1, json.dumps(info)))
+        c.execute("""INSERT INTO devices(device_key,name,hostname,mac,device_type,icon,confidence,source,first_seen,last_seen,request_count,info_json)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  (device_key, name, hostname, mac, dtype, icon, confidence, source, now, now, 1, json.dumps(info)))
     for ip in ips:
         row2 = c.execute("SELECT requests FROM device_ips WHERE device_key=? AND ip=?", (device_key, ip)).fetchone()
         if row2:
@@ -962,7 +965,7 @@ def resolve_dns(domain, records=None):
                 ips.append(value)
     return ips[:12]
 
-def inline_inline_external_button(url, title, icon="↗"):
+def inline_external_button(url, title, icon="↗"):
     glyph = "<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='11' cy='11' r='6.5'></circle><path d='M16 16l5 5'></path></svg>" if icon == "" else _html(icon)
     return f"<a class='inline-tool' href='{_html(url)}' title='{_html(title)}' target='_blank' rel='noopener noreferrer'>{glyph}</a>"
 
@@ -1005,24 +1008,39 @@ def domain_external_tools(domain):
     return "<div class='external-tools'><span class='sub' style='align-self:center'>External:</span>" + ''.join(buttons) + "</div>"
 
 
+
+def real_device_label(c):
+    vendor = str(c.get('vendor') or '').strip().casefold()
+    identifier = str(c.get('identifier') or c.get('device_key') or '').strip().casefold()
+    for value in (c.get('hostname'), c.get('name'), c.get('display_name')):
+        text = str(value or '').strip()
+        if not text:
+            continue
+        folded = text.casefold()
+        if folded in {vendor, identifier}:
+            continue
+        return text
+    return ''
+
 def inspect_html(result):
     if not result:
         return ""
     client_rows = []
     for c in result["client_details"]:
         key = quote(c.get("device_key", ""), safe="")
-        linked_name = c.get("display_name") or c.get("name") or ""
+        linked_name = real_device_label(c)
         name_value = linked_name or c.get("vendor") or c.get("device_key") or "Unknown"
         name = _html(name_value)
         name_html = f"<a class='link-device' href='/device?key={key}'><div class='device-name'>{name}</div></a>" if linked_name else f"<div class='device-name'>{name}</div>"
         logo = vendor_visual(c.get("vendor"), c.get("vendor_logo"), True, c.get("icon", "◈"))
-        vendor_tools = inline_inline_external_button(vendor_lookup_url(c.get('vendor')), "Vendor lookup", "") if c.get('vendor') else ""
+        vendor_tools = inline_external_button(vendor_lookup_url(c.get('vendor')), "Vendor lookup", "") if c.get('vendor') else ""
         vendor = f"<div class='sub'>{vendor_visual(c.get('vendor'), c.get('vendor_logo'))}{_html(c['vendor'])}{vendor_tools}</div>" if c.get("vendor") else ""
         host = f"<div class='sub mono'><a class='link-device' href='/device?key={key}'>HOST {_html(c['hostname'])}</a></div>" if c.get("hostname") and c.get("hostname") != c.get("display_name") else ""
         mac = _html(c.get("mac") or "—")
-        mac_tools = inline_inline_external_button(mac_lookup_url(c.get("mac")), "MAC vendor lookup", "") if c.get("mac") else ""
+        mac_tools = inline_external_button(mac_lookup_url(c.get("mac")), "MAC vendor lookup", "") if c.get("mac") else ""
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get("ips", [])) or '—'
-        client_rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={key}'>{logo}</a><span>{name_html}{vendor}{host}<div class='confidence'>{_html(c.get('type'))} · {_html(c.get('confidence_label'))}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
+        visual_html = f"<a class='link-device' href='/device?key={key}'>{logo}</a>" if linked_name else logo
+        client_rows.append(f"<tr><td><div class='device'>{visual_html}<span>{name_html}{vendor}{host}<div class='confidence'>{_html(c.get('type'))} · {_html(c.get('confidence_label'))}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     clients_html = ''.join(client_rows)
     e = result["explanation"]
     evidence_html = "".join(f"<li>{_html(x)}</li>" for x in e["evidence"])
@@ -1291,11 +1309,11 @@ def detail_html_ip(d):
     device_rows = []
     for x in d['devices']:
         href = quote(x['device_key'], safe='')
-        linked_primary = x.get('hostname') or x.get('name') or x.get('display_name') or ''
+        linked_primary = real_device_label(x)
         primary = linked_primary or x.get('vendor') or x['device_key']
         label = f"<a class='link-device' href='/device?key={href}'>{_html(primary)}</a>" if linked_primary else _html(primary)
         visual = vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'))
-        device_rows.append(f"<tr><td>{visual}{label}</td><td class='mono'>{_html(x.get('mac') or '—')} {inline_inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>")
+        device_rows.append(f"<tr><td>{visual}{label}</td><td class='mono'>{_html(x.get('mac') or '—')} {inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>")
     devices = ''.join(device_rows) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
     domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No DNS activity recorded.</td></tr>"
     return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><h2 class='mono'>{_html(d['ip'])}</h2><p class='muted'>IP observation · {len(d['devices'])} known device(s)</p><h3>Known devices</h3><table><thead><tr><th>Device</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{devices}</tbody></table><h3>Domains contacted</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
@@ -1309,17 +1327,18 @@ def clients_html(clients):
     for c in clients:
         key = c.get('identifier','')
         href = quote(key, safe='')
-        linked_primary = c.get('hostname') or c.get('name') or c.get('display_name') or ''
+        linked_primary = real_device_label(c)
         primary = linked_primary or c.get('vendor') or key
         primary_html = f"<a class='link-device' href='/device?key={href}'><div class='device-name'>{_html(primary)}</div></a>" if linked_primary else f"<div class='device-name'>{_html(primary)}</div>"
         secondary = []
-        if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}{inline_inline_external_button(vendor_lookup_url(c.get('vendor')), 'Vendor lookup', '')}</div>")
+        if c.get('vendor') and c.get('vendor') != primary: secondary.append(f"<div class='sub'>{_html(c['vendor'])}{inline_external_button(vendor_lookup_url(c.get('vendor')), 'Vendor lookup', '')}</div>")
         if c.get('hostname') and c.get('hostname') != primary: secondary.append(f"<div class='technical mono'><a class='link-device' href='/device?key={href}'>HOST {_html(c['hostname'])}</a></div>")
         visual = vendor_visual(c.get('vendor'), c.get('vendor_logo'), True, c.get('icon','◈'))
         ips = ''.join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(ip, safe='')}'>{_html(ip)}</a>" for ip in c.get('ips', [])) or '—'
         mac = _html(c.get('mac') or '—')
-        mac_tools = inline_inline_external_button(mac_lookup_url(c.get('mac')), 'MAC vendor lookup', '') if c.get('mac') else ''
-        rows.append(f"<tr><td><div class='device'><a class='link-device' href='/device?key={href}'>{visual}</a><span>{primary_html}{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
+        mac_tools = inline_external_button(mac_lookup_url(c.get('mac')), 'MAC vendor lookup', '') if c.get('mac') else ''
+        visual_html = f"<a class='link-device' href='/device?key={href}'>{visual}</a>" if linked_primary else visual
+        rows.append(f"<tr><td><div class='device'>{visual_html}<span>{primary_html}{''.join(secondary)}<div class='confidence'>{_html(c['type'])} · {_html(c['confidence_label'])}</div></span></div></td><td>{ips}</td><td><span class='mono'>{mac}</span> {mac_tools}</td><td>{c['requests']}</td></tr>")
     return ''.join(rows)
 
 
@@ -1354,7 +1373,7 @@ def reconcile_neighbors():
             new_key = "mac:" + mac
             if old_key == new_key:
                 continue
-            old = c.execute("SELECT name,hostname,mac,device_type,icon,confidence,source,last_seen,request_count,info_json FROM devices WHERE device_key=?", (old_key,)).fetchone()
+            old = c.execute("SELECT name,hostname,mac,device_type,icon,confidence,source,first_seen,last_seen,request_count,info_json FROM devices WHERE device_key=?", (old_key,)).fetchone()
             if not old:
                 continue
             new = c.execute("SELECT request_count FROM devices WHERE device_key=?", (new_key,)).fetchone()
@@ -1363,14 +1382,15 @@ def reconcile_neighbors():
                             device_type=CASE WHEN device_type='IoT / Unknown' THEN ? ELSE device_type END,
                             icon=CASE WHEN icon='📦' THEN ? ELSE icon END,
                             confidence=CASE WHEN confidence='low' THEN ? ELSE confidence END,
+                            first_seen=CASE WHEN first_seen='' OR first_seen > ? THEN ? ELSE first_seen END,
                             last_seen=CASE WHEN last_seen < ? THEN ? ELSE last_seen END,
                             request_count=request_count+?, info_json=CASE WHEN info_json='{}' THEN ? ELSE info_json END
                             WHERE device_key=?""",
-                           (old[0], old[1], mac, old[3], old[4], old[5], old[7], old[7], old[8], old[9], new_key))
+                           (old[0], old[1], mac, old[3], old[4], old[5], old[7], old[7], old[8], old[8], old[9], old[10], new_key))
             else:
-                c.execute("""INSERT INTO devices(device_key,name,hostname,mac,device_type,icon,confidence,source,last_seen,request_count,info_json)
-                             VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                          (new_key, old[0], old[1], mac, old[3], old[4], old[5], old[6], old[7], old[8], old[9]))
+                c.execute("""INSERT INTO devices(device_key,name,hostname,mac,device_type,icon,confidence,source,first_seen,last_seen,request_count,info_json)
+                             VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                          (new_key, old[0], old[1], mac, old[3], old[4], old[5], old[6], old[7], old[8], old[9], old[10]))
             # Move IP observations without violating the UNIQUE(device_key, ip) constraint.
             old_ips = c.execute("SELECT ip,last_seen FROM device_ips WHERE device_key=?", (old_key,)).fetchall()
             for old_ip, old_ip_seen in old_ips:
