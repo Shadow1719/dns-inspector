@@ -7,7 +7,7 @@ import socket
 import sqlite3
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
 import requests
@@ -76,7 +76,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .device-type-icon{margin-right:0;width:16px;height:16px;flex-basis:16px;background:transparent}
 .client-chip{display:inline-block;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 7px;margin:2px;font-size:.85em}
-.glance-domain{font-weight:650}.external-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.external-tool{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid #30363d;border-radius:7px;background:#161b22;color:#8b949e;font-size:.74rem;text-decoration:none}.external-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tools{display:inline-flex;gap:5px;margin-left:6px;vertical-align:middle}.inline-tool{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#8b949e;font-size:.72rem;text-decoration:none}.inline-tool svg,.external-tool svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.inline-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tool{cursor:pointer}.external-tool.icon-only{width:20px;height:20px;padding:0;justify-content:center}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
+.glance-domain{font-weight:650}.recent-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 14px;padding:12px;border:1px solid #30363d;border-radius:10px;background:#0d1117}.filter-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.filter-label{font-size:.76rem;color:#8b949e;text-transform:uppercase;letter-spacing:.06em}.filter-btn{padding:7px 10px;border-radius:8px;font-size:.82rem;font-weight:700}.filter-btn.active{background:#16395c;border-color:#58a6ff;color:#e6edf3}.filter-btn.filter-allowed.active{background:#174d2a;border-color:#3fb950;color:#7ee787}.filter-btn.filter-blocked.active{background:#6a1717;border-color:#f85149;color:#ffb4b4}.filter-btn.filter-new.active{background:#5a4610;border-color:#d29922;color:#f2cc60}.filter-select{padding:7px 9px;font-size:.82rem;min-width:120px}.results-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:#8b949e;font-size:.8rem;margin:8px 0 12px}.results-summary b{color:#e6edf3}.new-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:999px;background:#5a4610;color:#f2cc60;border:1px solid #8f6b1c;font-size:.72rem;font-weight:800;margin-left:7px;vertical-align:middle}.new-badge-dot{width:6px;height:6px;border-radius:50%;background:#d29922}.row-new td{background:rgba(210,153,34,.035)}.new-banner{display:none;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;padding:9px 12px;border:1px solid #8f6b1c;border-radius:9px;background:#2b2412;color:#f2cc60}.new-banner.show{display:flex}.new-banner button{padding:5px 9px;font-size:.78rem}.pager{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding-top:10px;border-top:1px solid #21262d}.pager-controls{display:flex;gap:6px;align-items:center}.pager button{padding:6px 10px;font-size:.8rem}.pager button:disabled{opacity:.45;cursor:default}.page-label{font-size:.8rem;color:#8b949e}.external-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.external-tool{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid #30363d;border-radius:7px;background:#161b22;color:#8b949e;font-size:.74rem;text-decoration:none}.external-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tools{display:inline-flex;gap:5px;margin-left:6px;vertical-align:middle}.inline-tool{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#8b949e;font-size:.72rem;text-decoration:none}.inline-tool svg,.external-tool svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.inline-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tool{cursor:pointer}.external-tool.icon-only{width:20px;height:20px;padding:0;justify-content:center}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
 .tabs{display:flex;gap:6px;margin:18px 0 0;padding:0 4px;position:sticky;top:0;z-index:5;background:#0d1117}
 .tab-btn{border:1px solid #30363d;background:#161b22;color:#8b949e;padding:9px 14px;border-radius:9px 9px 0 0;cursor:pointer;font-weight:700}
 .tab-btn:hover{border-color:#58a6ff;color:#c9d1d9}.tab-btn.active{background:#11161d;color:#e6edf3;border-bottom-color:#11161d}
@@ -97,8 +97,21 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
   {% if inspect_html %}{{ inspect_html|safe }}{% endif %}
   </div>
   <div class="card"><h2>At a glance</h2>
+  <div id="new-banner" class="new-banner"><span id="new-banner-text"></span><button type="button" onclick="clearNewBanner()">Dismiss</button></div>
+  <div class="recent-controls">
+    <div class="filter-group"><span class="filter-label">Status</span><button class="filter-btn active" data-status-filter="">All <span id="count-all"></span></button><button class="filter-btn filter-allowed" data-status-filter="Allowed">Allowed <span id="count-allowed"></span></button><button class="filter-btn filter-blocked" data-status-filter="Blocked">Blocked <span id="count-blocked"></span></button><button class="filter-btn" data-status-filter="Mixed">Mixed <span id="count-mixed"></span></button><button class="filter-btn" data-status-filter="Unknown">Unknown <span id="count-unknown"></span></button></div>
+    <div class="filter-group"><button class="filter-btn filter-new" id="new-filter" type="button">New &lt;24h <span id="count-new"></span></button></div>
+    <div class="filter-group"><span class="filter-label">Classification</span><select id="classification-filter" class="filter-select"><option value="">All</option></select></div>
+    <div class="filter-group"><span class="filter-label">Severity</span><select id="severity-filter" class="filter-select"><option value="">All</option></select></div>
+    <div class="filter-group"><span class="filter-label">Device</span><select id="device-filter" class="filter-select"><option value="">All</option></select></div>
+    <div class="filter-group"><span class="filter-label">Vendor</span><select id="vendor-filter" class="filter-select"><option value="">All</option></select></div>
+    <div class="filter-group" style="margin-left:auto"><span class="filter-label">Show</span><select id="page-size" class="filter-select"><option value="10">10</option><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="250">250</option><option value="500">500</option></select></div>
+  </div>
+  <div class="results-summary"><span id="results-summary"></span></div>
   <table id="recent-table"><thead><tr><th class="sortable" data-sort-key="domain" data-sort-type="text">Domain</th><th class="sortable" data-sort-key="activity" data-sort-type="number">Activity</th><th class="sortable" data-sort-key="devices" data-sort-type="number">Devices</th><th class="sortable" data-sort-key="status" data-sort-type="text">Status</th><th class="sortable" data-sort-key="severity" data-sort-type="text">Severity</th><th class="sortable" data-sort-key="classification" data-sort-type="text">Classification</th></tr></thead>
-  <tbody id="recent-body">{{ recent_html|safe }}</tbody></table></div>
+  <tbody id="recent-body">{{ recent_html|safe }}</tbody></table>
+  <div class="pager"><div class="page-label" id="page-label"></div><div class="pager-controls"><button type="button" id="page-prev">Previous</button><button type="button" id="page-next">Next</button></div></div>
+  </div>
 </section>
 <section id="tab-devices" class="tab-panel" data-panel="devices">
   <div class="card"><h2>Clients / Devices</h2>
@@ -135,23 +148,25 @@ function externalButton(url,label,icon=''){ const glyph = icon === '' ? magnifie
 function deviceRow(c){
   const ips = (c.ips || []).map(ipLink).join(' ');
   const host = c.hostname && c.hostname !== (c.name || c.vendor || c.display_name || c.identifier) ? `<div class="technical mono"><a class="link-device" href="${deviceHref(c)}" title="Open device details">HOST ${esc(c.hostname)}</a></div>` : '';
-  const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)} ${externalButton(`https://www.google.com/search?q=${encodeURIComponent(c.vendor)}`,'','')}</div>` : '';
-  const mac = c.mac ? `<div class="technical mono">${esc(c.mac)} ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}</div>` : '';
+  const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)} ${externalButton(`https://www.google.com/search?q=${encodeURIComponent(c.vendor)}`,'Search vendor')}</div>` : '';
+  const mac = c.mac ? `<div class="technical mono">${esc(c.mac)} ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'MAC lookup')}</div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
   const linkedPrimary = realDeviceLabel(c);
   const primary = linkedPrimary || c.vendor || c.identifier;
   const primaryHtml = linkedPrimary ? deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device') : `<div class="device-name">${esc(primary)}</div>`;
   const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : deviceTypeSvg(c.type, c.icon, true);
   const visualHtml = linkedPrimary ? deviceLink(c, visual) : visual;
-  return `<tr data-sort-device="${esc(primary)}" data-sort-identity="${esc(c.mac || '')}" data-sort-ips="${esc((c.ips || []).join(' '))}" data-sort-requests="${Number(c.requests)||0}"><td><div class="device">${visualHtml}<span>${primaryHtml}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'','')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  return `<tr data-sort-device="${esc(primary)}" data-sort-identity="${esc(c.mac || '')}" data-sort-ips="${esc((c.ips || []).join(' '))}" data-sort-requests="${Number(c.requests)||0}"><td><div class="device">${visualHtml}<span>${primaryHtml}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'MAC lookup')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
-function renderRecent(rows){
-  document.getElementById('recent-body').innerHTML = rows.map(r => {
-    const devices = (r.devices || []).map(d => `<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo ? `<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">` : deviceTypeSvg(d.type, d.icon, false)}${esc(d.name)}</a>`).join('');
-    return `<tr data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a><div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices || '<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`;
-  }).join('');
-  reapplyTableSorts();
-}
+let recentMeta={page:1,pages:1,total:0,page_size:50,new_count:0,status_counts:{All:0,Allowed:0,Blocked:0,Unknown:0}};let recentFilters={status:'',newOnly:false,classification:'',severity:'',device:'',vendor:'',page:1,page_size:50};let knownDomains=new Set();let initialDomainSnapshot=false;
+function ageText(iso){const t=new Date(iso).getTime();if(!Number.isFinite(t))return '';const m=Math.max(0,Math.floor((Date.now()-t)/60000));if(m<1)return 'now';if(m<60)return `${m}m`;const h=Math.floor(m/60);if(h<24)return `${h}h`;return `${Math.floor(h/24)}d`}
+function isNewRow(r){const t=new Date(r.first_seen||'').getTime();return Number.isFinite(t)&&(Date.now()-t)<86400000}
+function renderRecent(rows){document.getElementById('recent-body').innerHTML=(rows||[]).map(r=>{const devices=(r.devices||[]).map(d=>`<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo?`<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">`:deviceTypeSvg(d.type,d.icon,false)}${esc(d.name)}</a>`).join('');const n=isNewRow(r);const badge=n?`<span class="new-badge" title="First seen ${esc(r.first_seen||'')}"><span class="new-badge-dot"></span>NEW · ${esc(ageText(r.first_seen))}</span>`:'';return `<tr class="${n?'row-new':''}" data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a>${badge}<div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices||'<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`}).join('');reapplyTableSorts()}
+function setSelectOptions(id,values,selected){const e=document.getElementById(id);if(!e)return;e.innerHTML='<option value="">All</option>'+(values||[]).map(v=>{const value=typeof v==='string'?v:v.value;const label=typeof v==='string'?v:v.label;return `<option value="${esc(value)}">${esc(label)}</option>`}).join('');e.value=selected||''}
+function renderRecentControls(meta,opts){recentMeta=meta||recentMeta;const c=recentMeta.status_counts||{};[['count-all','All'],['count-allowed','Allowed'],['count-blocked','Blocked'],['count-mixed','Mixed'],['count-unknown','Unknown']].forEach(([i,k])=>{const e=document.getElementById(i);if(e)e.textContent=c[k]!=null?` ${c[k]}`:''});const n=document.getElementById('count-new');if(n)n.textContent=recentMeta.new_count!=null?` ${recentMeta.new_count}`:'';document.querySelectorAll('[data-status-filter]').forEach(b=>b.classList.toggle('active',(b.dataset.statusFilter||'')===recentFilters.status));document.getElementById('new-filter')?.classList.toggle('active',recentFilters.newOnly);const sum=document.getElementById('results-summary');if(sum)sum.innerHTML=`<b>${recentMeta.total||0}</b> matching domain${(recentMeta.total||0)===1?'':'s'} · <b>${recentMeta.new_count||0}</b> new in the last 24h`;setSelectOptions('classification-filter',opts?.classifications,recentFilters.classification);setSelectOptions('severity-filter',opts?.severities,recentFilters.severity);setSelectOptions('device-filter',opts?.devices,recentFilters.device);setSelectOptions('vendor-filter',opts?.vendors,recentFilters.vendor);const ps=document.getElementById('page-size');if(ps)ps.value=String(recentFilters.page_size);const label=document.getElementById('page-label');if(label){const a=recentMeta.total?((recentMeta.page-1)*recentMeta.page_size)+1:0;const b=recentMeta.total?Math.min(recentMeta.page*recentMeta.page_size,recentMeta.total):0;label.textContent=`Showing ${a}–${b} of ${recentMeta.total||0}`}const prev=document.getElementById('page-prev'),next=document.getElementById('page-next');if(prev)prev.disabled=recentMeta.page<=1;if(next)next.disabled=recentMeta.page>=recentMeta.pages}
+function showNewBanner(names){const b=document.getElementById('new-banner'),t=document.getElementById('new-banner-text');if(!b||!t||!names.length)return;t.innerHTML=`<b>${names.length}</b> new domain${names.length===1?'':'s'} detected · ${names.slice(0,3).map(esc).join(', ')}`;b.classList.add('show')}
+function clearNewBanner(){document.getElementById('new-banner')?.classList.remove('show')}
+function updateNewDetection(rows){const set=new Set((rows||[]).map(r=>r.domain));if(!initialDomainSnapshot){set.forEach(d=>knownDomains.add(d));initialDomainSnapshot=true;return}const fresh=[...set].filter(d=>!knownDomains.has(d));set.forEach(d=>knownDomains.add(d));if(fresh.length)showNewBanner(fresh)}
 function renderClients(rows){ document.getElementById('clients-body').innerHTML = rows.map(deviceRow).join(''); reapplyTableSorts(); }
 let tableSortState = {recent:{key:null,dir:1}, clients:{key:null,dir:1}};
 function rowSortValue(row,key,type){ const raw=row.dataset['sort'+key.charAt(0).toUpperCase()+key.slice(1)] ?? ''; return type==='number' ? (Number(raw)||0) : String(raw).toLowerCase(); }
@@ -191,19 +206,11 @@ try{
   else if(currentQuery || hasInspectContent) setActiveTab('overview');
 }catch(e){}
 renderStats({{ stats|tojson }});
-async function refresh(){
-  try{
-    const url = '/api/state' + (currentQuery ? '?q=' + encodeURIComponent(currentQuery) : '');
-    const r = await fetch(url, {cache:'no-store'}); if(!r.ok) return;
-    const data = await r.json();
-    renderRecent(data.recent); renderClients(data.clients); renderStats(data.stats);
-    if(data.inspect_html !== null){ document.getElementById('inspect-root').innerHTML = data.inspect_html; }
-    const stamp = formatUpdated(data.updated); document.getElementById('last-update-time').textContent = stamp.time; document.getElementById('last-update-date').textContent = stamp.date;
-  }catch(e){ console.debug('refresh failed', e); }
-  finally{ setTimeout(refresh, refreshMs); }
-}
-const initialStamp = formatUpdated({{ updated|tojson }}); document.getElementById('last-update-time').textContent = initialStamp.time; document.getElementById('last-update-date').textContent = initialStamp.date;
-setTimeout(refresh, refreshMs);
+function buildStateUrl(){const p=new URLSearchParams();if(currentQuery)p.set('q',currentQuery);if(recentFilters.status)p.set('status',recentFilters.status);if(recentFilters.newOnly)p.set('new','1');if(recentFilters.classification)p.set('classification',recentFilters.classification);if(recentFilters.severity)p.set('severity',recentFilters.severity);if(recentFilters.device)p.set('device',recentFilters.device);if(recentFilters.vendor)p.set('vendor',recentFilters.vendor);p.set('page',String(recentFilters.page));p.set('page_size',String(recentFilters.page_size));return '/api/state?'+p.toString()}
+function applyRecentFilterChanges(){recentFilters.page=1;refresh(true)}
+async function refresh(force=false){try{const r=await fetch(buildStateUrl(),{cache:'no-store'});if(!r.ok)return;const data=await r.json();renderRecent(data.recent);updateNewDetection(data.recent);renderRecentControls(data.recent_meta,data.filter_options);if(initialDomainSnapshot&&data.recent_meta?.new_domains?.length)showNewBanner(data.recent_meta.new_domains);renderClients(data.clients);renderStats(data.stats);if(data.inspect_html!==null)document.getElementById('inspect-root').innerHTML=data.inspect_html;const stamp=formatUpdated(data.updated);document.getElementById('last-update-time').textContent=stamp.time;document.getElementById('last-update-date').textContent=stamp.date}catch(e){console.debug('refresh failed',e)}finally{setTimeout(refresh,refreshMs)}}
+document.querySelectorAll('[data-status-filter]').forEach(b=>b.addEventListener('click',()=>{recentFilters.status=b.dataset.statusFilter||'';applyRecentFilterChanges()}));document.getElementById('new-filter')?.addEventListener('click',()=>{recentFilters.newOnly=!recentFilters.newOnly;applyRecentFilterChanges()});for(const [id,key] of [['classification-filter','classification'],['severity-filter','severity'],['device-filter','device'],['vendor-filter','vendor']])document.getElementById(id)?.addEventListener('change',e=>{recentFilters[key]=e.target.value;applyRecentFilterChanges()});document.getElementById('page-size')?.addEventListener('change',e=>{recentFilters.page_size=Number(e.target.value)||50;applyRecentFilterChanges()});document.getElementById('page-prev')?.addEventListener('click',()=>{if(recentFilters.page>1){recentFilters.page--;refresh(true)}});document.getElementById('page-next')?.addEventListener('click',()=>{if(recentFilters.page<recentMeta.pages){recentFilters.page++;refresh(true)}});
+const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;setTimeout(()=>refresh(true),refreshMs);
 </script>
 </body></html>
 """
@@ -233,6 +240,8 @@ def init_db():
             ip TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, hostname TEXT NOT NULL DEFAULT '')""")
         c.execute("""CREATE TABLE IF NOT EXISTS netify_cache(
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, json TEXT NOT NULL DEFAULT '{}')""")
+        c.execute("""CREATE TABLE IF NOT EXISTS netify_ip_cache(
+            ip TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, json TEXT NOT NULL DEFAULT '{}')""")
         c.execute("""CREATE TABLE IF NOT EXISTS dns_records_cache(
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, json TEXT NOT NULL DEFAULT '{}')""")
         c.execute("""CREATE TABLE IF NOT EXISTS client_cache(
@@ -262,6 +271,10 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS processed_queries(
             fingerprint TEXT PRIMARY KEY, seen_at TEXT NOT NULL, status_counted INTEGER NOT NULL DEFAULT 0)""")
         add_column_if_missing(c, "processed_queries", "status_counted", "INTEGER NOT NULL DEFAULT 0")
+        add_column_if_missing(c, "domains", "current_status", "TEXT NOT NULL DEFAULT 'Unknown'")
+        add_column_if_missing(c, "domains", "current_reason", "TEXT NOT NULL DEFAULT ''")
+        c.execute("""CREATE TABLE IF NOT EXISTS adguard_status_cache(
+            domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_processed_seen ON processed_queries(seen_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")
         c.commit()
@@ -329,6 +342,51 @@ def agh_get(path, **kwargs):
 
 def fetch_querylog():
     return agh_get("/control/querylog", params={"limit": 500})
+
+
+def adguard_current_status(domain):
+    """Read-only current filtering decision from AdGuard Home."""
+    domain = str(domain or "").strip().rstrip(".").lower()
+    if not domain:
+        return "Unknown", ""
+    try:
+        data = agh_get("/control/filtering/check_host", params={"name": domain})
+        reason = str(data.get("reason") or "")
+        return query_status(reason), reason
+    except Exception as e:
+        print(f"AdGuard status check failed for {domain}: {e!r}", flush=True)
+        return "Unknown", ""
+
+
+def cached_adguard_status(domain, max_age_seconds=300):
+    domain = str(domain or "").strip().rstrip(".").lower()
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(DB_PATH) as c:
+        row = c.execute("SELECT fetched_at,status,reason FROM adguard_status_cache WHERE domain=?", (domain,)).fetchone()
+    if row:
+        try:
+            fetched = datetime.fromisoformat(row[0])
+            if fetched.tzinfo is None:
+                fetched = fetched.replace(tzinfo=timezone.utc)
+            if (now - fetched).total_seconds() < max_age_seconds:
+                return row[1], row[2], False
+        except Exception:
+            pass
+    return "Unknown", "", True
+
+
+def refresh_adguard_status(domain):
+    domain = str(domain or "").strip().rstrip(".").lower()
+    if not domain:
+        return
+    status, reason = adguard_current_status(domain)
+    if status == "Unknown" and not reason:
+        return
+    now = utcnow()
+    with db_lock, sqlite3.connect(DB_PATH) as c:
+        c.execute("INSERT OR REPLACE INTO adguard_status_cache(domain,fetched_at,status,reason) VALUES(?,?,?,?)", (domain, now, status, reason))
+        c.execute("UPDATE domains SET current_status=?, current_reason=? WHERE domain=?", (status, reason, domain))
+        c.commit()
 
 
 def fetch_clients():
@@ -658,7 +716,7 @@ def ingest(force=False):
                             if qstatus == "Blocked": blocked += 1
                             elif qstatus == "Allowed": allowed += 1
                             else: unknown += 1
-                            c.execute("UPDATE domains SET blocked_requests=?, allowed_requests=?, unknown_requests=?, last_status=?, last_reason=? WHERE domain=?", (blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), domain))
+                            c.execute("UPDATE domains SET blocked_requests=?, allowed_requests=?, unknown_requests=?, last_status=?, last_reason=?, current_status=?, current_reason=? WHERE domain=?", (blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), qstatus, str(e.get("reason") or ""), domain))
                             status_backfilled += 1
                         c.execute("UPDATE processed_queries SET status_counted=1 WHERE fingerprint=?", (fp,))
                     elif existing and int(existing[0] or 0) == 0:
@@ -678,12 +736,12 @@ def ingest(force=False):
                     if qstatus == "Blocked": blocked += 1
                     elif qstatus == "Allowed": allowed += 1
                     else: unknown += 1
-                    c.execute("UPDATE domains SET last_seen=?, requests=requests+1, clients_json=?, blocked_requests=?, allowed_requests=?, unknown_requests=?, last_status=?, last_reason=? WHERE domain=?", (now, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), domain))
+                    c.execute("UPDATE domains SET last_seen=?, requests=requests+1, clients_json=?, blocked_requests=?, allowed_requests=?, unknown_requests=?, last_status=?, last_reason=?, current_status=?, current_reason=? WHERE domain=?", (now, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), qstatus, str(e.get("reason") or ""), domain))
                 else:
                     blocked = 1 if qstatus == "Blocked" else 0
                     allowed = 1 if qstatus == "Allowed" else 0
                     unknown = 1 if qstatus == "Unknown" else 0
-                    c.execute("INSERT INTO domains(domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason) VALUES(?,?,?,?,?,?,?,?,?,?)", (domain, now, now, 1, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or "")))
+                    c.execute("INSERT INTO domains(domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason,current_status,current_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (domain, now, now, 1, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), qstatus, str(e.get("reason") or "")))
                 old = c.execute("SELECT request_count FROM client_cache WHERE identifier=?", (ident,)).fetchone()
                 if old:
                     c.execute("""UPDATE client_cache SET name=?, source=?, last_seen=?, request_count=request_count+1, info_json=?, device_key=?, mac=?, hostname=? WHERE identifier=?""",
@@ -809,6 +867,79 @@ def _netify_value(obj, *keys):
     return ""
 
 
+def _netify_page_value(text, heading, stop_headings=()):
+    """Extract the first useful value following a Netify section heading."""
+    if not text:
+        return ""
+    stops = "|".join(re.escape(x) for x in stop_headings) if stop_headings else r"$^"
+    # The public Netify pages currently render section headings as plain text after
+    # HTML stripping. Keep this deliberately permissive because their markup changes.
+    pattern = rf"\b{re.escape(heading)}\b\s+(.{{2,220}}?)(?=\s+(?:{stops})\b|$)"
+    m = re.search(pattern, text, re.I)
+    if not m:
+        return ""
+    value = re.sub(r"\s+", " ", m.group(1)).strip(" .,:;-|")
+    return value
+
+
+def _netify_extract_stack(text):
+    """Parse platform/network/ASN labels from a Netify public page."""
+    result = {}
+    headings = ("Associated Platform", "Associated Network", "Associated IPs", "Routing Info",
+                "IP Info", "Platform", "Network", "ASN Route", "Location", "Category", "Organization")
+    platform = _netify_page_value(text, "Associated Platform", headings[1:])
+    network = _netify_page_value(text, "Associated Network", headings[2:])
+    if platform:
+        result["platform"] = platform.split(" - ", 1)[0].strip()
+    if network:
+        result["network"] = network.split(" - ", 1)[0].strip()
+    m = re.search(r"\bASN\s+(AS\d+)\b", text, re.I)
+    if m:
+        result["asn"] = m.group(1).upper()
+    # IP pages expose "ASN Label" as well as the ASN tag.
+    if not result.get("asn"):
+        m = re.search(r"\bASN\s+Label\s+([^|]+?)(?=\s+ASN Route\b|\s+Category\b|\s+Organization\b|$)", text, re.I)
+        if m:
+            result["asn_label"] = m.group(1).strip(" .,:;-|")
+    return result
+
+
+def netify_ip_lookup(ip, force=False):
+    """Best-effort enrichment from Netify's public IP pages, cached locally."""
+    ip = str(ip or "").strip()
+    if not ip:
+        return {}
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            row = c.execute("SELECT fetched_at,json FROM netify_ip_cache WHERE ip=?", (ip,)).fetchone()
+        if row:
+            age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
+            if (not force) or age.total_seconds() < NETIFY_CACHE_HOURS * 3600:
+                return json.loads(row[1])
+    except Exception:
+        pass
+    result = {}
+    try:
+        url = f"https://www.netify.ai/resources/ips/{quote(ip, safe='.:')}"
+        r = session.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 DNS-Inspector/" + APP_VERSION})
+        if r.ok:
+            text = _strip_html_text(r.text)
+            result.update(_netify_extract_stack(text))
+            m = re.search(r"\b(?:Location|Country)\s+[^|]+?[-–]\s*provided by", text, re.I)
+            if m:
+                result["location"] = m.group(0).strip()
+            result["source_url"] = url
+    except Exception as e:
+        print("Netify IP lookup error:", repr(e), flush=True)
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            c.execute("INSERT OR REPLACE INTO netify_ip_cache(ip,fetched_at,json) VALUES(?,?,?)", (ip, utcnow(), json.dumps(result)))
+            c.commit()
+    except Exception:
+        pass
+    return result
+
+
 def netify_lookup(domain, force=False):
     """Best-effort enrichment from Netify's public hostname pages.
     Netify's paid Hostname API requires a key, so the Inspector uses the public
@@ -826,9 +957,6 @@ def netify_lookup(domain, force=False):
                 return json.loads(row[1])
     except Exception:
         pass
-    if not force:
-        return {}
-
     result = {}
     candidates = [domain]
     apex = apex_domain(domain)
@@ -843,8 +971,9 @@ def netify_lookup(domain, force=False):
             html = r.text
             text = _strip_html_text(html)
 
-            # Netify pages expose several facts as labelled fields. Keep the parser
-            # deliberately generic so minor wording/layout changes do not break it.
+            # Netify public hostname pages use explicit "Associated ..." sections.
+            # Parse those before the older label:value fallback.
+            result.update({k: v for k, v in _netify_extract_stack(text).items() if v and not result.get(k)})
             for label, key in (("Application", "application"), ("Platform", "platform"),
                                ("Network", "network"), ("ASN", "asn"), ("Company", "company_name"),
                                ("Country", "country"), ("Website", "website_url")):
@@ -856,7 +985,6 @@ def netify_lookup(domain, force=False):
                     if value:
                         result[key] = value
 
-            # Structured data is more stable than page prose when Netify changes its UI.
             structured = []
             for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>', html, re.I | re.S):
                 try:
@@ -877,12 +1005,7 @@ def netify_lookup(domain, force=False):
                 if isinstance(author, dict) and not result.get("company_name"):
                     result["company_name"] = _netify_value(author, "name")
 
-            # Common Netify wording on hostname pages.
-            patterns = [
-                r"is associated with (?:the )?(.+?) application",
-                r"associated with (?:the )?(.+?) application",
-            ]
-            for pat in patterns:
+            for pat in (r"is associated with (?:the )?(.+?) application", r"associated with (?:the )?(.+?) application"):
                 m = re.search(pat, text, re.I)
                 if m:
                     app_name = m.group(1).strip(" .,:;-")
@@ -890,7 +1013,6 @@ def netify_lookup(domain, force=False):
                         result["application"] = app_name
                         break
 
-            # Extract useful hostname/network facts when present on the public page.
             if not result.get("ips"):
                 ips = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", text)
                 if ips:
@@ -909,16 +1031,12 @@ def netify_lookup(domain, force=False):
                     if not result.get("description"):
                         result["description"] = text[max(0, m.start()):m.end()+180]
 
-            # Netify application pages can expose the primary domain/website.
             if result.get("application") and not result.get("website_url"):
                 slug = re.sub(r"[^a-z0-9]+", "-", result["application"].lower()).strip("-")
                 if slug:
                     try:
-                        ar = session.get(
-                            f"https://www.netify.ai/resources/applications/{quote(slug, safe='-')}",
-                            timeout=10,
-                            headers={"User-Agent": "Mozilla/5.0 DNS-Inspector/" + APP_VERSION},
-                        )
+                        ar = session.get(f"https://www.netify.ai/resources/applications/{quote(slug, safe='-')}", timeout=10,
+                                         headers={"User-Agent": "Mozilla/5.0 DNS-Inspector/" + APP_VERSION})
                         if ar.ok:
                             at = _strip_html_text(ar.text)
                             pm = re.search(r"Primary Domains\s+(.{0,1000})", at, re.I)
@@ -929,15 +1047,39 @@ def netify_lookup(domain, force=False):
                     except Exception:
                         pass
 
-            # Useful fallbacks for the UI: Netify application names often encode the owner.
             app = result.get("application", "")
             if not result.get("company_name") and app:
                 for marker, owner in (("LG Smart TV", "LG Electronics"), ("LG TV", "LG Electronics"),
-                                      ("Samsung", "Samsung Electronics"), ("Bosch", "Bosch"),
-                                      ("Roborock", "Roborock"), ("PETKIT", "PETKIT")):
+                                      ("LG", "LG Electronics"), ("Samsung", "Samsung Electronics"),
+                                      ("Bosch", "Bosch"), ("Roborock", "Roborock"), ("PETKIT", "PETKIT")):
                     if marker.lower() in app.lower():
                         result["company_name"] = owner
                         break
+
+            # If the hostname page does not expose platform/network/ASN directly,
+            # use its associated IPs. We only promote a value when the evidence is
+            # consistent across the IPs we inspect, avoiding misleading mixed results.
+            ips = result.get("ips") or []
+            if ips and (not result.get("platform") or not result.get("network") or not result.get("asn")):
+                ip_results = [netify_ip_lookup(ip) for ip in ips[:8]]
+                for key in ("platform", "network", "asn"):
+                    if result.get(key):
+                        continue
+                    vals = [str(x.get(key) or "").strip() for x in ip_results if str(x.get(key) or "").strip()]
+                    if vals:
+                        counts = {v: vals.count(v) for v in set(vals)}
+                        best = max(counts, key=counts.get)
+                        # Require a majority of observed IPs to agree.
+                        if counts[best] >= max(1, len(vals) // 2 + 1):
+                            result[key] = best
+                if not result.get("platform"):
+                    vals = [str(x.get("platform") or "").strip() for x in ip_results if x.get("platform")]
+                    if vals and len(set(vals)) == 1:
+                        result["platform"] = vals[0]
+                if not result.get("network"):
+                    vals = [str(x.get("network") or "").strip() for x in ip_results if x.get("network")]
+                    if vals and len(set(vals)) == 1:
+                        result["network"] = vals[0]
 
             if result:
                 result["source_url"] = url
@@ -1115,8 +1257,11 @@ def resolve_dns(domain, records=None):
     return ips[:12]
 
 def inline_external_button(url, title, icon=""):
-    glyph = "<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='11' cy='11' r='6.5'></circle><path d='M16 16l5 5'></path></svg>" if icon == "" else _html(icon)
-    return f"<a class='inline-tool' href='{_html(url)}' title='{_html(title)}' aria-label='{_html(title)}' target='_blank' rel='noopener noreferrer'>{glyph}</a>"
+    # All external actions use the same magnifier + visible label. The icon
+    # argument is retained for compatibility but intentionally ignored so the
+    # UI stays uniform everywhere.
+    glyph = "<svg viewBox='0 0 24 24' aria-hidden='true'><circle cx='11' cy='11' r='6.5'></circle><path d='M16 16l5 5'></path></svg>"
+    return f"<a class='external-tool' href='{_html(url)}' title='{_html(title)}' aria-label='{_html(title)}' target='_blank' rel='noopener noreferrer'>{glyph} {_html(title)}</a>"
 
 
 def netify_url(hostname):
@@ -1395,10 +1540,10 @@ def build_explanation(domain, tracker, rdap, client_details, netify=None):
 def inspect_domain(domain):
     domain = domain.lower().rstrip(".")
     with sqlite3.connect(DB_PATH) as c:
-        row = c.execute("SELECT domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason FROM domains WHERE domain=?", (domain,)).fetchone()
+        row = c.execute("SELECT domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason,current_status,current_reason FROM domains WHERE domain=?", (domain,)).fetchone()
         if not row:
             return None
-        blocked_requests, allowed_requests, unknown_requests, last_status, last_reason = row[5], row[6], row[7], row[8], row[9]
+        blocked_requests, allowed_requests, unknown_requests, last_status, last_reason, current_status, current_reason = row[5], row[6], row[7], row[8], row[9], row[10], row[11]
         tracker = tracker_lookup(domain)
         # Slow external enrichment is read from local cache only. Missing or
         # expired data is refreshed asynchronously below.
@@ -1421,35 +1566,83 @@ def inspect_domain(domain):
     return {
         "domain": row[0], "first_seen": row[1], "last_seen": row[2], "requests": row[3], "clients": clients_map,
         "classification": classification, "badge_class": badge, "severity_class": severity, "tracker": tracker,
-        "status": status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))[0], "status_class": status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))[1],
+        "status": (current_status if current_status and current_status != "Unknown" else status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))[0]), "status_class": ((current_status if current_status and current_status != "Unknown" else status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))[0]).lower()),
         "severity": severity_for_classification(classification)[0], "severity_text_class": severity_for_classification(classification)[1],
-        "status_counts": {"blocked": int(blocked_requests or 0), "allowed": int(allowed_requests or 0), "unknown": int(unknown_requests or 0)}, "last_status": last_status, "last_reason": last_reason,
+        "status_counts": {"blocked": int(blocked_requests or 0), "allowed": int(allowed_requests or 0), "unknown": int(unknown_requests or 0)}, "last_status": last_status, "last_reason": last_reason, "current_status": current_status, "current_reason": current_reason,
         "company": {"name": tracker.get("company_name") or rdap.get("org") or netify.get("company_name") or netify.get("application") or "", "description": tracker.get("description", "") or netify.get("description", ""), "website_url": tracker.get("company_website", "") or tracker.get("website_url", "") or netify.get("website_url", ""), "country": tracker.get("country", "") or rdap.get("country", "") or netify.get("country", "")},
         "rdap": rdap, "netify": netify, "dns": dns, "dns_records": dns_records, "client_details": client_details,
         "explanation": build_explanation(domain, tracker, rdap, client_details, netify),
     }
 
-def get_recent():
-    with sqlite3.connect(DB_PATH) as c:
-        rows = c.execute("SELECT domain,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status FROM domains ORDER BY requests DESC LIMIT 50").fetchall()
-        out = []
-        for domain, requests_count, clients_json, blocked_requests, allowed_requests, unknown_requests, last_status in rows:
-            t = tracker_lookup(domain)
-            r = rdap_lookup(domain)
-            n = netify_lookup(domain)
-            cls, badge, severity = classify(t, r, n)
-            if _cache_needs_refresh("netify_cache", domain, NETIFY_CACHE_HOURS):
-                threading.Thread(target=refresh_domain_enrichment, args=(domain,), daemon=True).start()
-            clients = canonicalize_client_map(json.loads(clients_json or "{}"))
-            device_rows = []
-            for key, count in sorted(clients.items(), key=lambda kv: kv[1], reverse=True)[:6]:
-                d = client_display(c, key, count)
-                device_rows.append({"device_key": d.get("device_key", key), "identifier": d.get("identifier", key), "name": d.get("hostname") or d.get("name") or d.get("vendor") or d.get("display_name") or key, "icon": d.get("icon", "📦"), "type": d.get("type", "IoT / Unknown"), "vendor_logo": d.get("vendor_logo", "")})
-            status, status_class = status_summary(int(blocked_requests or 0), int(allowed_requests or 0), int(unknown_requests or 0))
-            sev, sev_class = severity_for_classification(cls)
-            out.append({"domain": domain, "requests": requests_count, "clients": len(clients), "devices": device_rows, "classification": cls, "badge_class": badge, "severity_class": severity, "severity": sev, "severity_text_class": sev_class, "status": status, "status_class": status_class, "last_status": last_status})
-    return out
+def _parse_ui_timestamp(value):
+    if not value:
+        return None
+    try:
+        text=str(value).strip()
+        if text.endswith("Z"):
+            text=text[:-1]+"+00:00"
+        dt=datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt=dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
 
+
+def _is_new_domain(first_seen):
+    dt=_parse_ui_timestamp(first_seen)
+    return bool(dt and (datetime.now(timezone.utc)-dt).total_seconds()<86400)
+
+
+def get_filter_options():
+    with sqlite3.connect(DB_PATH) as c:
+        vendors=[r[0] for r in c.execute("SELECT DISTINCT vendor FROM devices WHERE TRIM(vendor)<>'' ORDER BY vendor COLLATE NOCASE").fetchall()]
+        devices=[{"value":k,"label":lbl} for k,lbl in c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key) AS lbl FROM devices ORDER BY lbl COLLATE NOCASE").fetchall()]
+    return {"classifications":["Known service","Telemetry / Tracking","Advertising","Suspicious","Unknown"],"severities":["Info","Low","Medium","High","Unknown"],"vendors":vendors,"devices":devices}
+
+
+def get_recent(page=1,page_size=50,status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter=""):
+    page=max(1,int(page or 1)); page_size=max(10,min(500,int(page_size or 50)))
+    order_sql="first_seen DESC" if new_only else "requests DESC"
+    scan_limit=max(500,min(3000,page*page_size+500))
+    with sqlite3.connect(DB_PATH) as c:
+        rows=c.execute(f"SELECT domain,requests,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason FROM domains ORDER BY {order_sql} LIMIT ?",(scan_limit,)).fetchall()
+        matched=[]
+        status_counts={"All":0,"Allowed":0,"Blocked":0,"Mixed":0,"Unknown":0}
+        for domain,requests_count,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason in rows:
+            clients=canonicalize_client_map(json.loads(clients_json or "{}"))
+            devices=[]; row_vendors=set(); row_keys=set()
+            for key,count in sorted(clients.items(),key=lambda kv:kv[1],reverse=True)[:6]:
+                d=client_display(c,key,count); dkey=d.get("device_key",key); row_keys.add(dkey)
+                vendor=d.get("vendor","")
+                if vendor: row_vendors.add(vendor)
+                devices.append({"device_key":dkey,"identifier":d.get("identifier",key),"name":d.get("hostname") or d.get("name") or vendor or d.get("display_name") or key,"icon":d.get("icon","📦"),"type":d.get("type","IoT / Unknown"),"vendor_logo":d.get("vendor_logo",""),"vendor":vendor})
+            t=tracker_lookup(domain); rd=rdap_lookup(domain); n=netify_lookup(domain)
+            cls,badge,severity=classify(t,rd,n)
+            cached_status,cached_reason,stale=cached_adguard_status(domain)
+            if cached_status!="Unknown": status,status_class=cached_status,cached_status.lower()
+            elif current_status and current_status!="Unknown": status,status_class=current_status,current_status.lower()
+            else: status,status_class=status_summary(int(blocked_requests or 0),int(allowed_requests or 0),int(unknown_requests or 0))
+            status_counts[status if status in status_counts else "Unknown"]+=1
+            if status_filter and status!=status_filter: continue
+            is_new=_is_new_domain(first_seen)
+            if new_only and not is_new: continue
+            sev,sev_class=severity_for_classification(cls)
+            if classification_filter and cls!=classification_filter: continue
+            if severity_filter and sev!=severity_filter: continue
+            if device_filter and device_filter not in row_keys: continue
+            if vendor_filter and vendor_filter not in row_vendors: continue
+            if stale and len(matched)<page_size*2:
+                threading.Thread(target=refresh_adguard_status,args=(domain,),daemon=True,name=f"agh-status:{domain}").start()
+            matched.append({"domain":domain,"requests":int(requests_count),"clients":len(clients),"devices":devices,"classification":cls,"badge_class":badge,"severity_class":severity,"severity":sev,"severity_text_class":sev_class,"status":status,"status_class":status_class,"last_status":last_status,"current_reason":cached_reason or current_reason,"first_seen":first_seen,"is_new":is_new})
+        total=len(matched); pages=max(1,(total+page_size-1)//page_size); page=min(page,pages); start_i=(page-1)*page_size; page_rows=matched[start_i:start_i+page_size]
+    with sqlite3.connect(DB_PATH) as c:
+        now_dt=datetime.now(timezone.utc)
+        cutoff=(now_dt-timedelta(hours=24)).isoformat()
+        exact_new=int(c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=?",(cutoff,)).fetchone()[0])
+        fresh_cutoff=(now_dt-timedelta(seconds=max(30,UI_REFRESH_SECONDS*2))).isoformat()
+        fresh_domains=[r[0] for r in c.execute("SELECT domain FROM domains WHERE first_seen>=? ORDER BY first_seen DESC LIMIT 10",(fresh_cutoff,)).fetchall()]
+    return {"rows":page_rows,"meta":{"page":page,"pages":pages,"total":total,"page_size":page_size,"new_count":exact_new,"new_domains":fresh_domains,"status_counts":status_counts}}
 
 def get_clients():
     with sqlite3.connect(DB_PATH) as c:
@@ -1587,12 +1780,10 @@ def get_stats(limit=10):
     }
 
 
-def state_payload(q=""):
-    # UI refresh is intentionally read-only against our local SQLite state.
-    # AdGuard polling is performed by the background worker every POLL_SECONDS.
-    result = inspect_domain(q) if q else None
-    return {"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "stats": get_stats(), "inspect_html": inspect_html(result) if result else None}
-
+def state_payload(q="",status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter="",page=1,page_size=50):
+    result=inspect_domain(q) if q else None
+    recent=get_recent(page=page,page_size=page_size,status_filter=status_filter,new_only=new_only,classification_filter=classification_filter,severity_filter=severity_filter,device_filter=device_filter,vendor_filter=vendor_filter)
+    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":inspect_html(result) if result else None}
 
 def client_display(c, device_key, count):
     row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
@@ -1696,11 +1887,19 @@ def worker():
 
 @app.route("/")
 def index():
-    q = request.args.get("q", "").strip()
-    result = inspect_domain(q) if q else None
-    recent = get_recent()
-    clients = get_clients()
-    return render_template_string(HTML, q=q, result=result, inspect_html=inspect_html(result) if result else "", recent_html=recent_html(recent), clients_html=clients_html(clients), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
+    q=request.args.get("q","").strip()
+    status_filter=request.args.get("status","").strip()
+    new_only=request.args.get("new","0")=="1"
+    classification_filter=request.args.get("classification","").strip()
+    severity_filter=request.args.get("severity","").strip()
+    device_filter=request.args.get("device","").strip()
+    vendor_filter=request.args.get("vendor","").strip()
+    page=int(request.args.get("page","1") or 1)
+    page_size=int(request.args.get("page_size","50") or 50)
+    result=inspect_domain(q) if q else None
+    recent=get_recent(page=page,page_size=page_size,status_filter=status_filter,new_only=new_only,classification_filter=classification_filter,severity_filter=severity_filter,device_filter=device_filter,vendor_filter=vendor_filter)
+    clients=get_clients()
+    return render_template_string(HTML,q=q,result=result,inspect_html=inspect_html(result) if result else "",recent_html=recent_html(recent["rows"]),clients_html=clients_html(clients),version=APP_VERSION,refresh_seconds=UI_REFRESH_SECONDS,refresh_seconds_ms=UI_REFRESH_SECONDS*1000,updated=utcnow(),stats=get_stats(),error=None)
 
 
 @app.route("/search")
@@ -1711,10 +1910,10 @@ def search():
 @app.route("/api/state")
 def api_state():
     try:
-        return jsonify(state_payload(request.args.get("q", "").strip()))
+        return jsonify(state_payload(q=request.args.get("q","").strip(),status_filter=request.args.get("status","").strip(),new_only=request.args.get("new","0")=="1",classification_filter=request.args.get("classification","").strip(),severity_filter=request.args.get("severity","").strip(),device_filter=request.args.get("device","").strip(),vendor_filter=request.args.get("vendor","").strip(),page=int(request.args.get("page","1") or 1),page_size=int(request.args.get("page_size","50") or 50)))
     except Exception as e:
-        print("state error:", repr(e), flush=True)
-        return jsonify({"updated": utcnow(), "recent": get_recent(), "clients": get_clients(), "stats": get_stats(), "inspect_html": None, "error": str(e)}), 200
+        print("state error:",repr(e),flush=True)
+        return jsonify({"updated":utcnow(),"recent":[],"recent_meta":{"page":1,"pages":1,"total":0,"page_size":50,"new_count":0,"new_domains":[],"status_counts":{}},"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":None,"error":str(e)}),200
 
 
 @app.route("/device")
@@ -1722,8 +1921,8 @@ def device_view():
     key = request.args.get("key", "").strip()
     d = device_detail(key)
     if not d:
-        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>Device not found</h2><p class='error'>No device exists for this identity.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
-    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_device(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>Device not found</h2><p class='error'>No device exists for this identity.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_device(d), recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
 
 
 @app.route("/ip")
@@ -1731,8 +1930,8 @@ def ip_view():
     addr = request.args.get("addr", "").strip()
     d = ip_detail(addr)
     if not d:
-        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>IP not found</h2><p class='error'>No valid IP observation exists for this address.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
-    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_ip(d), recent_html=recent_html(get_recent()), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>IP not found</h2><p class='error'>No valid IP observation exists for this address.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_ip(d), recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
 
 
 @app.route("/health")
