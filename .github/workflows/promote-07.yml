@@ -15,14 +15,22 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+      - name: Verify staged payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -d tools/app07 ]; then exit 0; fi
+          printf '%s  %s\n' 60c958f223fc43fe4504a8bddbf61b11bcc080b6d82a1acea3affba492143c0b tools/app07/aa > /tmp/checksums
+          printf '%s  %s\n' f2a4628daceded537e2d9a1a8242727a76346806a65fe6df0abf1e16dfd13cbd tools/app07/ab >> /tmp/checksums
+          printf '%s  %s\n' 272e4766e3b5c082ffd437c910b64a6a6f7f10e0847b1e5b9ca61a5c56de9dbf tools/app07/ac >> /tmp/checksums
+          printf '%s  %s\n' a780bd481ff39d0c9f679ca0764c43bfcd83a44aed6fbfbda875c4ac30c06281 tools/app07/ad >> /tmp/checksums
+          printf '%s  %s\n' 30aa133e24b632a4819bed046807bd240df97fc839352fd525364d902b68175f tools/app07/ae >> /tmp/checksums
+          sha256sum -c /tmp/checksums
       - name: Reconstruct DNS Inspector 0.7.0
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -d tools/app07 ]; then
-            echo 'No staged 0.7 payload; nothing to promote.'
-            exit 0
-          fi
+          if [ ! -d tools/app07 ]; then exit 0; fi
           cat tools/app07/aa tools/app07/ab tools/app07/ac tools/app07/ad tools/app07/ae > /tmp/app07.b64
           base64 -d /tmp/app07.b64 | gunzip > app.py
           printf '0.7.0\n' > VERSION
@@ -34,9 +42,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f /tmp/promote07 ]; then
-            exit 0
-          fi
+          if [ ! -f /tmp/promote07 ]; then exit 0; fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app.py VERSION tools/app07
