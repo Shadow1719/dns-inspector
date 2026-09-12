@@ -1,0 +1,59 @@
+name: Promote uploaded DNS Inspector 0.7.0
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    if: ${{ hashFiles('dns-inspector-0.7.0.zip') != '' && hashFiles('VERSION') == '' || hashFiles('dns-inspector-0.7.0.zip') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify uploaded archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dns-inspector-0.7.0.zip
+          rm -rf /tmp/dns07
+          mkdir -p /tmp/dns07
+          unzip -q dns-inspector-0.7.0.zip -d /tmp/dns07
+          test -f /tmp/dns07/VERSION
+          test "$(tr -d '\r\n' < /tmp/dns07/VERSION)" = "0.7.0"
+          test -f /tmp/dns07/app.py
+          python -m py_compile /tmp/dns07/app.py
+          test "$(wc -c < /tmp/dns07/app.py)" -eq 132563
+
+      - name: Promote 0.7.0 source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/dns07/.git
+          cp -a /tmp/dns07/. .
+          rm -f dns-inspector-0.7.0.zip
+          rm -rf /tmp/dns07
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo 'No changes to promote.'
+            exit 0
+          fi
+          git commit -m 'release: promote DNS Inspector v0.7.0'
+          git push origin main
+
+      - name: Remove promotion workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/promote-uploaded-07.yml
+          git add -A
+          git commit -m 'ci: remove one-shot 0.7 promotion workflow'
+          git push origin main
