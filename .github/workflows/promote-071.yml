@@ -1,0 +1,48 @@
+name: Promote DNS Inspector 0.7.1
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild and validate 0.7.1 from preserved 0.7.0 archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+            -o /tmp/dns-inspector-0.7.0.zip \
+            https://raw.githubusercontent.com/Shadow1719/dns-inspector/3a8a95c3669ca3a114516a9626e9a0fd3e71da8f/dns-inspector-0.7.0.zip
+          rm -rf /tmp/dns070
+          mkdir -p /tmp/dns070
+          unzip -q /tmp/dns-inspector-0.7.0.zip -d /tmp/dns070
+          test -f /tmp/dns070/app.py
+          test "$(tr -d '\r\n' < /tmp/dns070/VERSION)" = "0.7.0"
+          cp /tmp/dns070/app.py app.py
+          sed -e 's#^--- .*app.py#--- app.py#' -e 's#^+++ .*app.py#+++ app.py#' \
+            tools/dns-inspector-0.7.1.patch > /tmp/071.patch
+          patch -s -p0 < /tmp/071.patch
+          printf '0.7.1\n' > VERSION
+          python -m py_compile app.py
+          test "$(wc -c < app.py)" -eq 135115
+          printf '7e9a718d4acc046d881ce0d8d29dba2478f519a59cc84fafa2e8e01e9400b1e9  app.py\n' | sha256sum -c -
+
+      - name: Commit 0.7.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py VERSION
+          git commit -m 'release: DNS Inspector v0.7.1'
+          git push origin main
