@@ -33,6 +33,7 @@ TRACKERDB_URL = os.getenv(
     "https://raw.githubusercontent.com/whotracksme/whotracks.me/master/whotracksme/data/assets/trackerdb.sql",
 )
 TRACKERDB_REFRESH_HOURS = int(os.getenv("TRACKERDB_REFRESH_HOURS", "24"))
+TRACKERDB_DOWNLOAD_CHUNK_SIZE = max(64 * 1024, int(os.getenv("TRACKERDB_DOWNLOAD_CHUNK_SIZE", str(1024 * 1024))))
 RDAP_URL = os.getenv("RDAP_URL", "https://rdap.org/domain/").rstrip("/")
 MACVENDOR_URL = os.getenv("MACVENDOR_URL", "https://api.macvendors.com").rstrip("/")
 MACVENDOR_CACHE_HOURS = int(os.getenv("MACVENDOR_CACHE_HOURS", "168"))
@@ -280,11 +281,66 @@ def init_db():
         c.commit()
 
 
+def _sqlite_unistr(value):
+    """Compatibility implementation for SQLite < 3.50's unistr() function."""
+    if value is None:
+        return None
+    text = str(value)
+    out = []
+    i = 0
+    while i < len(text):
+        if text[i] != "\\":
+            out.append(text[i])
+            i += 1
+            continue
+        if i + 1 >= len(text):
+            out.append("\\")
+            i += 1
+            continue
+        nxt = text[i + 1]
+        if nxt == "\\":
+            out.append("\\")
+            i += 2
+            continue
+        digits = None
+        step = 0
+        if nxt in "uU":
+            width = 4 if nxt == "u" else 8
+            digits = text[i + 2:i + 2 + width]
+            step = 2 + width
+        elif nxt == "+":
+            digits = text[i + 2:i + 2 + 6]
+            step = 2 + 6
+        else:
+            digits = text[i + 1:i + 5]
+            step = 4
+        expected_len = 4 if nxt not in "uU+" else (6 if nxt == "+" else 4)
+        if digits and len(digits) == expected_len and all(ch in "0123456789abcdefABCDEF" for ch in digits):
+            try:
+                codepoint = int(digits, 16)
+                if 0 <= codepoint <= 0x10FFFF:
+                    out.append(chr(codepoint))
+                    i += step
+                    continue
+            except (ValueError, OverflowError):
+                pass
+        out.append("\\")
+        i += 1
+    return "".join(out)
+
+
+def _open_trackerdb(path):
+    c = sqlite3.connect(path)
+    if sqlite3.sqlite_version_info < (3, 50, 0):
+        c.create_function("unistr", 1, _sqlite_unistr)
+    return c
+
+
 def trackerdb_ready():
     if not os.path.exists(TRACKERDB_PATH):
         return False
     try:
-        with sqlite3.connect(TRACKERDB_PATH) as c:
+        with _open_trackerdb(TRACKERDB_PATH) as c:
             c.execute("SELECT 1 FROM tracker_domains LIMIT 1").fetchone()
         return True
     except Exception:
@@ -295,24 +351,43 @@ def trackerdb_refresh_needed():
     return (not trackerdb_ready()) or (time.time() - os.path.getmtime(TRACKERDB_PATH) > TRACKERDB_REFRESH_HOURS * 3600)
 
 
+def _execute_sql_file(conn, path):
+    """Execute a SQL dump incrementally to avoid holding the full snapshot in RAM."""
+    statement = []
+    with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
+        for raw_line in f:
+            statement.append(raw_line)
+            candidate = "".join(statement)
+            if sqlite3.complete_statement(candidate):
+                conn.executescript(candidate)
+                statement.clear()
+    if statement and "".join(statement).strip():
+        conn.executescript("".join(statement))
+
+
 def refresh_trackerdb(force=False):
     if not force and not trackerdb_refresh_needed():
         return
     tmp, newdb = TRACKERDB_PATH + ".download", TRACKERDB_PATH + ".new"
     try:
         print("Downloading TrackerDB snapshot...", flush=True)
-        r = requests.get(TRACKERDB_URL, timeout=30)
-        r.raise_for_status()
-        with open(tmp, "wb") as f:
-            f.write(r.content)
+        with requests.get(TRACKERDB_URL, timeout=60, stream=True) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=TRACKERDB_DOWNLOAD_CHUNK_SIZE):
+                    if chunk:
+                        f.write(chunk)
         if os.path.exists(newdb):
             os.remove(newdb)
-        with sqlite3.connect(newdb) as c:
-            c.executescript(r.text)
+        with _open_trackerdb(newdb) as c:
+            _execute_sql_file(c, tmp)
             c.execute("PRAGMA journal_mode=DELETE")
             c.commit()
         os.replace(newdb, TRACKERDB_PATH)
-        os.remove(tmp)
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
         print("TrackerDB ready.", flush=True)
     except Exception as e:
         print("TrackerDB refresh error:", repr(e), flush=True)
@@ -1877,7 +1952,7 @@ def worker():
     # Doing this in the opposite order can reintroduce the old ip:* keys.
     migrate_legacy_domain_clients()
     reconcile_neighbors()
-    refresh_trackerdb()
+    threading.Thread(target=refresh_trackerdb, daemon=True, name="trackerdb-refresh").start()
     while True:
         started = time.time()
         ingest()
