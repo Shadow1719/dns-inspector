@@ -38,6 +38,7 @@ jobs:
           test "$(wc -c < /tmp/dns07/app.py)" -eq 132563
           rm -rf /tmp/dns07/.git
           cp -a /tmp/dns07/. .
+          git checkout -- .github
           rm -f dns-inspector-0.7.0.zip
           rm -rf /tmp/dns07
           git config user.name 'github-actions[bot]'
