@@ -17,7 +17,6 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -46,6 +45,46 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=sha-
 
+      - name: Read application version
+        id: version
+        run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch official vendor favicons
+        shell: bash
+        run: |
+          set -u
+          mkdir -p static/vendor-favicons
+          fetch() {
+            name="$1"; shift
+            for url in "$@"; do
+              echo "Fetching official $name favicon from $url"
+              tmp="static/vendor-favicons/$name.tmp"
+              if curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 -A "Mozilla/5.0 (DNS Inspector build)" "$url" -o "$tmp"; then
+                mime="$(file --brief --mime-type "$tmp" 2>/dev/null || true)"
+                case "$mime" in
+                  image/*)
+                    mv -f "$tmp" "static/vendor-favicons/$name.ico"
+                    echo "Fetched $name favicon ($mime)"
+                    return 0
+                    ;;
+                  *)
+                    echo "Ignoring non-image response for $name: $mime"
+                    rm -f "$tmp"
+                    ;;
+                esac
+              fi
+            done
+            echo "Warning: could not fetch an official favicon for $name; generic device icon will be used."
+            rm -f "static/vendor-favicons/$name.ico" "static/vendor-favicons/$name.tmp"
+            return 0
+          }
+          fetch dell https://www.dell.com/favicon.ico https://www.dell.com/favicon.png
+          fetch lg https://www.lg.com/favicon.ico https://www.lg.com/favicon.png
+          fetch zte https://www.zte.com.cn/favicon.ico https://www.zte.com.cn/favicon.png
+          fetch bosch https://www.bosch.com/favicon.ico https://www.bosch.com/favicon.png
+          fetch roborock https://ro.roborock.com/favicon.ico https://global.roborock.com/favicon.ico https://ro.roborock.com/favicon.png https://global.roborock.com/favicon.png
+          fetch petkit https://www.petkit.com/favicon.ico https://www.petkit.com/favicon.png
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -53,23 +92,19 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Create source archive
-        if: startsWith(github.ref, 'refs/tags/v')
-        run: |
-          git archive \
-            --format=zip \
-            --output="dns-inspector-${GITHUB_REF_NAME}.zip" \
-            "${GITHUB_REF_NAME}"
-
-      - name: Create GitHub Release
+      - name: Package source archive and create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            "dns-inspector-${GITHUB_REF_NAME}.zip#Source archive" \
-            --title "DNS Inspector ${GITHUB_REF_NAME}" \
-            --generate-notes
+          zip -qr "dns-inspector-${VERSION}.zip" . -x '.git/*' 'dns-inspector-*.zip'
+          gh release create "${GITHUB_REF_NAME}" "dns-inspector-${VERSION}.zip" \
+            --title "DNS Inspector ${VERSION}" \
+            --generate-notes \
+            --latest
