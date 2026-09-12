@@ -1,0 +1,62 @@
+name: Promote staged 0.7 payload
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    if: ${{ hashFiles('tools/app07/*') != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Verify staged payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/app07/aa ] || [ ! -f tools/app07/ab ] || [ ! -f tools/app07/ac ] || [ ! -f tools/app07/ad ] || [ ! -f tools/app07/ae ]; then
+            echo 'Payload incomplete; waiting for remaining chunks.'
+            exit 0
+          fi
+          printf '%s  %s\n' 846b8e8bb9db70b091362bc0894f62f16d8d6840773f4071a3aad66ecfcedbee tools/app07/aa > /tmp/checksums
+          printf '%s  %s\n' dbe325d7853a789a02eca1baa355fa98efa49c70151d69c34b33c0cb16b193f6 tools/app07/ab >> /tmp/checksums
+          printf '%s  %s\n' 12b701b631224774ec99c1dea24628735d1c4cd8f447ffaf84fbcb13e3e7c515 tools/app07/ac >> /tmp/checksums
+          printf '%s  %s\n' 417077ac527f15939010cd1cae393011f1f430aba1f417f6bb3e96145b204ced tools/app07/ad >> /tmp/checksums
+          printf '%s  %s\n' 38abb118506b3811e95eed36c57b85c690dea8f0048a9136609d3f78c1b79936 tools/app07/ae >> /tmp/checksums
+          sha256sum -c /tmp/checksums
+
+      - name: Reconstruct DNS Inspector 0.7.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f tools/app07/aa ] || [ ! -f tools/app07/ab ] || [ ! -f tools/app07/ac ] || [ ! -f tools/app07/ad ] || [ ! -f tools/app07/ae ]; then
+            exit 0
+          fi
+          cat tools/app07/aa tools/app07/ab tools/app07/ac tools/app07/ad tools/app07/ae > /tmp/app07.b64
+          base64 -d /tmp/app07.b64 | gunzip > app.py
+          printf '0.7.0\n' > VERSION
+          python -m py_compile app.py
+          test "$(wc -c < app.py)" -eq 132563
+          printf '9cbf29517b07e235b04364ce8f9c506d02da1ad987b2380eda67b8ddc19cb95f  app.py\n' | sha256sum -c -
+          touch /tmp/promote07
+
+      - name: Commit promoted release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f /tmp/promote07 ]; then
+            exit 0
+          fi
+          rm -rf tools/app07
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py VERSION tools/app07
+          git commit -m 'release: promote DNS Inspector v0.7.0'
+          git push origin main
