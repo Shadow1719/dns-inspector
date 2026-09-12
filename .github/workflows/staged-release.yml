@@ -1,0 +1,63 @@
+name: Create staged historical release
+
+on:
+  push:
+    branches:
+      - "release-staging/*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ hashFiles('.release-manifest') != '' }}
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Read release manifest
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(awk -F= '$1=="version"{print $2}' .release-manifest)"
+          target="$(awk -F= '$1=="target"{print $2}' .release-manifest)"
+          title="$(awk -F= '$1=="title"{sub(/^title=/, ""); print}' .release-manifest)"
+          notes_file="$(awk -F= '$1=="notes_file"{print $2}' .release-manifest)"
+          test -n "$version"
+          test -n "$target"
+          test -n "$title"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          echo "notes_file=$notes_file" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release at historical commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.manifest.outputs.version }}
+          TARGET: ${{ steps.manifest.outputs.target }}
+          TITLE: ${{ steps.manifest.outputs.title }}
+          NOTES_FILE: ${{ steps.manifest.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; nothing to do."
+          else
+            gh release create "$tag" \
+              --target "$TARGET" \
+              --title "$TITLE" \
+              --notes-file "$NOTES_FILE" \
+              --latest
+          fi
+
+      - name: Remove staging branch
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push origin --delete "$GITHUB_REF_NAME" || true
