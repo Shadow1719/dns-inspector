@@ -9,7 +9,6 @@ permissions:
 
 jobs:
   promote:
-    if: ${{ hashFiles('tools/app07/*') != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -17,6 +16,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Reconstruct DNS Inspector 0.7.0
+        if: ${{ hashFiles('tools/app07/*') != '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -27,6 +27,7 @@ jobs:
           test "$(wc -c < app.py)" -gt 100000
           rm -rf tools/app07
       - name: Commit promoted release
+        if: ${{ hashFiles('tools/app07/*') != '' }}
         shell: bash
         run: |
           set -euo pipefail
