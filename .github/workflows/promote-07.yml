@@ -16,21 +16,27 @@ jobs:
         with:
           fetch-depth: 0
       - name: Reconstruct DNS Inspector 0.7.0
-        if: ${{ hashFiles('tools/app07/*') != '' }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ ! -d tools/app07 ]; then
+            echo 'No staged 0.7 payload; nothing to promote.'
+            exit 0
+          fi
           cat tools/app07/aa tools/app07/ab tools/app07/ac tools/app07/ad tools/app07/ae > /tmp/app07.b64
           base64 -d /tmp/app07.b64 | gunzip > app.py
           printf '0.7.0\n' > VERSION
           python -m py_compile app.py
           test "$(wc -c < app.py)" -gt 100000
+          touch /tmp/promote07
           rm -rf tools/app07
       - name: Commit promoted release
-        if: ${{ hashFiles('tools/app07/*') != '' }}
         shell: bash
         run: |
           set -euo pipefail
+          if [ ! -f /tmp/promote07 ]; then
+            exit 0
+          fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add app.py VERSION tools/app07
