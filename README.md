@@ -1,426 +1,248 @@
 # DNS Inspector
 
-DNS Inspector is a self-hosted, read-only network visibility and DNS intelligence dashboard built around AdGuard Home.
+**Self-hosted, read-only network visibility and DNS intelligence for AdGuard Home.**
 
-It was created to answer a simple question:
+[![Docker](https://img.shields.io/badge/Docker-GHCR-2496ED?logo=docker&logoColor=white)](https://github.com/Shadow1719/dns-inspector/pkgs/container/dns-inspector)
+[![GitHub Actions](https://github.com/Shadow1719/dns-inspector/actions/workflows/docker.yml/badge.svg)](https://github.com/Shadow1719/dns-inspector/actions/workflows/docker.yml)
+[![Latest release](https://img.shields.io/github/v/release/Shadow1719/dns-inspector?display_name=tag)](https://github.com/Shadow1719/dns-inspector/releases)
 
 > **What is doing what on my network, and what can I reliably tell about the domains my devices contact?**
 
-DNS Inspector does **not** replace AdGuard Home in the current architecture. AdGuard Home remains the DNS resolver/filter and the source of query activity. DNS Inspector observes that activity, keeps its own local history, enriches domains and devices with additional intelligence, and presents the result in a human-friendly way.
+DNS Inspector observes AdGuard Home traffic, keeps local history, correlates devices and IPs, enriches domains with public intelligence, and turns the result into an investigation-friendly dashboard.
 
-The project is intentionally designed so that the current AdGuard-backed architecture can later evolve into a standalone DNS/filtering product without throwing away the intelligence, history, cache and UI layers.
+**AdGuard Home remains responsible for DNS resolution and filtering. DNS Inspector does not modify AdGuard policy.**
 
-## What DNS Inspector does
+## What it provides
 
-DNS Inspector continuously imports DNS query activity from AdGuard Home into a local SQLite database and builds a local view of:
+- DNS query history and request counts
+- device/client identity and IP observations
+- MAC/OUI vendor information
+- domain ownership and infrastructure details
+- TrackerDB / Ghostery classification
+- Netify application/company context
+- RDAP registration signals
+- DNS A/AAAA/CNAME/NS/MX/TXT/SOA/CAA/SRV records
+- conservative classification, confidence and severity signals
+- persistent local enrichment cache
+- clickable domain / device / IP investigation views
+- Overview, Devices and Analytics dashboards
 
-- domains contacted by devices;
-- request counts and activity history;
-- devices/clients and their IP observations;
-- stable MAC/client identities when available;
-- hostname information;
-- MAC/OUI vendor information;
-- domain ownership and metadata;
-- DNS infrastructure such as A/AAAA/CNAME/NS/MX/TXT/SOA/CAA/SRV data;
-- classification and confidence signals;
-- evidence explaining why a domain is considered known, telemetry, advertising, ownership-related, or unknown;
-- locally cached enrichment so the UI does not wait for external services on every inspection;
-- analytics such as most requested domains, most active devices, most active vendors and most active IPs.
+Unknown is deliberately **not** treated as malicious.
 
-It is an **observation and intelligence layer**, not a second blocking engine.
-
-## Current architecture
+## Architecture
 
 ```text
-                    ┌────────────────────┐
-                    │    AdGuard Home    │
-                    │ DNS + filtering    │
-                    │ Query Log          │
-                    └─────────┬──────────┘
-                              │
-                              │ read-only
-                              ▼
-                    ┌────────────────────┐
-                    │   DNS Inspector    │
-                    │                    │
-                    │ background worker  │
-                    │ device discovery   │
-                    │ domain intelligence│
-                    │ cache / history    │
-                    └─────────┬──────────┘
-                              │
-                              ▼
-                         ┌─────────┐
-                         │ SQLite  │
-                         └────┬────┘
-                              │
-                    ┌─────────┴─────────┐
-                    │                   │
-                    ▼                   ▼
-                 Web UI            local cache
+                 AdGuard Home
+              DNS + filtering
+                    │
+                    │ read-only
+                    ▼
+             ┌───────────────┐
+             │ DNS Inspector │
+             │               │
+             │ ingest worker │
+             │ identity      │
+             │ enrichment    │
+             │ history/cache │
+             └───────┬───────┘
+                     │
+                     ▼
+                  SQLite
+                     │
+             ┌───────┴───────┐
+             ▼               ▼
+           Web UI         Local cache
 ```
 
-Browser refreshes read the local SQLite state. The AdGuard query log is polled by the background worker, not by every browser refresh.
+Browser refreshes read local state. AdGuard Query Log polling is performed by the background worker rather than by every browser request.
 
-## Platforms / operating system
+## Deployment
 
-The application is built as a **Linux/Docker application**.
-
-The primary deployment target for this project is:
-
-- **TrueNAS SCALE Custom App**;
-- Docker-compatible Linux environments.
-
-The container exposes the Flask web application on port `8080` by default. In the user's TrueNAS deployment it is published on host port `8085`.
-
-A future standalone Windows/Android version is possible, but that is a roadmap direction, not a current requirement.
-
-## Dependencies
-
-### Required
-
-**A functioning AdGuard Home installation is currently required.**
-
-DNS Inspector does not currently contain its own DNS resolver/filtering engine. It expects an already-running AdGuard Home instance with an accessible Query Log/API endpoint.
-
-At minimum, the container must be able to reach the configured `AGH_URL` and authenticate with the configured credentials.
-
-### Optional / supporting data sources
-
-DNS Inspector can enrich data from external public sources. These are enrichment sources, not mandatory replacements for AdGuard Home:
-
-- **WhoTracks.me / Ghostery TrackerDB** — tracker/service classification and related metadata;
-- **Netify public hostname/application intelligence** — application/company context and secondary ownership evidence;
-- **RDAP** — registration/ownership information when available;
-- **Google DNS-over-HTTPS** — direct DNS record enrichment for infrastructure details;
-- **MAC vendor service** — organization/vendor information for MAC prefixes.
-
-The application caches enrichment locally so these services are not queried on every page refresh.
-
-## How domain enrichment works
-
-When a domain is inspected, DNS Inspector does not blindly trust one source.
-
-It combines multiple signals where available:
-
-```text
-Domain
-  │
-  ├── TrackerDB
-  │      └── tracker/category/service information
-  │
-  ├── Netify
-  │      └── application/company context
-  │
-  ├── RDAP
-  │      └── registration/ownership signals
-  │
-  └── DNS records
-         └── A/AAAA/CNAME/NS/MX/TXT/SOA/CAA/SRV
-```
-
-The strongest available evidence is shown in the **Who**, **Infrastructure**, and **Why is this here?** sections.
-
-Unknown is intentionally **not** treated as malicious. A domain can be unknown simply because the available public intelligence does not identify it confidently.
-
-## Local enrichment cache
-
-A key performance decision is that external enrichment is cached locally.
-
-The inspection path serves cached data immediately. Missing or expired enrichment is refreshed in the background and stored in SQLite.
-
-Default TTLs:
-
-| Source | Default TTL |
-|---|---:|
-| Netify | 15 days |
-| RDAP | 30 days |
-| DNS records | 7 days |
-| MAC vendor | 7 days |
-| Hostname cache | 24 hours |
-| TrackerDB snapshot | 24 hours |
-
-These values can be overridden with environment variables.
-
-This design is deliberate: the first discovery of a new domain can be slower, but subsequent inspections should be fast and should not depend on third-party response time.
-
-## Device identity
-
-Device identity is intentionally conservative.
-
-Preferred stable identity sources are:
-
-1. AdGuard client information when a stable client identifier/MAC is exposed;
-2. MAC address discovered through the local neighbor snapshot;
-3. IP addresses are kept as **observations**, not permanent device identity.
-
-The optional `neighbors.txt` file is generated outside the container (for example by a TrueNAS scheduled task) and mounted read-only/read-write according to deployment needs.
-
-MAC vendor lookup identifies the organization associated with the MAC prefix. It does **not** prove the exact device model.
-
-## Why the application is read-only
-
-DNS Inspector was intentionally designed so that it does not modify AdGuard Home configuration.
-
-It does not own or change:
-
-- blocklists;
-- allowlists;
-- DNS rewrites;
-- upstream servers;
-- protection settings;
-- AdGuard filtering policy.
-
-AdGuard remains the component responsible for DNS resolution and filtering in the current architecture. DNS Inspector only observes and explains.
-
-## UI
-
-The dashboard is divided into three tabs:
-
-### Overview
-
-A compact operational view containing:
-
-- live search/Inspect;
-- inspected-domain details;
-- **At a glance** top domain activity;
-- classification and confidence signals.
-
-### Devices
-
-A device-focused view containing:
-
-- device name / hostname;
-- vendor and vendor mark;
-- stable identity / MAC;
-- current and recent IP observations;
-- request volume;
-- device type and confidence.
-
-### Analytics
-
-A lightweight, dependency-free local analytics view with bar charts for:
-
-- most requested domains;
-- most active devices;
-- most active vendors;
-- most active IP addresses.
-
-The charts are generated in the browser from data returned by DNS Inspector. No external charting CDN is required.
-
-## Installation on TrueNAS SCALE
-
-### 1. Create persistent storage
-
-Create a dataset or directory for DNS Inspector data, for example:
-
-```text
-/mnt/Apps/dns-inspector/data
-```
-
-Mount it in the container as:
-
-```text
-/data
-```
-
-This stores the Inspector database and persistent cache data.
-
-### 2. Create a Custom App
-
-Use the Docker/Custom App interface in TrueNAS SCALE.
-
-Recommended image:
+Primary target: **TrueNAS SCALE Custom App** using the published GHCR image.
 
 ```text
 ghcr.io/shadow1719/dns-inspector:stable
 ```
 
-Container port:
+Container port: `8080`
+
+Typical TrueNAS host port: `8085`
+
+Persistent application data should be mounted at:
 
 ```text
-8080
+/data
 ```
 
-Example host port:
+Example host dataset:
 
 ```text
-8085
+/mnt/Apps/dns-inspector/data
 ```
 
-### 3. Configure AdGuard Home
-
-Set:
+### Required environment
 
 ```text
-AGH_URL=http://<adguard-host>:<adguard-port>
+AGH_URL=http://<adguard-host>:<port>
 AGH_USER=<adguard-user>
 AGH_PASS=<adguard-password>
 ```
 
-Do not put real passwords into source code or public repositories.
-
-### 4. Configure persistent storage
-
-Mount:
-
-```text
-/mnt/Apps/dns-inspector/data  ->  /data
-```
-
-### 5. Timezone
-
-For Romanian deployments:
+Recommended timezone for Romanian deployments:
 
 ```text
 Europe/Bucharest
 ```
 
-### 6. Recommended image policy
+Do not put credentials into source code, commits, issues or screenshots.
 
-Use an always-pull policy when deploying the `stable` tag if you want TrueNAS to retrieve the newest published image on redeploy.
+## Optional enrichment sources
 
-## Docker / manual installation
+DNS Inspector can use public services for metadata enrichment:
 
-The project includes a Dockerfile and requirements file.
-
-Build:
-
-```bash
-docker build -t dns-inspector .
-```
-
-Run:
-
-```bash
-docker run -d \
-  --name dns-inspector \
-  -p 8085:8080 \
-  -v /path/to/data:/data \
-  -e AGH_URL=http://adguard:3000 \
-  -e AGH_USER=... \
-  -e AGH_PASS=... \
-  ghcr.io/shadow1719/dns-inspector:stable
-```
-
-Exact AdGuard URL and port depend on the AdGuard deployment.
-
-## Environment variables
-
-| Variable | Default | Purpose |
+| Source | Purpose | Cached locally |
 |---|---|---|
-| `AGH_URL` | none | AdGuard Home URL |
-| `AGH_USER` | none | AdGuard authentication username |
-| `AGH_PASS` | none | AdGuard authentication password |
-| `POLL_SECONDS` | `10` | Background AdGuard poll interval |
-| `UI_REFRESH_SECONDS` | `10` | Browser refresh interval |
-| `DB_PATH` | `/data/inspector.db` | SQLite database path |
-| `TRACKERDB_PATH` | `/data/trackerdb.sqlite` | TrackerDB snapshot path |
-| `TRACKERDB_REFRESH_HOURS` | `24` | TrackerDB refresh interval |
-| `RDAP_URL` | `https://rdap.org/domain/` | RDAP base URL |
-| `NEIGHBORS_PATH` | `/data/neighbors.txt` | Local IP→MAC observation file |
-| `MACVENDOR_URL` | `https://api.macvendors.com` | MAC vendor lookup endpoint |
-| `MACVENDOR_CACHE_HOURS` | `168` | MAC vendor cache TTL |
-| `HOSTNAME_CACHE_HOURS` | `24` | Hostname cache TTL |
-| `NETIFY_URL` | `https://www.netify.ai/resources/hostnames/` | Netify public hostname endpoint |
-| `NETIFY_CACHE_HOURS` | `360` | Netify cache TTL |
-| `RDAP_CACHE_HOURS` | `720` | RDAP cache TTL |
-| `DNS_RECORDS_CACHE_HOURS` | `168` | DNS record cache TTL |
+| Ghostery / WhoTracks.me TrackerDB | tracker/service classification | Yes |
+| Netify | application/company context | Yes |
+| RDAP | registration/ownership signals | Yes |
+| Google DNS-over-HTTPS | DNS infrastructure records | Yes |
+| MAC vendor service | OUI/vendor attribution | Yes |
 
-## Data and privacy model
+The application does not send your AdGuard configuration or blocklists to these services.
 
-DNS Inspector keeps its local operational history in SQLite under `/data`.
+## Device identity
 
-External enrichment requests are made only for metadata/enrichment purposes. The application does not send your DNS blocklists or AdGuard configuration to the external intelligence sites listed above.
+Identity is intentionally conservative:
 
-Because domains and device identities are sensitive network information, the `/data` directory should be treated as private infrastructure data.
+1. AdGuard client information when a stable identifier/MAC is available
+2. local neighbor observations for IP → MAC correlation
+3. IP addresses remain observations rather than permanent device identity
 
-## Why this design
+The optional `neighbors.txt` file is generated outside the container and mounted into `/data`.
 
-The project deliberately separates four jobs:
+A MAC vendor identifies the organization associated with a prefix; it does not prove an exact device model.
 
-1. **AdGuard Home** — DNS resolution and filtering;
-2. **DNS Inspector ingestion** — importing query activity into local history;
-3. **Metadata/enrichment** — explaining what the observed names likely represent;
-4. **UI/analytics** — turning that information into something useful for a human.
+## Read-only design
 
-This prevents the Inspector from becoming a second DNS policy engine and lets the intelligence/history layer evolve independently.
+DNS Inspector does **not** manage:
 
-## Roadmap
+- blocklists
+- allowlists
+- DNS rewrites
+- upstream DNS servers
+- protection settings
+- filtering policy
 
-### Current / 0.6
+This separation is intentional: **AdGuard decides; DNS Inspector observes and explains.**
 
-- three-tab dashboard: Overview, Devices, Analytics;
-- local analytics charts;
-- persistent enrichment cache;
-- read-only AdGuard integration;
-- device/IP/domain contextual navigation.
+## Performance and caching
 
-### Planned
+External enrichment is cached locally. Inspection serves cached information immediately and refreshes missing/expired metadata in the background.
 
-- dedicated **Servers** view with Allowed / Blocked / Mixed / Unknown query status derived from AdGuard query results;
-- stronger vendor metadata resolver with locally cached vendor websites and logos;
-- decoupled source adapters so AdGuard Home is not hardwired into the intelligence core;
-- improved read-only AdGuard authentication/integration where supported by the installed AdGuard Home version;
-- richer trends and historical analytics;
-- eventual standalone DNS/filtering engine research for Windows and Android.
+Default TTLs:
+
+| Source | TTL |
+|---|---:|
+| Netify | 15 days |
+| RDAP | 30 days |
+| DNS records | 7 days |
+| MAC vendor | 7 days |
+| Hostname | 24 hours |
+| TrackerDB | 24 hours |
+
+The values can be overridden through environment variables.
+
+## Current release line
+
+The `main` branch currently represents the **0.6.x** line. The next planned release is **0.7.0**, focused on Overview filtering, pagination and large-result usability.
+
+### 0.7.0 prepared changes
+
+The 0.7.0 development build includes:
+
+- All / Allowed / Blocked / Mixed / Unknown status filters
+- `<24h` quick filter and NEW markers for recently first-seen domains
+- live new-domain notification banner
+- classification, severity, device and vendor filters
+- configurable page sizes from 10 to 500
+- paginated Overview domain table
+- server-side filtering/pagination for larger datasets
+
+The 0.7.0 build should be considered **pre-release until deployed and verified**.
 
 ## Version history
 
-### 0.6.0
+### 0.6.8
 
-- replaced the single long dashboard with three local tabs: **Overview**, **Devices**, **Analytics**;
-- added dependency-free analytics bar charts for top domains, devices, vendors and IPs;
-- made analytics entries clickable into the existing domain/device/IP views;
-- kept the current read-only AdGuard architecture intact;
-- prepared the UI structure for future **Servers** and additional analytics views;
-- preserved local SQLite/cache behavior from the 0.5.x releases.
+- standardized external lookup controls around the magnifier icon
+- added native hover titles / accessibility labels for external lookups
+- kept internal navigation distinct from external lookups
+- fixed HOST navigation so it opens device details
 
-### 0.5.12
+### 0.6.5
 
-- added `devices.first_seen` migration/backfill;
-- hardened device/vendor navigation paths;
-- preserved first/last-seen metadata during legacy IP→MAC reconciliation;
-- tightened rendering paths before the 0.6 feature work.
+- added Allowed / Blocked / Mixed / Unknown status semantics
+- added conservative Info / Low / Medium / High / Unknown severity
+- added local favicon and bundled vendor visuals
+- added persistent per-domain status counters and latest query reason
+
+### 0.6.1
+
+- added sortable Overview and Devices tables
+- improved domain classification using cached TrackerDB, Netify and RDAP evidence
+- hardened IP/device/domain navigation
 
 ### 0.5.7
 
-- added persistent local enrichment caching for Netify, RDAP and DNS records;
-- expired enrichment is refreshed in the background instead of blocking Inspect;
-- removed the hardcoded local AdGuard URL default.
+- persistent Netify, RDAP and DNS-record enrichment cache
+- background refresh for missing/expired enrichment
+- removed hardcoded AdGuard URL defaults
+
+Earlier release history is preserved in [`CHANGELOG.md`](CHANGELOG.md).
+
+## Development
+
+Requirements:
+
+- Python 3
+- Docker (for container builds)
+
+Local syntax check:
+
+```bash
+python -m py_compile app.py
+```
+
+Container build:
+
+```bash
+docker build -t dns-inspector:dev .
+```
+
+The GitHub Actions workflow builds and publishes the container to GHCR. Version tags matching `v*.*.*` also produce GitHub Releases with a source archive.
+
+## Project principles
+
+1. **Read-only integration with AdGuard Home.**
+2. **Unknown ≠ malicious.**
+3. **Prefer multiple evidence sources over one authoritative guess.**
+4. **Cache external intelligence locally.**
+5. **Keep stable device identity separate from transient IP observations.**
+6. **Keep policy and blocking outside DNS Inspector.**
+7. **Prefer useful, explainable intelligence over opaque scores.**
+
+## Roadmap
+
+- **0.7.x** — stabilization, large-result performance and UI filtering
+- **0.8.x** — stronger device intelligence and probabilistic identity/type evidence
+- **0.9.x** — activity, purpose and historical change detection
+- **1.0** — production hardening, retention, migrations, backup/export, authentication and maintenance tooling
+- **1.x** — anomaly detection, timelines and network relationship views
+
+## Security
+
+See [`SECURITY.md`](SECURITY.md) for reporting guidance and deployment notes.
 
 ## License / third-party data
 
-DNS Inspector is an independent project. External services and datasets used for enrichment are subject to their own terms, licenses and availability.
-
-## v0.6.5
-
-- kept **Classification** and moved it two columns to the right in Overview;
-- added **Status** with Allowed / Blocked / Mixed / Unknown semantics derived from AdGuard query-log reasons;
-- added **Severity** as a conservative presentation layer: Info / Low / Medium / High / Unknown;
-- preserved **Unknown ≠ Malicious**; severity is an interpretation aid, not a blocking verdict;
-- added a local browser favicon for DNS Inspector;
-- vendor visuals now prefer official vendor favicons downloaded during the GitHub Actions build and bundled locally in the Docker image; existing local SVG marks remain as fallback;
-- added persistent per-domain DNS status counters and latest reason with backward-compatible SQLite migration;
-- preserved the existing read-only AdGuard architecture.
-
-## v0.6.1
-
-- Click-to-sort headers on Overview and Devices tables (ascending/descending).
-- Domain classification now uses cached TrackerDB + Netify + RDAP evidence, so known services no longer remain Unknown when enrichment identifies them.
-- Classification keeps conservative semantics: Advertising, Telemetry / tracking, Known service, Known ownership, and Unknown.
-- Robust client-side navigation for IP, device and domain links.
-
-
-
-### v0.6.5
-- Replaces platform-dependent stock emoji device icons with consistent local SVG device-type icons.
-- Removes global click interception so native IP/device/domain links navigate normally.
-- Keeps IP detail focused on known devices and domains contacted.
-
-
-## v0.6.8
-- External lookup controls consistently use a magnifying-glass icon.
-- Native hover titles/ARIA labels explain where each external lookup goes (Netify, DNS records, Google Search, MAC vendor, vendor/device search).
-- Internal links consistently open DNS Inspector domain, device, or IP detail views.
-- Fixed the HOST link so it opens the device detail view instead of behaving like an IP link.
+DNS Inspector is an independent project. External services, datasets, trademarks and logos remain subject to their own terms, licenses and availability.
