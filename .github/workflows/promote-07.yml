@@ -16,37 +16,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Verify staged payload
+      - name: Reconstruct and validate DNS Inspector 0.7.0
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -f tools/app07/aa ] || [ ! -f tools/app07/ab ] || [ ! -f tools/app07/ac ] || [ ! -f tools/app07/ad ] || [ ! -f tools/app07/ae ]; then
-            echo 'Payload incomplete; waiting for remaining chunks.'
-            exit 0
-          fi
-          printf '%s  %s\n' 846b8e8bb9db70b091362bc0894f62f16d8d6840773f4071a3aad66ecfcedbee tools/app07/aa > /tmp/checksums
-          printf '%s  %s\n' dbe325d7853a789a02eca1baa355fa98efa49c70151d69c34b33c0cb16b193f6 tools/app07/ab >> /tmp/checksums
-          printf '%s  %s\n' 12b701b631224774ec99c1dea24628735d1c4cd8f447ffaf84fbcb13e3e7c515 tools/app07/ac >> /tmp/checksums
-          printf '%s  %s\n' 29302b4366337d32f2b7d5bd6090f59f3bb895e3094d6e761ef700143738ded9 tools/app07/ad >> /tmp/checksums
-          printf '%s  %s\n' c20a6af99a0afea665df1624a7cbe82175650f0c86f18d1ecaa80f47194dbbae tools/app07/ae >> /tmp/checksums
-          sha256sum -c /tmp/checksums
-
-      - name: Reconstruct DNS Inspector 0.7.0
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ ! -f tools/app07/aa ] || [ ! -f tools/app07/ab ] || [ ! -f tools/app07/ac ] || [ ! -f tools/app07/ad ] || [ ! -f tools/app07/ae ]; then
-            exit 0
-          fi
+          for f in aa ab ac ad ae; do
+            test -f "tools/app07/$f"
+          done
           cat tools/app07/aa tools/app07/ab tools/app07/ac tools/app07/ad > /tmp/app07.b64
           printf '2dJ0' >> /tmp/app07.b64
           cat tools/app07/ae >> /tmp/app07.b64
           printf '=' >> /tmp/app07.b64
           base64 -d /tmp/app07.b64 | gunzip > app.py
-          printf '0.7.0\n' > VERSION
-          python -m py_compile app.py
           test "$(wc -c < app.py)" -eq 132563
+          sha256sum app.py
           printf '9cbf29517b07e235b04364ce8f9c506d02da1ad987b2380eda67b8ddc19cb95f  app.py\n' | sha256sum -c -
+          python -m py_compile app.py
+          printf '0.7.0\n' > VERSION
+
+      - name: Commit promoted release
+        shell: bash
+        run: |
+          set -euo pipefail
           rm -rf tools/app07
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
