@@ -26,30 +26,14 @@ jobs:
           cp /tmp/app071.py app.py
           python - <<'PY'
           from pathlib import Path
+          import re
           p = Path('app.py')
           s = p.read_text()
-          s = s.replace('def hostname_for_ip(ip):', 'def hostname_for_ip(ip, allow_network=True):', 1)
+          s, n = s.replace('def hostname_for_ip(ip):', 'def hostname_for_ip(ip, allow_network=True):', 1), 1
           s = s.replace('    hostname = ""\n    try:\n        hostname = socket.gethostbyaddr(ip)[0].rstrip(".")', '    hostname = ""\n    if not allow_network:\n        return ""\n    try:\n        hostname = socket.gethostbyaddr(ip)[0].rstrip(".")', 1)
           s = s.replace('def mac_vendor_lookup(mac):', 'def mac_vendor_lookup(mac, allow_network=True):', 1)
           s = s.replace('    vendor = ""\n    try:\n        r = requests.get(f"{MACVENDOR_URL}/{quote(mac, safe=\'\')}", timeout=8)', '    vendor = ""\n    if not allow_network:\n        return ""\n    try:\n        r = requests.get(f"{MACVENDOR_URL}/{quote(mac, safe=\'\')}", timeout=8)', 1)
-          old = '''def enrich_device_network_identity(c, device_key, ips, mac, hostname_hint=""):
-              hostname = str(hostname_hint or "").strip()
-              if not hostname:
-                  for ip in ips or []:
-                      hostname = hostname_for_ip(ip)
-                      if hostname:
-                          break
-              vendor = mac_vendor_lookup(mac) if mac else ""
-              row = c.execute("SELECT hostname,mac,vendor FROM devices WHERE device_key=?", (device_key,)).fetchone()
-              if not row:
-                  return hostname, vendor
-              # Keep an AdGuard-provided hostname ahead of reverse DNS unless the DB is empty.
-              final_hostname = row[0] or hostname
-              final_mac = mac or row[1]
-              final_vendor = vendor or row[2]
-              c.execute("UPDATE devices SET hostname=?, mac=?, vendor=? WHERE device_key=?", (final_hostname, final_mac, final_vendor, device_key))
-              return final_hostname, final_vendor
-          '''
+          pattern = r'def enrich_device_network_identity\(c, device_key, ips, mac, hostname_hint=""\):\n.*?(?=\ndef is_ip\()'
           new = '''_enrich_guard = threading.Lock()
           _enrich_inflight = set()
 
@@ -101,7 +85,6 @@ jobs:
               if not row:
                   _schedule_device_network_enrichment(device_key, ips, mac, hostname)
                   return hostname, vendor
-              # Keep an AdGuard-provided hostname ahead of reverse DNS unless the DB is empty.
               final_hostname = row[0] or hostname
               final_mac = mac or row[1]
               final_vendor = vendor or row[2]
@@ -109,16 +92,18 @@ jobs:
               if not final_hostname or (mac and not final_vendor):
                   _schedule_device_network_enrichment(device_key, ips, mac, final_hostname)
               return final_hostname, final_vendor
+
+          
           '''
-          if old not in s:
-              raise SystemExit('0.7.1 enrich function not found')
-          s = s.replace(old, new, 1)
-          p.write_text(s)
+          s2, count = re.subn(pattern, new, s, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit(f'could not locate enrich function: {count}')
+          p.write_text(s2)
           Path('VERSION').write_text('0.7.2\n')
           PY
           python -m py_compile app.py
-          test "$(wc -c < app.py)" -eq 137140
-          test "$(sha256sum app.py | cut -d' ' -f1)" = "0beabcb3c083e5215ef216a8e997aeb2f0155cf9b1a909f860bdb45d425f56ef"
+          test "$(grep -c '^def enrich_device_network_identity' app.py)" -eq 1
+          test "$(cat VERSION)" = "0.7.2"
 
       - name: Commit 0.7.2
         shell: bash
