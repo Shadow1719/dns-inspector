@@ -2,6 +2,21 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.11]
+
+- stale device/IP associations are pruned automatically from `device_ips`
+- default IP-observation retention is 12 hours, preventing recycled DHCP addresses from remaining attached to the wrong device indefinitely
+- stale-IP cleanup runs immediately at startup and every 30 minutes in the background
+- retention is configurable with `DEVICE_IP_RETENTION_HOURS`
+- cleanup interval is configurable with `DEVICE_IP_CLEANUP_INTERVAL_MINUTES`
+- device identity and historical DNS/query data are preserved; only stale IP associations are removed
+
+## [0.7.10]
+
+- manual device labels are presented in a dedicated Devices-table column
+- added visible refresh feedback with a spinner while the dashboard state is loading
+- refresh starts immediately on page load instead of waiting for the regular polling interval
+
 ## [0.7.9]
 
 - persistent manual device labels stored on `/data`, keyed by stable device identity
