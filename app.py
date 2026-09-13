@@ -382,7 +382,6 @@ def refresh_trackerdb(force=False):
         with _open_trackerdb(newdb) as c:
             _execute_sql_file(c, tmp)
             c.execute("PRAGMA journal_mode=DELETE")
-            c.commit()
         os.replace(newdb, TRACKERDB_PATH)
         try:
             os.remove(tmp)
@@ -516,7 +515,7 @@ def neighbor_mac_for_ips(ips):
     return ""
 
 
-def hostname_for_ip(ip, allow_network=True):
+def hostname_for_ip(ip):
     if not is_ip(ip):
         return ""
     try:
@@ -529,8 +528,6 @@ def hostname_for_ip(ip, allow_network=True):
     except Exception:
         pass
     hostname = ""
-    if not allow_network:
-        return ""
     try:
         hostname = socket.gethostbyaddr(ip)[0].rstrip(".")
         # Ignore an IP echo or empty result; those are not useful hostnames.
@@ -547,7 +544,7 @@ def hostname_for_ip(ip, allow_network=True):
     return hostname
 
 
-def mac_vendor_lookup(mac, allow_network=True):
+def mac_vendor_lookup(mac):
     mac = normalize_mac(mac)
     if not mac:
         return ""
@@ -561,8 +558,6 @@ def mac_vendor_lookup(mac, allow_network=True):
     except Exception:
         pass
     vendor = ""
-    if not allow_network:
-        return ""
     try:
         r = requests.get(f"{MACVENDOR_URL}/{quote(mac, safe='')}", timeout=8)
         if r.status_code == 200:
@@ -578,65 +573,23 @@ def mac_vendor_lookup(mac, allow_network=True):
     return vendor
 
 
-_enrich_guard = threading.Lock()
-_enrich_inflight = set()
-
-def _schedule_device_network_enrichment(device_key, ips, mac, hostname_hint=""):
-    key = str(device_key or "")
-    if not key:
-        return
-    with _enrich_guard:
-        if key in _enrich_inflight:
-            return
-        _enrich_inflight.add(key)
-
-    def run():
-        try:
-            hostname = str(hostname_hint or "").strip()
-            if not hostname:
-                for ip in ips or []:
-                    hostname = hostname_for_ip(ip, allow_network=True)
-                    if hostname:
-                        break
-            vendor = mac_vendor_lookup(mac, allow_network=True) if mac else ""
-            with db_lock, sqlite3.connect(DB_PATH) as c:
-                row = c.execute("SELECT hostname,mac,vendor FROM devices WHERE device_key=?", (key,)).fetchone()
-                if row:
-                    final_hostname = row[0] or hostname
-                    final_mac = mac or row[1]
-                    final_vendor = vendor or row[2]
-                    c.execute("UPDATE devices SET hostname=?, mac=?, vendor=? WHERE device_key=?", (final_hostname, final_mac, final_vendor, key))
-                    c.commit()
-        except Exception as e:
-            print("device enrichment error:", repr(e), flush=True)
-        finally:
-            with _enrich_guard:
-                _enrich_inflight.discard(key)
-
-    threading.Thread(target=run, daemon=True, name="device-enrich").start()
-
 def enrich_device_network_identity(c, device_key, ips, mac, hostname_hint=""):
-    # Critical-path enrichment is cache-only. Network lookups are deferred to a
-    # background worker so an ingest/reconcile transaction never blocks the UI.
     hostname = str(hostname_hint or "").strip()
     if not hostname:
         for ip in ips or []:
-            hostname = hostname_for_ip(ip, allow_network=False)
+            hostname = hostname_for_ip(ip)
             if hostname:
                 break
-    vendor = mac_vendor_lookup(mac, allow_network=False) if mac else ""
+    vendor = mac_vendor_lookup(mac) if mac else ""
     row = c.execute("SELECT hostname,mac,vendor FROM devices WHERE device_key=?", (device_key,)).fetchone()
     if not row:
-        _schedule_device_network_enrichment(device_key, ips, mac, hostname)
         return hostname, vendor
+    # Keep an AdGuard-provided hostname ahead of reverse DNS unless the DB is empty.
     final_hostname = row[0] or hostname
     final_mac = mac or row[1]
     final_vendor = vendor or row[2]
     c.execute("UPDATE devices SET hostname=?, mac=?, vendor=? WHERE device_key=?", (final_hostname, final_mac, final_vendor, device_key))
-    if not final_hostname or (mac and not final_vendor):
-        _schedule_device_network_enrichment(device_key, ips, mac, final_hostname)
     return final_hostname, final_vendor
-
 
 
 def is_ip(value):
