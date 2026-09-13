@@ -367,6 +367,28 @@ This prevents the Inspector from becoming a second DNS policy engine and lets th
 
 ## Version history
 
+### 0.7.2
+
+- keeps device/hostname/vendor enrichment network calls out of the critical SQLite/ingest path;
+- hostname reverse-DNS and MAC-vendor lookups are now cache-first and refreshed asynchronously;
+- prevents startup reconciliation and continuous ingest from holding the main database lock while waiting on network lookups;
+- specifically fixes the symptom where `/health` remained responsive while the dashboard and `/api/state` could stall during device enrichment.
+
+### 0.7.1
+
+- added SQLite compatibility for TrackerDB snapshots using `unistr()` on older SQLite runtimes;
+- TrackerDB downloads are streamed instead of being loaded as both bytes and text in memory;
+- TrackerDB refresh runs in the background so the web UI is not blocked by metadata refresh.
+
+### 0.7.0
+- Overview status filters for All / Allowed / Blocked / Mixed / Unknown.
+- New <24h quick filter and NEW markers on recently first-seen domains.
+- Live new-domain banner when fresh domains appear between UI refreshes.
+- Classification, severity, device, and vendor filters.
+- Configurable page size: 10 / 25 / 50 / 100 / 250 / 500.
+- Pagination for the Overview domain table.
+- Server-side filtering/pagination keeps the UI responsive while allowing larger result sets.
+
 ### 0.6.0
 
 - replaced the single long dashboard with three local tabs: **Overview**, **Devices**, **Analytics**;
@@ -436,12 +458,3 @@ DNS Inspector is an independent project. External services and datasets used for
 ## v0.6.11
 - AdGuard Home current filtering status is checked read-only via `/control/filtering/check_host` and cached locally for 5 minutes.
 - Current status is separate from historical query counters, so previously ingested queries no longer remain Unknown forever.
-
-## v0.7.0
-- Overview status filters for All / Allowed / Blocked / Mixed / Unknown.
-- New <24h quick filter and NEW markers on recently first-seen domains.
-- Live new-domain banner when fresh domains appear between UI refreshes.
-- Classification, severity, device, and vendor filters.
-- Configurable page size: 10 / 25 / 50 / 100 / 250 / 500.
-- Pagination for the Overview domain table.
-- Server-side filtering/pagination keeps the UI responsive while allowing larger result sets.
