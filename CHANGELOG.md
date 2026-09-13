@@ -14,6 +14,10 @@ All notable DNS Inspector changes are tracked here.
 - bundled `iputils-ping` in the Docker image so ICMP checks work without host-side packages
 - automatic IP probing only considers device IP associations still inside the 12-hour retention window
 - configurable with `IP_PING_INTERVAL_HOURS`, `IP_PING_INITIAL_DELAY_SECONDS`, and `IP_PING_TIMEOUT_SECONDS`
+- added process uptime and current RSS memory to the UI header
+- added a read-only `/api/observability` runtime snapshot
+- added a one-click `Generate Debug Bundle` action with sanitized runtime/config/database statistics
+- debug bundles explicitly avoid secrets and do not add persistent application log writes
 
 ## [0.7.11]
 
