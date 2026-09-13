@@ -1,0 +1,43 @@
+name: Promote DNS Inspector 0.7.2
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Rebuild and validate 0.7.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --connect-timeout 15 --max-time 60 \
+            -o /tmp/app071.py \
+            https://raw.githubusercontent.com/Shadow1719/dns-inspector/d6f094e590a358667e5cabeb1fca6a00fb352b48/app.py
+          cp /tmp/app071.py app.py
+          patch -s -p0 < tools/dns-inspector-0.7.2.patch
+          printf '0.7.2\n' > VERSION
+          python -m py_compile app.py
+          test "$(wc -c < app.py)" -eq 137140
+          test "$(sha256sum app.py | cut -d' ' -f1)" = "0beabcb3c083e5215ef216a8e997aeb2f0155cf9b1a909f860bdb45d425f56ef"
+
+      - name: Commit 0.7.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- .github
+          rm -f .github/workflows/promote-072.yml tools/dns-inspector-0.7.2.patch
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py VERSION tools/dns-inspector-0.7.2.patch .github/workflows/promote-072.yml
+          git commit -m 'release: DNS Inspector v0.7.2'
+          git push origin main
