@@ -5,11 +5,15 @@ text = APP.read_text(encoding='utf-8')
 
 # A missing/failed enrichment must not be retried on every 10-second UI poll.
 # Remember the next allowed attempt persistently in SQLite and mirror it in memory.
+# The 0.7.8 memory patch has already rewritten the DNS TTL default, so match
+# that post-patch form rather than the original source line.
 text = text.replace(
-    'DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "168"))\n',
-    'DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "168"))\nENRICHMENT_RETRY_HOURS = max(24.0, float(os.getenv("ENRICHMENT_RETRY_HOURS", "24")))\n',
+    'DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "240"))  # 10 days\n',
+    'DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "240"))  # 10 days\nENRICHMENT_RETRY_HOURS = max(24.0, float(os.getenv("ENRICHMENT_RETRY_HOURS", "24")))\n',
     1,
 )
+if 'ENRICHMENT_RETRY_HOURS = max(24.0' not in text:
+    raise SystemExit('retry patch failed: DNS cache marker not found after 0.7.8 memory patch')
 
 # Persist retry state in the existing Inspector database.
 marker = '        c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")\n'
@@ -105,8 +109,7 @@ if old not in text:
     raise SystemExit('retry patch failed: 0.7.8 enrichment queue block not found')
 text = text.replace(old, new, 1)
 
-# Keep the current source behavior, but add one important guard: a domain discovered
-# during ingest is queued once, instead of waiting for repeated UI inspection.
+# Queue genuinely new domains once after the ingest transaction commits.
 old = '''        with db_lock, sqlite3.connect(DB_PATH) as c:
             new_count = 0
             status_backfilled = 0
