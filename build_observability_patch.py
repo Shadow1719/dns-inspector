@@ -57,7 +57,7 @@ if header_old not in text:
 text = text.replace(header_old, header_new, 1)
 
 # Runtime JS: one tiny JSON request every 5 seconds, independent of the main state refresh.
-js_marker = "const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;setTimeout(()=>refresh(true),refreshMs);"
+js_marker = "const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;scheduleRefresh(refreshMs);"
 js_extra = '''function observabilityDuration(seconds){let s=Math.max(0,Math.floor(Number(seconds)||0));const d=Math.floor(s/86400);s%=86400;const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;if(d)return `${d}d ${h}h ${m}m`;if(h)return `${h}h ${m}m ${s}s`;if(m)return `${m}m ${s}s`;return `${s}s`}
 function observabilityRam(value){const mb=Number(value);return Number.isFinite(mb)?`${mb.toFixed(mb>=100?0:1)} MB`:'—'}
 async function updateObservability(){try{const r=await fetch('/api/observability',{cache:'no-store'});if(!r.ok)return;const d=await r.json();document.getElementById('obs-uptime').textContent=`Uptime ${observabilityDuration(d.uptime_seconds)}`;document.getElementById('obs-memory').textContent=`RAM ${observabilityRam(d.ram_mb)}`}catch(e){console.debug('observability refresh failed',e)}}
@@ -179,7 +179,7 @@ def debug_bundle():
         runtime = _observability_payload()
         bundle = io.BytesIO()
         with zipfile.ZipFile(bundle, 'w', compression=zipfile.ZIP_DEFLATED) as z:
-            z.writestr('manifest.txt', f'DNS Inspector {APP_VERSION}\nGenerated: {utcnow()}\nPurpose: safe diagnostic snapshot\n')
+            z.writestr('manifest.txt', f'DNS Inspector {APP_VERSION}\nGenerated: {datetime.now(timezone.utc).isoformat()}\nPurpose: safe diagnostic snapshot\n')
             z.writestr('runtime.json', json.dumps(runtime, indent=2, ensure_ascii=False, sort_keys=True))
             z.writestr('config-safe.json', json.dumps(_observability_safe_config(), indent=2, ensure_ascii=False, sort_keys=True, default=str))
             z.writestr('logs-note.txt', 'DNS Inspector does not persist historical stdout/stderr logs. Retrieve container/application logs from Docker or TrueNAS when a historical log stream is needed.\n')
