@@ -2,6 +2,15 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.7]
+
+- Overview Allowed / Blocked / Mixed / NEW filters now use SQL-level filtering and pagination instead of scanning large domain sets
+- reduced Overview work to enrichment of domains actually displayed on the current page for simple filters
+- bounded AdGuard status refreshes to a small worker pool
+- prevented repeated filter clicks from creating unbounded background status threads/futures
+- hard-capped queued AdGuard status refreshes to 20 pending/running jobs
+- reduced transient memory pressure caused by repeated background refresh scheduling
+
 ## [0.7.6]
 
 - fixed Vendor lookup action alignment so the lookup control stays in a consistent column regardless of vendor-name length
