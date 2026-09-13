@@ -5,8 +5,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py VERSION /app/
 COPY static /app/static
-COPY build_ui_patch_v2.py /app/
-RUN python /app/build_ui_patch_v2.py && rm /app/build_ui_patch_v2.py
+COPY build_perf_patch.py /app/
+RUN python /app/build_perf_patch.py && rm /app/build_perf_patch.py
 RUN mkdir -p /data
 LABEL org.opencontainers.image.title="DNS Inspector" \
       org.opencontainers.image.description="Read-only local DNS visibility tool for AdGuard Home" \
