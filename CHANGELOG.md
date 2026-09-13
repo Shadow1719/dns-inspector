@@ -2,6 +2,12 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.6]
+
+- fixed Vendor lookup action alignment so the lookup control stays in a consistent column regardless of vendor-name length
+- fixed MAC lookup action alignment with the same fixed-width lookup slot
+- kept domain names in the new-domain banner directly clickable for inspection
+
 ## [0.7.5]
 
 - new-domain notification banner now shows per-domain Allowed / Blocked / Mixed / Unknown status pills
@@ -78,19 +84,3 @@ All notable DNS Inspector changes are tracked here.
 - hostname lookup and device vendor enrichment
 
 ## [0.4.4]
-
-- fixed duplicate IP/MAC device rows
-- reconciled legacy IP identities to MAC identities
-- added hostname inspection reset
-- preserved DHCP/IP observations
-
-## [0.4.0]
-
-- background AdGuard polling
-- local SQLite history
-- live browser refresh
-- device/client overview
-
-## [0.1]
-
-- initial read-only AdGuard query-log dashboard
