@@ -2,6 +2,19 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.8]
+
+- replaced self-rescheduling UI polling with a single cancellable refresh timer, preventing duplicate polling loops after filter/page interactions
+- serialized slow external enrichment through one bounded background queue instead of creating one thread per domain
+- enrichment queue is capped at 500 pending domains and de-duplicates queued/in-flight domains
+- existing enrichment data is reused until TTL expiry; UI polling never performs external enrichment work itself
+- Netify cache default increased to 180 days
+- RDAP cache default set to 30 days
+- DNS-record cache default set to 10 days
+- enrichment worker re-checks TTLs before fetching and never intentionally replaces fresh cached data
+- failed enrichment no longer needs to block or compete with ingest/UI activity
+- added a small configurable delay between enrichment jobs via `ENRICHMENT_DELAY_SECONDS` (default 1s)
+
 ## [0.7.7]
 
 - Overview Allowed / Blocked / Mixed / NEW filters now use SQL-level filtering and pagination instead of scanning large domain sets
