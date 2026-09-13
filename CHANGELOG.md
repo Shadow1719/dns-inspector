@@ -2,6 +2,11 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.5]
+
+- new-domain notification banner now shows per-domain Allowed / Blocked / Mixed / Unknown status pills
+- new-domain names in the banner link directly to domain inspection
+
 ## [0.7.0] — prepared / pre-release
 
 - Overview status filters: All, Allowed, Blocked, Mixed, Unknown
