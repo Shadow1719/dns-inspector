@@ -1,0 +1,75 @@
+name: Patch DNS Inspector new-domain banner
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/patch-new-banner.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Update new-domain banner
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path("app.py")
+          s = p.read_text(encoding="utf-8")
+
+          css_old = '.new-banner.show{display:flex}.new-banner button{padding:5px 9px;font-size:.78rem}'
+          css_new = '.new-banner.show{display:flex}.new-banner button{padding:5px 9px;font-size:.78rem}.new-domain-items{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.new-domain-item{display:inline-flex;align-items:center;gap:5px}.new-domain-link{color:#f2cc60;font-weight:650}.new-domain-link:hover{color:#fff;text-decoration:underline}'
+          if css_old not in s:
+              raise SystemExit("banner CSS anchor not found")
+          s = s.replace(css_old, css_new, 1)
+
+          old = '''function showNewBanner(names){const b=document.getElementById('new-banner'),t=document.getElementById('new-banner-text');if(!b||!t||!names.length)return;t.innerHTML=`<b>${names.length}</b> new domain${names.length===1?'':'s'} detected · ${names.slice(0,3).map(esc).join(', ')}`;b.classList.add('show')}\nfunction clearNewBanner(){document.getElementById('new-banner')?.classList.remove('show')}\nfunction updateNewDetection(rows){const set=new Set((rows||[]).map(r=>r.domain));if(!initialDomainSnapshot){set.forEach(d=>knownDomains.add(d));initialDomainSnapshot=true;return}const fresh=[...set].filter(d=>!knownDomains.has(d));set.forEach(d=>knownDomains.add(d));if(fresh.length)showNewBanner(fresh)}'''
+
+          new = '''function showNewBanner(entries){const b=document.getElementById('new-banner'),t=document.getElementById('new-banner-text');if(!b||!t||!entries.length)return;const items=entries.slice(0,3).map(r=>{const status=r.status||'Unknown';const statusClass=r.status_class||'unknown';const href=`/search?q=${encodeURIComponent(r.domain)}`;return `<span class="new-domain-item"><a class="new-domain-link" href="${href}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a><span class="status-pill status-${esc(statusClass)}">${esc(status)}</span></span>`}).join('');t.innerHTML=`<b>${entries.length}</b> new domain${entries.length===1?'':'s'} detected · <span class="new-domain-items">${items}</span>`;b.classList.add('show')}\nfunction clearNewBanner(){document.getElementById('new-banner')?.classList.remove('show')}\nfunction updateNewDetection(rows){const current=rows||[];const set=new Set(current.map(r=>r.domain));if(!initialDomainSnapshot){set.forEach(d=>knownDomains.add(d));initialDomainSnapshot=true;return}const fresh=current.filter(r=>!knownDomains.has(r.domain));set.forEach(d=>knownDomains.add(d));if(fresh.length)showNewBanner(fresh)}'''
+
+          if old not in s:
+              raise SystemExit("new-domain detection block not found")
+          s = s.replace(old, new, 1)
+          p.write_text(s, encoding="utf-8")
+
+          version = Path("VERSION")
+          version.write_text("0.7.5\n", encoding="utf-8")
+
+          changelog = Path("CHANGELOG.md")
+          text = changelog.read_text(encoding="utf-8")
+          entry = '''## [0.7.5]\n\n- new-domain notification banner now shows per-domain Allowed / Blocked / Mixed / Unknown status pills\n- new-domain names in the banner link directly to domain inspection\n\n'''
+          marker = "## [0.7.0]"
+          if entry not in text:
+              if marker not in text:
+                  raise SystemExit("changelog anchor not found")
+              text = text.replace(marker, entry + marker, 1)
+              changelog.write_text(text, encoding="utf-8")
+
+          Path(".github/workflows/promote-074.yml").unlink(missing_ok=True)
+          Path(".github/workflows/patch-new-banner.yml").unlink(missing_ok=True)
+          PY
+
+          python -m py_compile app.py
+          grep -n "function showNewBanner" app.py
+          grep -n "0.7.5" VERSION CHANGELOG.md
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app.py VERSION CHANGELOG.md .github/workflows/promote-074.yml .github/workflows/patch-new-banner.yml
+          git commit -m 'release: DNS Inspector v0.7.5'
+          git push origin main
