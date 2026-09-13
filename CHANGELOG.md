@@ -2,6 +2,16 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.9]
+
+- persistent manual device labels stored on `/data`, keyed by stable device identity
+- fixed browser MAC lookup URLs so the Devices tab no longer opens the `macvendors.com/<MAC>` API path that returns 404 in a browser
+- enrichment attempts now have a persistent minimum retry interval of 24 hours
+- a missing or failed enrichment result is not retried on every 10-second `/api/state` poll
+- retry cooldown survives container restarts through the `enrichment_attempts` SQLite table
+- newly discovered domains are queued for enrichment once and processed serially by the single background worker
+- enrichment queue activity is logged only when a real attempt is scheduled, keeping routine UI polling quiet
+
 ## [0.7.8]
 
 - replaced self-rescheduling UI polling with a single cancellable refresh timer, preventing duplicate polling loops after filter/page interactions
@@ -75,7 +85,7 @@ All notable DNS Inspector changes are tracked here.
 ## [0.6.1]
 
 - sortable Overview and Devices tables
-- stronger classification using cached TrackerDB, Netify and RDAP evidence
+- stronger classification using cached TrackerDB, Netify and RDAP
 - hardened IP/device/domain navigation
 
 ## [0.5.7]
