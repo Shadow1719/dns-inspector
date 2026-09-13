@@ -2,6 +2,19 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.12]
+
+- added per-IP reachability status in the Devices tab
+- each displayed IP shows a gray/yellow/green/red reachability indicator based on the latest ping result
+- added a manual `Ping` button beside every displayed IP
+- active private LAN IPs are checked automatically every 4 hours in the background
+- first automatic reachability sweep starts 60 seconds after application startup
+- ping results persist in SQLite with last-check time, latency and failure reason
+- ping targets are restricted to private LAN addresses
+- bundled `iputils-ping` in the Docker image so ICMP checks work without host-side packages
+- automatic IP probing only considers device IP associations still inside the 12-hour retention window
+- configurable with `IP_PING_INTERVAL_HOURS`, `IP_PING_INITIAL_DELAY_SECONDS`, and `IP_PING_TIMEOUT_SECONDS`
+
 ## [0.7.11]
 
 - stale device/IP associations are pruned automatically from `device_ips`
