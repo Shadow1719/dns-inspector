@@ -1,16 +1,15 @@
 from pathlib import Path
+import re
 
 APP = Path('/app/app.py')
 text = APP.read_text(encoding='utf-8')
 
+# Build-time patch only. Keep observability lightweight and read-only.
 MARKER = '# === OBSERVABILITY PATCH 0.7.12 ==='
 if MARKER in text:
     print('DNS Inspector observability patch already applied')
     raise SystemExit(0)
 
-# Build-time patch only: runtime observability stays read-only and lightweight.
-# No persistent log file is created; the debug bundle records safe snapshots and
-# explicitly points to Docker/TrueNAS logs for historical stdout/stderr.
 text = text.replace(
     'import time\n',
     'import time\nimport io\nimport platform\nimport shutil\nimport zipfile\n',
@@ -22,14 +21,12 @@ text = text.replace(
     1,
 )
 
-# Process-local start time: uptime belongs to the DNS application process.
 anchor = '    APP_VERSION = os.getenv("APP_VERSION", "dev")\n\nAGH_URL = os.getenv("AGH_URL", "").rstrip("/")\n'
 insert = '    APP_VERSION = os.getenv("APP_VERSION", "dev")\n\nOBSERVABILITY_START_MONOTONIC = time.monotonic()\nOBSERVABILITY_START_AT = datetime.now(timezone.utc).isoformat()\n\nAGH_URL = os.getenv("AGH_URL", "").rstrip("/")\n'
 if anchor not in text:
     raise SystemExit('observability patch failed: version/config anchor not found')
 text = text.replace(anchor, insert, 1)
 
-# Small header styles; intentionally no charting dependency and no persistent metrics.
 style_marker = '.toolbar{display:flex;gap:8px;align-items:center;margin:20px 0 4px}.toolbar input{flex:1;min-width:0}.toolbar button{white-space:nowrap}\n'
 style_extra = '''.toolbar{display:flex;gap:8px;align-items:center;margin:20px 0 4px}.toolbar input{flex:1;min-width:0}.toolbar button{white-space:nowrap}
 .observability-strip{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:4px 0 8px}
@@ -42,7 +39,6 @@ if style_marker not in text:
     raise SystemExit('observability patch failed: toolbar style marker not found')
 text = text.replace(style_marker, style_extra, 1)
 
-# Header: lightweight live runtime facts + one-click snapshot bundle.
 header_old = '<h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>\n<p class="muted">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>\n'
 header_new = '''<h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
 <div class="observability-strip" aria-label="Application runtime status">
@@ -56,18 +52,20 @@ if header_old not in text:
     raise SystemExit('observability patch failed: header marker not found')
 text = text.replace(header_old, header_new, 1)
 
-# Runtime JS: one tiny JSON request every 5 seconds, independent of the main state refresh.
-js_marker = "const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;scheduleRefresh(refreshMs);"
+# The memory patch rewrites the browser loop. Match its stable startup expression
+# with regex so harmless whitespace/formatting changes in earlier patches do not
+# break the whole Docker build.
+startup_re = re.compile(r'const initialStamp=formatUpdated\(\{\{ updated\|tojson \}\}\);.*?scheduleRefresh\(refreshMs\);')
+js_match = startup_re.search(text)
+if not js_match:
+    raise SystemExit('observability patch failed: refresh startup marker not found')
 js_extra = '''function observabilityDuration(seconds){let s=Math.max(0,Math.floor(Number(seconds)||0));const d=Math.floor(s/86400);s%=86400;const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;if(d)return `${d}d ${h}h ${m}m`;if(h)return `${h}h ${m}m ${s}s`;if(m)return `${m}m ${s}s`;return `${s}s`}
 function observabilityRam(value){const mb=Number(value);return Number.isFinite(mb)?`${mb.toFixed(mb>=100?0:1)} MB`:'—'}
 async function updateObservability(){try{const r=await fetch('/api/observability',{cache:'no-store'});if(!r.ok)return;const d=await r.json();document.getElementById('obs-uptime').textContent=`Uptime ${observabilityDuration(d.uptime_seconds)}`;document.getElementById('obs-memory').textContent=`RAM ${observabilityRam(d.ram_mb)}`}catch(e){console.debug('observability refresh failed',e)}}
 updateObservability();setInterval(updateObservability,5000);
 '''
-if js_marker not in text:
-    raise SystemExit('observability patch failed: final JS marker not found')
-text = text.replace(js_marker, js_extra + js_marker, 1)
+text = text[:js_match.start()] + js_extra + text[js_match.start():]
 
-# Server-side helpers and routes. Counts are intentionally metadata-only; row contents never leave the bundle.
 route_marker = 'if __name__ == "__main__":\n'
 route_block = r'''def _observability_uptime_seconds():
     return max(0.0, time.monotonic() - OBSERVABILITY_START_MONOTONIC)
@@ -94,8 +92,7 @@ def _observability_rss_mb():
         with open('/proc/self/status', 'r', encoding='utf-8', errors='replace') as f:
             for line in f:
                 if line.startswith('VmRSS:'):
-                    kb = float(line.split()[1])
-                    return round(kb / 1024.0, 1)
+                    return round(float(line.split()[1]) / 1024.0, 1)
     except Exception:
         pass
     try:
@@ -106,12 +103,7 @@ def _observability_rss_mb():
 
 
 def _observability_db_counts():
-    tables = [
-        'domains', 'devices', 'device_ips', 'device_labels', 'processed_queries',
-        'adguard_status_cache', 'enrichment_attempts', 'ip_ping_status',
-        'rdap_cache', 'netify_cache', 'dns_records_cache', 'mac_vendor_cache',
-        'hostname_cache', 'client_cache',
-    ]
+    tables = ['domains','devices','device_ips','device_labels','processed_queries','adguard_status_cache','enrichment_attempts','ip_ping_status','rdap_cache','netify_cache','dns_records_cache','mac_vendor_cache','hostname_cache','client_cache']
     counts = {}
     try:
         with db_lock, sqlite3.connect(DB_PATH) as c:
@@ -127,11 +119,10 @@ def _observability_db_counts():
 
 def _observability_payload():
     uptime = _observability_uptime_seconds()
-    db_size = None
     try:
         db_size = os.path.getsize(DB_PATH)
     except OSError:
-        pass
+        db_size = None
     return {
         'version': APP_VERSION,
         'started_at': OBSERVABILITY_START_AT,
@@ -157,15 +148,7 @@ def api_observability():
 
 
 def _observability_safe_config():
-    names = [
-        'POLL_SECONDS', 'UI_REFRESH_SECONDS', 'TRACKERDB_REFRESH_HOURS',
-        'TRACKERDB_DOWNLOAD_CHUNK_SIZE', 'MACVENDOR_CACHE_HOURS',
-        'HOSTNAME_CACHE_HOURS', 'NETIFY_CACHE_HOURS', 'RDAP_CACHE_HOURS',
-        'DNS_RECORDS_CACHE_HOURS', 'ENRICHMENT_RETRY_HOURS',
-        'ENRICHMENT_DELAY_SECONDS', 'DEVICE_IP_RETENTION_HOURS',
-        'DEVICE_IP_CLEANUP_INTERVAL_MINUTES', 'IP_PING_INTERVAL_HOURS',
-        'IP_PING_INITIAL_DELAY_SECONDS', 'IP_PING_TIMEOUT_SECONDS',
-    ]
+    names = ['POLL_SECONDS','UI_REFRESH_SECONDS','TRACKERDB_REFRESH_HOURS','TRACKERDB_DOWNLOAD_CHUNK_SIZE','MACVENDOR_CACHE_HOURS','HOSTNAME_CACHE_HOURS','NETIFY_CACHE_HOURS','RDAP_CACHE_HOURS','DNS_RECORDS_CACHE_HOURS','ENRICHMENT_RETRY_HOURS','ENRICHMENT_DELAY_SECONDS','DEVICE_IP_RETENTION_HOURS','DEVICE_IP_CLEANUP_INTERVAL_MINUTES','IP_PING_INTERVAL_HOURS','IP_PING_INITIAL_DELAY_SECONDS','IP_PING_TIMEOUT_SECONDS']
     safe = {name: globals().get(name) for name in names}
     safe['adguard_configured'] = bool(AGH_URL)
     safe['adguard_username_configured'] = bool(AGH_USER)
@@ -185,12 +168,7 @@ def debug_bundle():
             z.writestr('logs-note.txt', 'DNS Inspector does not persist historical stdout/stderr logs. Retrieve container/application logs from Docker or TrueNAS when a historical log stream is needed.\n')
             try:
                 usage = shutil.disk_usage(os.path.dirname(DB_PATH) or '/')
-                z.writestr('storage.json', json.dumps({
-                    'data_path': os.path.dirname(DB_PATH) or '/',
-                    'total_bytes': usage.total,
-                    'used_bytes': usage.used,
-                    'free_bytes': usage.free,
-                }, indent=2))
+                z.writestr('storage.json', json.dumps({'data_path': os.path.dirname(DB_PATH) or '/', 'total_bytes': usage.total, 'used_bytes': usage.used, 'free_bytes': usage.free}, indent=2))
             except Exception as e:
                 z.writestr('storage.json', json.dumps({'error': str(e)}, indent=2))
         bundle.seek(0)
@@ -206,7 +184,6 @@ if route_marker not in text:
     raise SystemExit('observability patch failed: main marker not found')
 text = text.replace(route_marker, route_block + route_marker, 1)
 
-# Basic syntax validation before the patched source is written into the image.
 compile(text, str(APP), 'exec')
 APP.write_text(text, encoding='utf-8')
 print('DNS Inspector 0.7.12 observability patch applied')
