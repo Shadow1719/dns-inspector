@@ -9,21 +9,26 @@ if MARKER in text:
     print('DNS Inspector 0.7.14 features already applied')
     raise SystemExit(0)
 
-# 1) Overview > Device dropdown: prefer the stored/manual name over hostname.
-# The SQLite close patch runs before this patch, so accept both the original
-# connection spelling and the already-transformed closing(...) form.
+# 1) Overview > Device dropdown: use the exact same friendly-label logic as
+# the Devices view instead of duplicating a simplified SQL COALESCE rule.
+# The SQLite close patch runs before this patch, so accept both connection forms.
 filter_pattern = re.compile(
     r'def get_filter_options\(\):\n'
     r'    with (?:closing\(sqlite3\.connect\(DB_PATH\)\)|sqlite3\.connect\(DB_PATH\)) as c:\n'
     r'        vendors=.*?\n'
-    r'        devices=\[\{"value":k,"label":lbl\} for k,lbl in c\.execute\(.*?\)\.fetchall\(\)\]\n'
+    r'        devices=\[.*?\]\n'
     r'    return \{"classifications":\[.*?\],"severities":\[.*?\],"vendors":vendors,"devices":devices\}\n',
     re.S,
 )
 new_filter = '''def get_filter_options():
     with closing(sqlite3.connect(DB_PATH)) as c:
         vendors=[r[0] for r in c.execute("SELECT DISTINCT vendor FROM devices WHERE TRIM(vendor)<>'' ORDER BY vendor COLLATE NOCASE").fetchall()]
-        devices=[{"value":k,"label":lbl} for k,lbl in c.execute("SELECT device_key,COALESCE(NULLIF(name,''),NULLIF(hostname,''),NULLIF(vendor,''),device_key) AS lbl FROM devices ORDER BY lbl COLLATE NOCASE").fetchall()]
+        rows=c.execute("SELECT device_key,name,hostname,vendor FROM devices ORDER BY request_count DESC, device_key COLLATE NOCASE").fetchall()
+        devices=[]
+        for device_key,name,hostname,vendor in rows:
+            label=real_device_label({"device_key":device_key,"identifier":device_key,"name":name,"hostname":hostname,"display_name":hostname or name or vendor or device_key,"vendor":vendor})
+            label=label or str(vendor or '').strip() or device_key
+            devices.append({"value":device_key,"label":label})
     return {"classifications":["Known service","Telemetry / Tracking","Advertising","Suspicious","Unknown"],"severities":["Info","Low","Medium","High","Unknown"],"vendors":vendors,"devices":devices}
 '''
 text, filter_count = filter_pattern.subn(new_filter, text, count=1)
@@ -33,8 +38,7 @@ if filter_count != 1:
 # 2) Partial/global search. Resolve exact domain first, then partial domain,
 # then device identity fields and recent IPs. Return the most relevant observed
 # domain so the existing inspection view can remain unchanged.
-search_helper = '''
-def _resolve_search_domain(query):
+search_helper = '''\ndef _resolve_search_domain(query):
     q = str(query or '').strip().lower().rstrip('.')
     if not q:
         return ''
