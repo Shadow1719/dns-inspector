@@ -1,12 +1,8 @@
 from pathlib import Path
-import re
 
 APP = Path('/app/app.py')
 text = APP.read_text(encoding='utf-8')
 
-# Keep the lightweight runtime indicators independent from the main dashboard
-# refresh chain. This protects Uptime/RAM even if the main JS is busy replacing
-# inspect HTML or a later UI patch changes its scheduling.
 MARKER = '/* DNS Inspector 0.8 observability independent refresh */'
 if MARKER in text:
     print('DEV AdGuard explanation v6 observability bridge already applied')
@@ -42,8 +38,23 @@ script = '''<script>
       console.debug('runtime indicators refresh failed',e);
     }
   }
+
+  function removeTechnicalDetails(root){
+    const scope=root || document;
+    scope.querySelectorAll('details.adg-details').forEach(function(el){ el.remove(); });
+  }
+
   updateRuntimeIndicators();
   window.setInterval(updateRuntimeIndicators,5000);
+
+  // The AdGuard explanation is re-inserted into #inspect-root during live
+  // state refreshes. Remove the legacy technical accordion after every insert.
+  removeTechnicalDetails(document);
+  const inspectRoot=document.getElementById('inspect-root');
+  if(inspectRoot){
+    const observer=new MutationObserver(function(){ removeTechnicalDetails(inspectRoot); });
+    observer.observe(inspectRoot,{childList:true,subtree:true});
+  }
 })();
 </script>'''
 
@@ -52,25 +63,6 @@ if anchor not in text:
     raise SystemExit('AdGuard explain v6: closing body marker not found')
 text=text.replace(anchor, script+'\n'+anchor, 1)
 
-# The product UI should explain the AdGuard decision directly in the card;
-# do not leave a secondary technical accordion ("Show more"/"Technical details")
-# in the live explanation panel.
-# v3 creates the accordion inside a JavaScript string, so remove that generated
-# block after v5 has finished wiring the live refresh script.
-text, removed_details = re.subn(
-    r"\n\s*const details='<details class=\"adg-details\">.*?</details>';",
-    "",
-    text,
-    count=1,
-    flags=re.S,
-)
-if removed_details != 1:
-    raise SystemExit(f'AdGuard explain v6: expected technical-details block once, found {removed_details}')
-
-text, removed_concat = re.subn(r"\+details(?=</div>';)" , "", text, count=1)
-if removed_concat != 1:
-    raise SystemExit(f'AdGuard explain v6: expected details concat once, found {removed_concat}')
-
 compile(text, str(APP), 'exec')
 APP.write_text(text, encoding='utf-8')
-print('DEV AdGuard explanation v6 observability bridge applied; technical details accordion removed')
+print('DEV AdGuard explanation v6 observability bridge applied; legacy technical-details accordion removed at runtime')
