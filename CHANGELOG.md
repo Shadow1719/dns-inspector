@@ -2,6 +2,14 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.13-hotfix.2.4]
+
+- fixed the Uptime / RAM header indicators that could remain stuck on `—`
+- moved the lightweight runtime values onto the existing `/api/state` refresh path instead of using a separate browser polling loop
+- removed the extra 5-second observability request loop from the header
+- populate uptime and RSS memory immediately on page load through the normal dashboard refresh
+- no ingest, enrichment, SQLite behavior, classification or memory-management logic changes
+
 ## [0.7.13-hotfix.2.3]
 
 - fixed SQLite connection lifetime for the main `/data/inspector.db` database by explicitly closing connections used by DB_PATH context-manager blocks
