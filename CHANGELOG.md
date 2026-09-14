@@ -2,6 +2,23 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.13-hotfix.2]
+
+- debug-bundle-only hotfix focused on locating RSS memory outside Python-tracked allocations
+- added raw `/proc/self/status` memory fields including anonymous/file/shmem RSS, data, stack, swap and mappings
+- added `/proc/self/smaps_rollup` PSS/private/shared/anonymous memory breakdown when available
+- added top process memory mappings from `/proc/self/smaps`
+- added cgroup memory usage/limit/event statistics when available
+- added glibc `mallinfo2()` allocator statistics when available
+- added thread-level diagnostics from `/proc/self/task`
+- added file-descriptor classification and target listing
+- added SQLite PRAGMA diagnostics for page/cache/journal/mmap state
+- added HTTP connection-pool diagnostics for the global requests session
+- added top Python GC-tracked object types
+- expanded on-demand `tracemalloc` output with top traceback allocation sites
+- added process resource-limit diagnostics
+- existing application ingest, enrichment, polling, cache and worker behavior is unchanged; the extra diagnostics run only when `Generate Debug Bundle` is requested
+
 ## [0.7.13-hotfix.1]
 
 - added Python allocation diagnostics with `tracemalloc` to investigate the long-running memory buildup observed in 0.7.12
