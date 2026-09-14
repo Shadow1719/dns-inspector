@@ -2,6 +2,18 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.13-hotfix.1]
+
+- added Python allocation diagnostics with `tracemalloc` to investigate the long-running memory buildup observed in 0.7.12
+- added current and peak Python-traced memory to the observability payload
+- added top allocation sites from on-demand snapshots, limited to the top 25 entries
+- added garbage-collector counters and tracked object count to the diagnostic payload
+- added shallow visibility into large module-level containers and queue-like globals, including type, length and shallow size
+- added open-file-descriptor count when `/proc/self/fd` is available
+- diagnostics do not retain historical tracemalloc snapshots or change ingest/enrichment scheduling behavior
+- diagnostic overhead is intentionally kept bounded by using a configurable 5–20 frame traceback depth (`MEMORY_DIAGNOSTICS_FRAMES`, default 10)
+- memory diagnostics can be disabled with `MEMORY_DIAGNOSTICS_ENABLED=0`
+
 ## [0.7.12]
 
 - added per-IP reachability status in the Devices tab
@@ -140,7 +152,6 @@ All notable DNS Inspector changes are tracked here.
 
 - evidence-based "Why is this here?" presentation
 - severity-aware classification colors
-- local DNS intelligence UI improvements
 
 ## [0.4.5]
 
