@@ -11,26 +11,26 @@ if MARKER in text:
 script = r'''<script>
 /* DNS Inspector 0.8 AdGuard layout V2 */
 (function(){
+  function exactText(el){ return (el.textContent || '').replace(/\s+/g,' ').trim(); }
+
   function relocateAdGuardExplanation(){
-    const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,strong,span'));
-    const title = headings.find(function(el){
-      return (el.textContent || '').trim() === 'Why did AdGuard allow or block this?';
+    const all = Array.from(document.querySelectorAll('h1,h2,h3,h4,div,strong,span'));
+    const title = all.find(function(el){
+      return exactText(el) === 'Why did AdGuard allow or block this?';
     });
-    if(!title) return false;
-
-    // The AdGuard explanation is rendered as its own card near the top of the inspect view.
-    // Move its inner content into the existing right-hand "Why is this here?" column.
-    let source = title.closest('.card');
-    if(!source) source = title.parentElement;
-
-    const targetHeading = headings.find(function(el){
-      return (el.textContent || '').trim() === 'Why is this here?';
+    const targetHeading = all.find(function(el){
+      return exactText(el) === 'Why is this here?';
     });
-    if(!targetHeading) return false;
+    if(!title || !targetHeading) return false;
 
-    let target = targetHeading.parentElement;
-    if(target && target.classList && target.classList.contains('card')){
-      target = target.querySelector(':scope > div:last-child') || target;
+    const source = title.closest('.card') || title.parentElement;
+    if(!source) return false;
+
+    // The purpose/explanation heading is already in the right-hand column.
+    // Replace only the box immediately below that heading, preserving the heading itself.
+    let target = targetHeading.nextElementSibling;
+    if(!target){
+      target = targetHeading.parentElement && targetHeading.parentElement.querySelector('.signal, .purpose, .why, .box');
     }
     if(!target) return false;
 
@@ -38,17 +38,13 @@ script = r'''<script>
     fragment.className = 'adguard-relocated';
     fragment.innerHTML = source.innerHTML;
 
-    // Keep the domain's own right-hand purpose block structure, but replace its contents.
-    // Remove the duplicate top-level title from the moved copy.
-    const movedTitle = Array.from(fragment.querySelectorAll('h1,h2,h3,h4,div,strong,span')).find(function(el){
-      return (el.textContent || '').trim() === 'Why did AdGuard allow or block this?';
-    });
-    if(movedTitle){
-      const titleContainer = movedTitle.closest('h1,h2,h3,h4') || movedTitle;
-      if(titleContainer && titleContainer.parentElement){
-        titleContainer.parentElement.removeChild(titleContainer);
+    // Remove the duplicate top-level AdGuard heading from the moved content.
+    Array.from(fragment.querySelectorAll('h1,h2,h3,h4,div,strong,span')).forEach(function(el){
+      if(exactText(el) === 'Why did AdGuard allow or block this?'){
+        const container = el.closest('h1,h2,h3,h4') || el;
+        if(container && container.parentElement) container.parentElement.removeChild(container);
       }
-    }
+    });
 
     target.innerHTML = '';
     target.appendChild(fragment);
@@ -74,7 +70,7 @@ if anchor not in text:
 text = text.replace(anchor, script + '\n' + anchor, 1)
 
 css = r'''
-.adguard-relocated{margin-top:0}.adguard-relocated .adguard-inline{margin-top:0}.adguard-relocated .adguard-inline-title{font-size:1.05rem}.adguard-relocated .adg-inline-tech{margin-top:9px}
+.adguard-relocated{margin-top:0}.adguard-relocated .adguard-inline{margin-top:0}.adguard-relocated .adguard-inline-title{font-size:1.02rem}.adguard-relocated .adg-inline-tech{margin-top:9px}
 '''
 if '</style>' in text:
     text = text.replace('</style>', css + '</style>', 1)
