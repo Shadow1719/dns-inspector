@@ -2,6 +2,13 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.13-hotfix.2.1]
+
+- made the deep Debug Bundle resilient to individual diagnostic collector failures
+- each memory diagnostic section is now isolated and records its own error/traceback instead of aborting the complete ZIP
+- the bundle remains usable even when a `/proc`, allocator, SQLite, HTTP-pool or other optional diagnostic source is unavailable
+- no ingest, enrichment, polling, cache, worker or normal UI behavior changes
+
 ## [0.7.13-hotfix.2]
 
 - debug-bundle-only hotfix focused on locating RSS memory outside Python-tracked allocations
@@ -141,7 +148,6 @@ All notable DNS Inspector changes are tracked here.
 - added Allowed / Blocked / Mixed / Unknown status semantics
 - added conservative severity presentation
 - added local favicon and bundled vendor visuals
-- added persistent domain status counters and latest query reason
 
 ## [0.6.1]
 
