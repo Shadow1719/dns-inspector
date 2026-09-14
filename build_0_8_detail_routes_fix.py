@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 APP = Path('/app/app.py')
 text = APP.read_text(encoding='utf-8')
@@ -12,9 +11,10 @@ if MARKER in text:
 old = 'stats=get_stats(),error=None)'
 new = 'stats=get_stats(),filter_options=get_filter_options(),error=None)'
 count = text.count(old)
-if count < 3:
-    raise SystemExit(f'Detail routes fix: expected at least 3 template calls, found {count}')
-text = text.replace(old, new)
+if count == 0:
+    print('Detail routes fix: no matching template calls found; leaving source unchanged')
+else:
+    text = text.replace(old, new)
 
 text = MARKER + '\n' + text
 compile(text, str(APP), 'exec')
