@@ -7,9 +7,9 @@ s = APP.read_text(encoding='utf-8')
 # Maintenance cadence is intentionally slower than the query-log poll. These jobs
 # used to run after every ingest cycle and repeatedly scanned/re-wrote large tables.
 if 'RUNTIME_CLIENT_REFRESH_INTERVAL' not in s:
-    anchor = 'tracker_refresh_lock = threading.Lock()\n'
+    anchor = 'app = Flask(__name__)\n'
     if anchor not in s:
-        raise SystemExit('missing tracker_refresh_lock anchor')
+        raise SystemExit('missing Flask app anchor')
     s = s.replace(
         anchor,
         anchor
