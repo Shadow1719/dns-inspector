@@ -58,17 +58,16 @@ text=text.replace(anchor, script+'\n'+anchor, 1)
 # v3 creates the accordion inside a JavaScript string, so remove that generated
 # block after v5 has finished wiring the live refresh script.
 text, removed_details = re.subn(
-    r"\\n\\s*const details='<details class=\\\"adg-details\\\">.*?</details>';",
+    r"\n\s*const details='<details class=\"adg-details\">.*?</details>';",
     "",
     text,
     count=1,
     flags=re.S,
 )
 if removed_details != 1:
-    # Keep the build honest: this patch must not silently do nothing on a changed UI.
     raise SystemExit(f'AdGuard explain v6: expected technical-details block once, found {removed_details}')
 
-text, removed_concat = re.subn(r"\\+details(?=</div>';)" , "", text, count=1)
+text, removed_concat = re.subn(r"\+details(?=</div>';)" , "", text, count=1)
 if removed_concat != 1:
     raise SystemExit(f'AdGuard explain v6: expected details concat once, found {removed_concat}')
 
