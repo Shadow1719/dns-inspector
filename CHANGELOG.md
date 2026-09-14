@@ -2,6 +2,14 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.14]
+
+- Overview > Device filter now uses the same friendly/manual device name as the Devices view when one is available
+- partial search is now supported instead of requiring an exact domain match
+- search can resolve domains by partial domain text and by known device identity fields such as custom name, hostname, MAC, vendor or recent IP
+- indirect device/IP matches resolve to the most relevant observed domain so the existing inspection UI remains unchanged
+- no ingest, enrichment, SQLite lifecycle or background polling changes
+
 ## [0.7.13-hotfix.2.4]
 
 - fixed the Uptime / RAM header indicators that could remain stuck on `—`
