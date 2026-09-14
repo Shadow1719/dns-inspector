@@ -6,21 +6,15 @@ DNS Inspector is a self-hosted, read-only network visibility and DNS intelligenc
 
 AdGuard Home remains the resolver/filter and query source. DNS Inspector imports query activity into local SQLite history, tracks devices, enriches domains with multiple evidence sources, and presents the result through a lightweight web UI.
 
-## Current release: v0.7.8
+## Current release: v0.7.13-hotfix.2.3
 
-The current release is focused on long-running stability and bounded background work:
+The current release is focused on long-running stability and memory diagnostics:
 
-- one cancellable browser refresh loop;
-- no permanent polling timers left behind by filter/page interactions;
-- serialized domain enrichment using one background worker;
-- enrichment queue capped at 500 domains and de-duplicated;
-- TTL checked again immediately before an enrichment job runs;
-- Netify cache: 180 days;
-- RDAP cache: 30 days;
-- DNS-record cache: 10 days;
-- configurable delay between enrichment jobs, default 1 second;
-- UI requests never wait for slow external enrichment;
-- bounded AdGuard current-status refresh workers, with a hard cap of 20 pending/running jobs.
+- fixed SQLite connection lifetime for the main `/data/inspector.db` database;
+- prevents repeated requests from leaving native SQLite connections/file descriptors behind;
+- added deep diagnostics for `/proc`, cgroup memory, glibc allocator state, threads, file descriptors, SQLite PRAGMAs, HTTP pools and Python object counts;
+- added resilient Debug Bundle collectors so one optional diagnostic failure does not invalidate the whole snapshot;
+- kept the normal ingest, enrichment, polling, cache and worker logic unchanged by the diagnostics.
 
 The design goal is **observability first, enrichment second**: a new domain should appear immediately even when its public metadata takes time to arrive.
 
@@ -236,7 +230,114 @@ The Docker build applies the current runtime/performance patches at image-build 
 
 # Complete version history
 
-### v0.7.8 — current
+### v0.7.13-hotfix.2.3 — current
+
+**SQLite connection lifetime / memory stabilization**
+
+- fixed SQLite connection lifetime for the main `/data/inspector.db` database;
+- prevents repeated requests from leaving another native SQLite connection/file descriptor behind;
+- targets the observed growth from 18 startup file descriptors to 67 after 6m42s, including 59 open descriptors for `/data/inspector.db`;
+- application query/ingest/enrichment logic is unchanged; the fix changes connection cleanup only.
+
+### v0.7.13-hotfix.2.2
+
+**Deep Debug Bundle correctness**
+
+- fixed the deep Debug Bundle `/proc`, thread and file-descriptor collectors by injecting the required `Path` import into the generated app;
+- hardened the Python GC object-type collector so unusual runtime objects cannot abort that diagnostic section;
+- kept the change debug-only; no ingest, enrichment, polling, cache, worker or normal UI behavior changes;
+- corrected the bundle manifest to report the actual 0.7.13-hotfix.2.2 diagnostic patch.
+
+### v0.7.13-hotfix.2.1
+
+**Resilient diagnostics**
+
+- made the deep Debug Bundle resilient to individual diagnostic collector failures;
+- each memory diagnostic section is isolated and records its own error/traceback instead of aborting the complete ZIP;
+- the bundle remains usable even when a `/proc`, allocator, SQLite, HTTP-pool or other optional diagnostic source is unavailable;
+- no ingest, enrichment, polling, cache, worker or normal UI behavior changes.
+
+### v0.7.13-hotfix.2
+
+**Deep memory diagnostics**
+
+- debug-bundle-only hotfix focused on locating RSS memory outside Python-tracked allocations;
+- added raw `/proc/self/status` memory fields including anonymous/file/shmem RSS, data, stack, swap and mappings;
+- added `/proc/self/smaps_rollup` PSS/private/shared/anonymous memory breakdown when available;
+- added top process memory mappings from `/proc/self/smaps`;
+- added cgroup memory usage/limit/event statistics when available;
+- added glibc `mallinfo2()` allocator statistics when available;
+- added thread-level diagnostics from `/proc/self/task`;
+- added file-descriptor classification and target listing;
+- added SQLite PRAGMA diagnostics for page/cache/journal/mmap state;
+- added HTTP connection-pool diagnostics for the global requests session;
+- added top Python GC-tracked object types;
+- expanded on-demand `tracemalloc` output with top traceback allocation sites;
+- added process resource-limit diagnostics;
+- existing application ingest, enrichment, polling, cache and worker behavior is unchanged; the extra diagnostics run only when `Generate Debug Bundle` is requested.
+
+### v0.7.13-hotfix.1
+
+**Memory diagnostics**
+
+- added Python allocation diagnostics with `tracemalloc` to investigate the long-running memory buildup observed in 0.7.12;
+- added current and peak Python-traced memory to the observability payload;
+- added top allocation sites from on-demand snapshots, limited to the top 25 entries;
+- added garbage-collector counters and tracked object count to the diagnostic payload;
+- added shallow visibility into large module-level containers and queue-like globals, including type, length and shallow size;
+- added open-file-descriptor count when `/proc/self/fd` is available;
+- diagnostics do not retain historical tracemalloc snapshots or change ingest/enrichment scheduling behavior;
+- diagnostic overhead is intentionally kept bounded by using a configurable 5–20 frame traceback depth (`MEMORY_DIAGNOSTICS_FRAMES`, default 10);
+- memory diagnostics can be disabled with `MEMORY_DIAGNOSTICS_ENABLED=0`.
+
+### v0.7.12
+
+**IP reachability and runtime observability**
+
+- added per-IP reachability status in the Devices tab;
+- each displayed IP shows a gray/yellow/green/red reachability indicator based on the latest ping result;
+- added a manual `Ping` button beside every displayed IP;
+- active private LAN IPs are checked automatically every 4 hours in the background;
+- first automatic reachability sweep starts 60 seconds after application startup;
+- ping results persist in SQLite with last-check time, latency and failure reason;
+- ping targets are restricted to private LAN addresses;
+- bundled `iputils-ping` in the Docker image so ICMP checks work without host-side packages;
+- automatic IP probing only considers device IP associations still inside the 12-hour retention window;
+- configurable with `IP_PING_INTERVAL_HOURS`, `IP_PING_INITIAL_DELAY_SECONDS`, and `IP_PING_TIMEOUT_SECONDS`;
+- added process uptime and current RSS memory to the UI header;
+- added a read-only `/api/observability` runtime snapshot;
+- added a one-click `Generate Debug Bundle` action with sanitized runtime/config/database statistics;
+- debug bundles explicitly avoid secrets and do not add persistent application log writes.
+
+### v0.7.11
+
+**Device/IP retention**
+
+- stale device/IP associations are pruned automatically from `device_ips`;
+- default IP-observation retention is 12 hours, preventing recycled DHCP addresses from remaining attached to the wrong device indefinitely;
+- stale-IP cleanup runs immediately at startup and every 30 minutes in the background;
+- retention is configurable with `DEVICE_IP_RETENTION_HOURS`.
+
+### v0.7.10
+
+**Device labels and refresh UX**
+
+- manual device labels are presented in a dedicated Devices-table column;
+- added visible refresh feedback with a spinner while the dashboard state is loading;
+- refresh starts immediately on page load instead of waiting for the regular polling interval.
+
+### v0.7.9
+
+**Persistent device labels and enrichment retry control**
+
+- persistent manual device labels stored on `/data`, keyed by stable device identity;
+- fixed browser MAC lookup URLs so the Devices tab no longer opens the `macvendors.com/<MAC>` API path that returns 404 in a browser;
+- enrichment attempts now have a persistent minimum retry interval of 24 hours;
+- a missing or failed enrichment result is not retried on every 10-second `/api/state` poll;
+- retry cooldown survives container restarts through the `enrichment_attempts` SQLite table;
+- newly discovered domains are queued for enrichment once and processed serially by the single background worker.
+
+### v0.7.8
 
 **Memory, polling and enrichment architecture**
 
