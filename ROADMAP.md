@@ -1,0 +1,226 @@
+# DNS Inspector → Inspector BEMO Roadmap
+
+The roadmap has changed direction slightly after the recent memory investigation and the review of commercial DNS-visibility reports and DNS-security guidance.
+
+The goal is no longer to make DNS Inspector a prettier AdGuard query log. The product direction is **network intelligence**: observe what happened, identify what it is, explain why we think that, score confidence/severity, detect unusual behavior, and surface the things worth investigating.
+
+## Current state — v0.7.13-hotfix.2.4
+
+### Stability / observability
+- SQLite connection lifetime stabilized in 2.3.
+- Long-running memory behavior investigated with deep diagnostics.
+- Uptime and RAM indicators restored in 2.4.
+- Debug Bundle and runtime diagnostics remain available for future investigations.
+- No new memory hotfixes unless the running build produces new evidence of a real leak.
+
+---
+
+# Next releases
+
+## v0.7.13-hotfix.2.5 — DNS Catalog & Search
+
+**Goal: make domain intelligence consistent and searchable.**
+
+- Replace exact-match global search with partial matching.
+- Search across all useful entities: domains, devices, labels, hostnames, IPs and MACs where applicable.
+- Establish a clearer domain catalog model:
+  - service/application;
+  - company/vendor;
+  - category;
+  - classification;
+  - evidence;
+  - confidence;
+  - first/last seen;
+  - associated devices.
+- Add live DNS lookup for inspected domains.
+- Surface useful record types including A, AAAA, CNAME, NS, MX, TXT, SOA, CAA and SRV, with additional record types added when useful.
+- Keep DNS lookup outside the ingest/UI critical path and cache results.
+- Prefer direct public DNS APIs/resolvers rather than coupling the UI to a third-party web tool.
+- Where useful, compare local/known resolver results with public resolvers such as Google or Cloudflare.
+- Keep `Unknown` neutral: unknown must not imply malicious.
+
+## v0.7.13-hotfix.2.6 — Classification 2.0
+
+**Goal: move from “some metadata” to a repeatable evidence model.**
+
+- Formalize classification categories and service/application identity.
+- Introduce a visible **Confidence** score separate from severity.
+- Define evidence sources and their contribution to confidence.
+- Make the `Why is this here?` panel evidence-driven and consistent.
+- Distinguish:
+  - observed fact;
+  - inferred classification;
+  - external evidence;
+  - confidence;
+  - severity.
+- Improve handling of conflicting evidence between TrackerDB, Netify, RDAP and DNS records.
+- Add clearer fallbacks for domains with incomplete enrichment.
+
+## v0.7.13-hotfix.2.7 — Security Signals
+
+**Goal: detect suspicious DNS behavior without pretending to be an antivirus or SIEM.**
+
+Initial signals, ordered by practicality:
+
+- unusual NXDOMAIN volume per device;
+- public DNS-over-HTTPS / DNS-over-TLS resolver activity;
+- newly registered domains;
+- suspicious/high-entropy or unusually long DNS labels;
+- DNS tunneling heuristics based on query volume, uniqueness, label length and entropy;
+- fast-flux-style infrastructure changes where DNS evidence supports it;
+- abnormal changes in a domain's IP/ASN footprint;
+- optional future signals for DNS poisoning/hijacking indicators when reliable evidence exists.
+
+Every detection should produce:
+
+```text
+Finding
+ ├─ What was observed?
+ ├─ Why is it suspicious?
+ ├─ Evidence
+ ├─ Severity
+ ├─ Confidence
+ ├─ Affected device(s)
+ └─ Suggested review/action
+```
+
+Detections are **advisory findings**, not automatic blocking decisions.
+
+## v0.7.13-hotfix.2.8 — Analytics Live Activity
+
+**Goal: make Analytics feel alive without creating another polling/memory problem.**
+
+- Add a compact **Live DNS Activity** panel to Analytics.
+- Show the latest 5–10 events.
+- Display at minimum:
+  - time;
+  - domain;
+  - device;
+  - Allowed / Blocked / other status.
+- Use status colour as the primary visual signal:
+  - green for Allowed;
+  - red for Blocked.
+- Use severity/intensity to refine the colour when a finding exists:
+  - muted for Info/low significance;
+  - stronger red for higher severity.
+- Keep text/status visible so the UI does not depend on colour alone.
+- Reuse the existing ingest/state refresh path; do not add a new high-frequency polling loop.
+- Allow clicking a live event into the normal domain/device inspection flow.
+
+## v0.7.13-hotfix.2.9 — Findings & Reports
+
+**Goal: turn raw analytics into an actionable summary.**
+
+- Findings dashboard with severity and confidence.
+- Top security findings by device and domain.
+- Application/service visibility.
+- Category distribution.
+- Top clients/devices.
+- Top queried domains.
+- New-domain and unusual-behavior summaries.
+- 7-day / 30-day report views.
+- Export-friendly report data (JSON/CSV first; polished PDF later).
+- Every reported finding links back to the underlying Inspector evidence.
+
+The desired reporting model is inspired by strong commercial DNS-visibility reports, but remains technically inspectable rather than management-only.
+
+---
+
+# v0.8.0 — Inspector BEMO foundation
+
+**This is the first intentional product-level evolution beyond DNS Inspector.**
+
+The project stops being conceptually “a DNS dashboard” and becomes a broader **Inspector BEMO** platform.
+
+## Brand direction
+
+### Product
+**Inspector BEMO**
+
+### Concept
+One BEMO platform with multiple small, focused **Inspectors** instead of one giant application that tries to do everything.
+
+DNS Inspector becomes the first mature mini-inspector under the BEMO umbrella.
+
+Initial direction:
+
+```text
+Inspector BEMO
+│
+├─ DNS Inspector
+│    └─ DNS activity, catalog, enrichment, security signals
+│
+├─ Device Inspector
+│    └─ identity, IP history, vendor, reachability, behavior
+│
+├─ Security Inspector
+│    └─ findings, anomalies, severity, confidence, evidence
+│
+└─ Future Inspectors
+     └─ added only when there is a clear source of data and a useful problem to solve
+```
+
+These are intentionally **mini-inspectors**: small focused modules sharing a common BEMO shell, identity model and evidence philosophy.
+
+## BEMO platform work
+
+- shared application shell/navigation;
+- shared device identity;
+- shared event model;
+- shared finding/severity/confidence model;
+- shared evidence presentation;
+- common search across inspectors;
+- consistent visual language;
+- module boundaries so one inspector can evolve without destabilizing the others;
+- preserve the lightweight/self-hosted deployment model.
+
+The DNS Inspector functionality remains fully usable; the rebrand is architectural as well as visual.
+
+---
+
+# Post-0.8 direction
+
+The exact version numbers after 0.8 are intentionally not locked yet.
+
+Likely areas:
+
+- additional BEMO mini-inspectors;
+- cross-inspector correlations;
+- stronger network behavior analytics;
+- long-term baselines and anomaly detection;
+- richer reporting/export;
+- optional authenticated multi-user access;
+- extensible evidence providers;
+- better local-network discovery where technically and operationally justified.
+
+The rule for future inspectors is simple:
+
+> **A mini-inspector earns its place by answering a question that the existing inspectors cannot answer cleanly.**
+
+---
+
+# Design principles
+
+### 1. Evidence before confidence
+Never present an inference without showing what supports it.
+
+### 2. Confidence is not severity
+A high-confidence benign classification is not a security finding. A low-confidence suspicious signal should remain visibly uncertain.
+
+### 3. Unknown is valid
+Unknown data is still useful data. Do not force a category merely to make the UI look complete.
+
+### 4. Live visibility without runaway polling
+Reuse existing ingest/state flows before adding timers, workers or duplicate API traffic.
+
+### 5. Enrichment is asynchronous
+Slow public services must never block normal ingestion or the main UI path.
+
+### 6. Findings should be explainable
+Every security signal should be traceable to observable facts.
+
+### 7. BEMO should stay modular
+Each mini-inspector should have a clear job and a clear boundary.
+
+### 8. Read-only by default
+Inspector BEMO observes and explains. It should not silently turn into a policy-enforcement engine.
