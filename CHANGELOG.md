@@ -2,6 +2,13 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.7.13-hotfix.2.3]
+
+- fixed SQLite connection lifetime for the main `/data/inspector.db` database by explicitly closing connections used by DB_PATH context-manager blocks
+- prevents each repeated request from leaving another native SQLite connection/file descriptor behind
+- this targets the observed growth from 18 startup file descriptors to 67 after 6m42s, including 59 open descriptors for `/data/inspector.db`
+- application query/ingest/enrichment logic is unchanged; the fix changes connection cleanup only
+
 ## [0.7.13-hotfix.2.2]
 
 - fixed the deep Debug Bundle `/proc`, thread and file-descriptor collectors by injecting the required `Path` import into the generated app
@@ -68,7 +75,6 @@ All notable DNS Inspector changes are tracked here.
 - default IP-observation retention is 12 hours, preventing recycled DHCP addresses from remaining attached to the wrong device indefinitely
 - stale-IP cleanup runs immediately at startup and every 30 minutes in the background
 - retention is configurable with `DEVICE_IP_RETENTION_HOURS`
-- cleanup interval is configurable with `DEVICE_IP_CLEANUP_INTERVAL_MINUTES`
 
 ## [0.7.10]
 
