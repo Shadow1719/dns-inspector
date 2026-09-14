@@ -145,7 +145,6 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
                 vendor = d.get("vendor", "")
                 if vendor:
                     row_vendors.add(vendor)
-                # IPs are intentionally omitted here; the dashboard only needs identity.
                 devices.append({
                     "device_key": dkey,
                     "identifier": d.get("identifier", key),
@@ -201,10 +200,6 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
             })
 
         total_prelim = len(prelim)
-
-        # Keep the common dashboard path cheap: classify only the rows actually needed
-        # for the requested page. Classification/severity filters still scan candidates,
-        # but without any network requests.
         needs_intel_filter = bool(classification_filter or severity_filter)
         if needs_intel_filter:
             candidates = prelim
@@ -217,24 +212,20 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
         for item in candidates:
             domain = item["domain"]
             tracker = {}
-            if needs_intel_filter or len(matched) < page_size:
-                try:
-                    tracker = tracker_lookup(domain)
-                except Exception:
-                    tracker = {}
+            try:
+                tracker = tracker_lookup(domain)
+            except Exception:
+                tracker = {}
 
-            # Classify from TrackerDB plus cached RDAP/Netify only.
             cached_rdap = item.get("rdap") or {}
             cached_netify = item.get("netify") or {}
-            cls, badge, _ = classify(tracker, cached_rdap, cached_netify)
+            cls, badge, severity_class = classify(tracker, cached_rdap, cached_netify)
             sev, sev_class = severity_for_classification(cls)
 
-            # Preserve an already-persisted classification only when the live cached
-            # evidence has no stronger signal. This avoids unexpectedly downgrading
-            # domains while old rows are waiting for re-enrichment.
             if cls == "Unknown" and item.get("stored_classification") not in (None, "", "Unknown"):
                 cls = item["stored_classification"]
                 badge = "green" if cls == "Known service" else "gray"
+                severity_class = "green" if cls == "Known service" else "gray"
                 sev, sev_class = severity_for_classification(cls)
 
             if classification_filter and cls != classification_filter:
@@ -242,7 +233,7 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
             if severity_filter and sev != severity_filter:
                 continue
 
-            if len(stale_domains) < page_size * 2 and domain in stale_domains:
+            if domain in stale_domains and len(matched) < page_size * 2:
                 threading.Thread(
                     target=refresh_adguard_status,
                     args=(domain,),
@@ -257,7 +248,7 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
                 "devices": item["devices"],
                 "classification": cls,
                 "badge_class": badge,
-                "severity_class": severity_for_classification(cls)[0],
+                "severity_class": severity_class,
                 "severity": sev,
                 "severity_text_class": sev_class,
                 "status": item["status"],
@@ -278,7 +269,6 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
             total = total_prelim
             pages = max(1, (total + page_size - 1) // page_size)
             page = min(page, pages)
-            # candidates already represent this page.
             page_rows = matched
 
     with sqlite3.connect(DB_PATH) as c:
@@ -308,7 +298,6 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
 
 text = text[:start] + replacement + text[end:]
 
-# Add a slow-request diagnostic without changing request behavior.
 marker = 'if __name__ == "__main__":\n'
 perf_block = '''_UI_REQUEST_START_KEY = "_dns_inspector_request_started"\n\n@app.before_request\ndef _ui_request_timer_start():\n    request.environ[_UI_REQUEST_START_KEY] = time.perf_counter()\n\n@app.after_request\ndef _ui_request_timer_end(response):\n    started = request.environ.get(_UI_REQUEST_START_KEY)\n    if started is not None:\n        elapsed = time.perf_counter() - started\n        if elapsed >= 3.0:\n            print(f"Slow HTTP {request.method} {request.path}: {elapsed:.2f}s status={response.status_code}", flush=True)\n    return response\n\n'''
 if '_UI_REQUEST_START_KEY' not in text:
