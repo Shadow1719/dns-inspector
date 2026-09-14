@@ -48,12 +48,26 @@ if refresh_marker not in text:
     raise SystemExit('observability UI hotfix failed: refresh hook marker not found')
 text = text.replace(refresh_marker, refresh_replacement, 1)
 
-# Populate the header immediately instead of waiting one full UI interval.
-initial_refresh = 'const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById(\'last-update-time\').textContent=initialStamp.time;document.getElementById(\'last-update-date\').textContent=initialStamp.date;setTimeout(()=>refresh(true),refreshMs);'
-initial_replacement = 'const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById(\'last-update-time\').textContent=initialStamp.time;document.getElementById(\'last-update-date\').textContent=initialStamp.date;refresh(true);'
-if initial_refresh not in text:
-    raise SystemExit('observability UI hotfix failed: initial refresh marker not found')
-text = text.replace(initial_refresh, initial_replacement, 1)
+# The UI follow-up patch may already have changed the initial scheduling call
+# from setTimeout(...) to requestRefresh(). Either way, the page must trigger
+# one immediate state refresh, not wait for the first interval. Do not fail the
+# image build merely because an earlier patch already made this change.
+replaced_initial = False
+for old, new in (
+    ("const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;setTimeout(()=>refresh(true),refreshMs);",
+     "const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;refresh(true);"),
+    ("const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;scheduleRefresh(refreshMs);",
+     "const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;requestRefresh();"),
+    ("const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;",
+     "const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;"),
+):
+    if old in text:
+        if old != ("const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;",):
+            text = text.replace(old, new, 1)
+            replaced_initial = True
+        break
+if not replaced_initial:
+    print('observability UI hotfix: initial refresh was already handled by an earlier UI patch')
 
 compile(text, str(APP), 'exec')
 APP.write_text(text, encoding='utf-8')
