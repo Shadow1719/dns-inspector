@@ -7,7 +7,7 @@ from urllib.parse import quote
 
 import requests
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     with open(os.path.join(BASE_DIR, "VERSION"), "r", encoding="utf-8") as f:
         APP_VERSION = f.read().strip()
@@ -87,30 +87,22 @@ VENDOR_FAVICONS={"dell":"/static/vendor-favicons/dell.ico","lg innotek":"/static
 def http_session():
     session=getattr(_http_local,"session",None)
     if session is None:
-        session=requests.Session()
-        _http_local.session=session
+        session=requests.Session(); _http_local.session=session
     return session
 
-def utcnow():
-    return datetime.now(timezone.utc).isoformat()
-
+def utcnow(): return datetime.now(timezone.utc).isoformat()
 def is_mac(value): return bool(MAC_RE.match(str(value or "").strip()))
 def normalize_mac(value):
     raw=str(value or "").strip().lower().replace("-",":")
-    if not is_mac(raw): return ""
-    return raw
-
+    return raw if is_mac(raw) else ""
 def is_ip(value):
     try: ipaddress.ip_address(str(value or "").strip()); return True
     except Exception: return False
-
 def apex_domain(domain):
     parts=[p for p in str(domain or "").strip().strip(".").split(".") if p]
     return ".".join(parts[-2:]) if len(parts)>=2 else str(domain or "").strip().strip(".")
-
 def _html(v):
     return str(v or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"','&quot;').replace("'","&#39;")
-
 def device_hint(name, hostname, info):
     text=" ".join(str(x or "") for x in (name,hostname,info)).lower()
     if any(x in text for x in ("iphone","ipad","android","pixel","galaxy","phone")): return "Phone / Tablet","📱","medium"
@@ -122,22 +114,15 @@ def device_hint(name, hostname, info):
     if any(x in text for x in ("speaker","sonos","echo","homepod")): return "Speaker","🔊","medium"
     if any(x in text for x in ("router","gateway","switch","access point","ap-")): return "Network","🛜","medium"
     return "IoT / Unknown","📦","low"
-
 def _local_static_exists(url):
-    if not url or not url.startswith('/static/'):
-        return False
+    if not url or not url.startswith('/static/'): return False
     return os.path.exists(os.path.join(BASE_DIR, url.lstrip('/')))
-
 def vendor_logo_url(vendor):
     key=str(vendor or '').strip().lower()
     return VENDOR_LOGOS.get(key) if key in VENDOR_LOGOS and _local_static_exists(VENDOR_LOGOS[key]) else ''
-
 def query_status(reason, original_response=None):
-    reason = str(reason or '')
-    if reason in BLOCKED_REASONS:
-        return 'Blocked'
-    if reason in ALLOWED_REASONS:
-        return 'Allowed'
-    if reason in UNKNOWN_REASONS:
-        return 'Unknown'
+    reason=str(reason or '')
+    if reason in BLOCKED_REASONS: return 'Blocked'
+    if reason in ALLOWED_REASONS: return 'Allowed'
+    if reason in UNKNOWN_REASONS: return 'Unknown'
     return 'Unknown'
