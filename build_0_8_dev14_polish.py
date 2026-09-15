@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 import re
 
 APP = Path('/app/app.py')
@@ -41,8 +42,8 @@ if 'def age_text_for_iso(value):' not in text:
     text = text.replace(anchor, helper + anchor, 1)
 
 fresh_re = re.compile(
-    r'\s*fresh_cutoff\s*=\s*\(now_dt\s*-\s*timedelta\(seconds\s*=\s*max\(30,\s*UI_REFRESH_SECONDS\s*\*\s*2\)\)\)\.isoformat\(\)\s*\n'
-    r'fresh_domains\s*=\s*\[[^\n]*?fetchall\(\)\]\s*',
+    r'(?m)^[ \t]*fresh_cutoff\s*=\s*\(now_dt\s*-\s*timedelta\(seconds\s*=\s*max\(30,\s*UI_REFRESH_SECONDS\s*\*\s*2\)\)\)\.isoformat\(\)[ \t]*$\n'
+    r'^[ \t]*fresh_domains\s*=\s*\[[^\n]*?fetchall\(\)\][ \t]*$',
     re.S,
 )
 new_recent = '''        fresh_cutoff = (now_dt - timedelta(hours=NEW_DOMAIN_WINDOW_HOURS)).isoformat()
