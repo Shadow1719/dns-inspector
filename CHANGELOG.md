@@ -2,6 +2,46 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.0-dev.1]
+
+Foundation release. No new features, no intentional behaviour changes.
+
+**The repository is now the application.**
+
+- removed the build-time patch chain: the Dockerfile no longer copies and executes sixteen `build_*.py` scripts that rewrote `app.py` during the image build
+- `app.py` now contains the complete program (3,205 lines). Up to 0.7.14 the committed source was 2,062 lines and the program that actually ran was 3,173 — roughly 1,100 lines of live behaviour existed only inside the Docker image
+- deleted all seventeen `build_*.py` scripts, including `build_ui_patch_v2.py`, which was already unreferenced by any build
+
+**Entry point**
+
+- startup moved from an inline `if __name__ == "__main__"` block into `main()`, with `serve()`, `start_background_workers()` and a `BACKGROUND_WORKERS` declaration
+- the same steps run in the same order; the ingest thread is now named `agh-ingest` rather than taking Python's default thread name
+- this is the only difference between the 0.7.14 runtime source and 0.8.0; every other line is byte-identical
+
+**Tests**
+
+- added a 55-test pytest suite covering configuration, database schema and migration, the HTTP surface, startup and route registration, and domain status classification
+- added `tests/test_source_integrity.py`, which fails if build-time patch scripts or Dockerfile source mutation are ever reintroduced
+- the suite is hermetic and deterministic: temporary database, no AdGuard instance, no outbound network
+- added `requirements-dev.txt` and `pytest.ini`
+
+**Build and CI**
+
+- CI gained a `test` job; `build-and-push` now depends on it, so nothing is published unless the suite passes
+- CI now builds the image and verifies the container starts and answers `/health` before the release step
+- CI also runs on pull requests, without publishing
+- the Dockerfile declares a `HEALTHCHECK` against `/health`
+- `.dockerignore` excludes tests and documentation from the image
+
+**Documentation**
+
+- `docs/ARCHITECTURE.md` gained a concrete map of the real code: runtime shape, region line ranges, database ownership, configuration and boundedness
+- added `docs/MODULARIZATION.md` with the planned module boundaries, a suggested version sequence, and a register of deferred findings
+
+**Known issue carried forward unchanged**
+
+- `/api/observability` is bound to the wrong function and returns 500. This was introduced by the patch chain in 0.7.12 and is preserved exactly in 0.8.0 rather than fixed, because 0.8.0 is scoped to the foundation. See D-1 in `docs/MODULARIZATION.md`. Recommended as the 0.8.1 scope.
+
 ## [0.7.14]
 
 - Overview > Device filter now uses the same friendly/manual device name as the Devices view when one is available

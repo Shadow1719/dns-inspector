@@ -4,3 +4,9 @@
 __pycache__
 *.pyc
 *.pyo
+tests
+pytest.ini
+requirements-dev.txt
+docs
+*.md
+.pytest_cache

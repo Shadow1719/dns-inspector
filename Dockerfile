@@ -1,17 +1,35 @@
 FROM python:3.12-slim
+
 ARG APP_VERSION=dev
+
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends iputils-ping && rm -rf /var/lib/apt/lists/*
+
+# iputils-ping backs the device reachability feature.
+# curl backs the container HEALTHCHECK below.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends iputils-ping curl \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# 0.8.0: the image is built from the committed source. Earlier versions ran a
+# chain of sixteen `build_*.py` scripts here that rewrote app.py during the
+# build, which meant the image and the repository were never the same program.
 COPY app.py VERSION /app/
 COPY static /app/static
-COPY build_perf_patch.py build_perf_hardcap.py build_memory_patch.py build_device_labels_patch_v2.py build_enrichment_retry_patch.py build_ui_followup_patch.py build_device_ip_retention_patch.py build_ip_ping_patch.py build_observability_patch.py build_memory_diagnostics_patch.py build_debug_bundle_deep_patch.py build_debug_bundle_resilience_patch.py build_debug_bundle_deep_fix_patch.py build_sqlite_close_patch.py build_observability_ui_hotfix.py build_0_7_14_features.py /app/
-RUN python /app/build_perf_patch.py && python /app/build_perf_hardcap.py && python /app/build_memory_patch.py && python /app/build_device_labels_patch_v2.py && python /app/build_enrichment_retry_patch.py && python /app/build_ui_followup_patch.py && python /app/build_device_ip_retention_patch.py && python /app/build_ip_ping_patch.py && python /app/build_observability_patch.py && python /app/build_memory_diagnostics_patch.py && python /app/build_debug_bundle_deep_patch.py && python /app/build_debug_bundle_resilience_patch.py && python /app/build_debug_bundle_deep_fix_patch.py && python /app/build_sqlite_close_patch.py && python /app/build_observability_ui_hotfix.py && python /app/build_0_7_14_features.py && rm /app/build_perf_patch.py /app/build_perf_hardcap.py /app/build_memory_patch.py /app/build_device_labels_patch_v2.py /app/build_enrichment_retry_patch.py /app/build_ui_followup_patch.py /app/build_device_ip_retention_patch.py /app/build_ip_ping_patch.py /app/build_observability_patch.py /app/build_memory_diagnostics_patch.py /app/build_debug_bundle_deep_patch.py /app/build_debug_bundle_resilience_patch.py /app/build_debug_bundle_deep_fix_patch.py /app/build_sqlite_close_patch.py /app/build_observability_ui_hotfix.py /app/build_0_7_14_features.py
+
 RUN mkdir -p /data
+
 LABEL org.opencontainers.image.title="DNS Inspector" \
       org.opencontainers.image.description="Read-only local DNS visibility tool for AdGuard Home" \
       org.opencontainers.image.version="$APP_VERSION"
+
 ENV PYTHONUNBUFFERED=1
+
 EXPOSE 8080
-CMD ["python","/app/app.py"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS "http://127.0.0.1:${PORT:-8080}/health" || exit 1
+
+CMD ["python", "/app/app.py"]

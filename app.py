@@ -1,24 +1,46 @@
+# === SQLITE CLOSE PATCH 0.7.13-HF2.3 ===
 import hashlib
 import ipaddress
 import json
 import os
 import re
+import queue
 import socket
 import sqlite3
+import subprocess
 import threading
 import time
+import gc
+import sys
+import tracemalloc
+import io
+import platform
+import shutil
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
 import requests
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, send_file
 
+from pathlib import Path
+from contextlib import closing
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     with open(os.path.join(BASE_DIR, "VERSION"), "r", encoding="utf-8") as f:
         APP_VERSION = f.read().strip()
 except Exception:
     APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+OBSERVABILITY_START_MONOTONIC = time.monotonic()
+OBSERVABILITY_START_AT = datetime.now(timezone.utc).isoformat()
+
+MEMORY_DIAGNOSTICS_ENABLED = os.getenv("MEMORY_DIAGNOSTICS_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+MEMORY_DIAGNOSTICS_FRAMES = max(5, min(20, int(os.getenv("MEMORY_DIAGNOSTICS_FRAMES", "10"))))
+
+if MEMORY_DIAGNOSTICS_ENABLED and not tracemalloc.is_tracing():
+    tracemalloc.start(MEMORY_DIAGNOSTICS_FRAMES)
 
 AGH_URL = os.getenv("AGH_URL", "").rstrip("/")
 AGH_USER = os.getenv("AGH_USER", "")
@@ -38,9 +60,15 @@ RDAP_URL = os.getenv("RDAP_URL", "https://rdap.org/domain/").rstrip("/")
 MACVENDOR_URL = os.getenv("MACVENDOR_URL", "https://api.macvendors.com").rstrip("/")
 MACVENDOR_CACHE_HOURS = int(os.getenv("MACVENDOR_CACHE_HOURS", "168"))
 HOSTNAME_CACHE_HOURS = int(os.getenv("HOSTNAME_CACHE_HOURS", "24"))
-NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "360"))
-RDAP_CACHE_HOURS = int(os.getenv("RDAP_CACHE_HOURS", "720"))
-DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "168"))
+DEVICE_IP_RETENTION_HOURS = max(1.0, float(os.getenv("DEVICE_IP_RETENTION_HOURS", "12")))
+DEVICE_IP_CLEANUP_INTERVAL_MINUTES = max(5, int(os.getenv("DEVICE_IP_CLEANUP_INTERVAL_MINUTES", "30")))
+IP_PING_INTERVAL_HOURS = max(1.0, float(os.getenv("IP_PING_INTERVAL_HOURS", "4")))
+IP_PING_INITIAL_DELAY_SECONDS = max(10, int(os.getenv("IP_PING_INITIAL_DELAY_SECONDS", "60")))
+IP_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("IP_PING_TIMEOUT_SECONDS", "1")))
+NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "4320"))  # 180 days
+RDAP_CACHE_HOURS = int(os.getenv("RDAP_CACHE_HOURS", "720"))  # 30 days
+DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "240"))  # 10 days
+ENRICHMENT_RETRY_HOURS = max(24.0, float(os.getenv("ENRICHMENT_RETRY_HOURS", "24")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
 app = Flask(__name__)
@@ -53,6 +81,12 @@ neighbors_mtime = None
 enrichment_lock = threading.Lock()
 enrichment_refreshing = set()
 
+# Background AdGuard status refreshes are deliberately bounded.
+_status_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="agh-status")
+_status_guard = threading.Lock()
+_status_inflight = set()
+_status_slots = threading.BoundedSemaphore(20)
+
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
 
@@ -64,6 +98,11 @@ HTML = """
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:28px;max-width:1450px;margin-inline:auto}
 h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}.updated-time{color:#58a6ff;font-weight:700}.updated-date{color:#8b949e}.signal{border-left:3px solid #30363d;padding:10px 12px;background:#0d1117;border-radius:8px}.signal-green{border-color:#3fb950}.signal-blue{border-color:#58a6ff}.signal-yellow{border-color:#d29922}.signal-orange{border-color:#db6d28}.signal-red{border-color:#f85149}.signal-gray{border-color:#8b949e}.signal-title{font-weight:750;margin-bottom:5px}.evidence{margin:6px 0 0;padding-left:18px;color:#c9d1d9}.evidence li{margin:3px 0}.confidence-high{color:#3fb950;font-weight:700}.confidence-medium{color:#d29922;font-weight:700}.confidence-low{color:#8b949e;font-weight:700}.dns-list{display:flex;flex-wrap:wrap;gap:6px}.dns-ip{display:inline-block;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#161b22;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}.vendor-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:6px;border-radius:4px}.vendor-logo-lg{width:30px;height:30px;object-fit:contain;flex:0 0 30px}.vendor-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:6px;border-radius:5px;background:#30363d;font-size:.7rem}.vendor-mark-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;font-size:.75rem;font-weight:800}.device-type-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;margin-right:6px;border-radius:5px;background:#30363d;color:#8b949e}.device-type-icon-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;color:#8b949e}.device-type-icon svg,.device-type-icon-lg svg{width:70%;height:70%;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
 .toolbar{display:flex;gap:8px;align-items:center;margin:20px 0 4px}.toolbar input{flex:1;min-width:0}.toolbar button{white-space:nowrap}
+.observability-strip{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:4px 0 8px}
+.observability-pill{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid #30363d;border-radius:999px;background:#11161d;color:#c9d1d9;font-size:.78rem;font-variant-numeric:tabular-nums}
+.observability-dot{width:7px;height:7px;border-radius:50%;background:#3fb950;box-shadow:0 0 0 2px rgba(63,185,80,.10)}
+.debug-button{padding:5px 9px;font-size:.78rem;border-radius:999px}
+.debug-button:hover{border-color:#58a6ff}
 input,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;padding:10px 13px;border-radius:8px;font:inherit}button{cursor:pointer}button:hover{border-color:#58a6ff}
 .card{background:#11161d;border:1px solid #30363d;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
 .card h2{margin-top:0;letter-spacing:-.01em}
@@ -77,7 +116,12 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .device-type-icon{margin-right:0;width:16px;height:16px;flex-basis:16px;background:transparent}
 .client-chip{display:inline-block;background:#161b22;border:1px solid #30363d;border-radius:8px;padding:4px 7px;margin:2px;font-size:.85em}
-.glance-domain{font-weight:650}.recent-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 14px;padding:12px;border:1px solid #30363d;border-radius:10px;background:#0d1117}.filter-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.filter-label{font-size:.76rem;color:#8b949e;text-transform:uppercase;letter-spacing:.06em}.filter-btn{padding:7px 10px;border-radius:8px;font-size:.82rem;font-weight:700}.filter-btn.active{background:#16395c;border-color:#58a6ff;color:#e6edf3}.filter-btn.filter-allowed.active{background:#174d2a;border-color:#3fb950;color:#7ee787}.filter-btn.filter-blocked.active{background:#6a1717;border-color:#f85149;color:#ffb4b4}.filter-btn.filter-new.active{background:#5a4610;border-color:#d29922;color:#f2cc60}.filter-select{padding:7px 9px;font-size:.82rem;min-width:120px}.results-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:#8b949e;font-size:.8rem;margin:8px 0 12px}.results-summary b{color:#e6edf3}.new-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:999px;background:#5a4610;color:#f2cc60;border:1px solid #8f6b1c;font-size:.72rem;font-weight:800;margin-left:7px;vertical-align:middle}.new-badge-dot{width:6px;height:6px;border-radius:50%;background:#d29922}.row-new td{background:rgba(210,153,34,.035)}.new-banner{display:none;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;padding:9px 12px;border:1px solid #8f6b1c;border-radius:9px;background:#2b2412;color:#f2cc60}.new-banner.show{display:flex}.new-banner button{padding:5px 9px;font-size:.78rem}.new-domain-items{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.new-domain-item{display:inline-flex;align-items:center;gap:5px}.new-domain-link{color:#f2cc60;font-weight:650}.new-domain-link:hover{color:#fff;text-decoration:underline}.pager{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding-top:10px;border-top:1px solid #21262d}.pager-controls{display:flex;gap:6px;align-items:center}.pager button{padding:6px 10px;font-size:.8rem}.pager button:disabled{opacity:.45;cursor:default}.page-label{font-size:.8rem;color:#8b949e}.external-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.external-tool{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid #30363d;border-radius:7px;background:#161b22;color:#8b949e;font-size:.74rem;text-decoration:none}.external-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tools{display:inline-flex;gap:5px;margin-left:6px;vertical-align:middle}.inline-tool{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#8b949e;font-size:.72rem;text-decoration:none}.inline-tool svg,.external-tool svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.inline-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tool{cursor:pointer}.external-tool.icon-only{width:20px;height:20px;padding:0;justify-content:center}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
+.glance-domain{font-weight:650}.recent-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 14px;padding:12px;border:1px solid #30363d;border-radius:10px;background:#0d1117}.filter-group{display:flex;gap:6px;align-items:center;flex-wrap:wrap}.filter-label{font-size:.76rem;color:#8b949e;text-transform:uppercase;letter-spacing:.06em}.filter-btn{padding:7px 10px;border-radius:8px;font-size:.82rem;font-weight:700}.filter-btn.active{background:#16395c;border-color:#58a6ff;color:#e6edf3}.filter-btn.filter-allowed.active{background:#174d2a;border-color:#3fb950;color:#7ee787}.filter-btn.filter-blocked.active{background:#6a1717;border-color:#f85149;color:#ffb4b4}.filter-btn.filter-new.active{background:#5a4610;border-color:#d29922;color:#f2cc60}.filter-select{padding:7px 9px;font-size:.82rem;min-width:120px}.results-summary{display:flex;gap:12px;align-items:center;flex-wrap:wrap;color:#8b949e;font-size:.8rem;margin:8px 0 12px}.results-summary b{color:#e6edf3}.new-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border-radius:999px;background:#5a4610;color:#f2cc60;border:1px solid #8f6b1c;font-size:.72rem;font-weight:800;margin-left:7px;vertical-align:middle}.new-badge-dot{width:6px;height:6px;border-radius:50%;background:#d29922}.row-new td{background:rgba(210,153,34,.035)}.new-banner{display:none;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;padding:9px 12px;border:1px solid #8f6b1c;border-radius:9px;background:#2b2412;color:#f2cc60}.new-banner.show{display:flex}.new-banner button{padding:5px 9px;font-size:.78rem}.new-domain-items{display:inline-flex;flex-wrap:wrap;gap:6px;align-items:center}.new-domain-item{display:inline-flex;align-items:center;gap:5px}.new-domain-link{color:#f2cc60;font-weight:650}.new-domain-link:hover{color:#fff;text-decoration:underline}.pager{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:12px;padding-top:10px;border-top:1px solid #21262d}.pager-controls{display:flex;gap:6px;align-items:center}.pager button{padding:6px 10px;font-size:.8rem}.pager button:disabled{opacity:.45;cursor:default}.page-label{font-size:.8rem;color:#8b949e}.external-tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.external-tool{display:inline-flex;align-items:center;gap:4px;padding:3px 7px;border:1px solid #30363d;border-radius:7px;background:#161b22;color:#8b949e;font-size:.74rem;text-decoration:none}.external-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tools{display:inline-flex;gap:5px;margin-left:6px;vertical-align:middle}.inline-tool{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border:1px solid #30363d;border-radius:6px;background:#161b22;color:#8b949e;font-size:.72rem;text-decoration:none}.inline-tool svg,.external-tool svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}.inline-tool:hover{border-color:#58a6ff;color:#79c0ff;text-decoration:none}.inline-tool{cursor:pointer}.external-tool.icon-only{width:20px;height:20px;padding:0;justify-content:center}.link-device{color:inherit;text-decoration:none}.link-device:hover{text-decoration:none}.link-device:hover .device-name{text-decoration:underline}.link-ip{font-weight:650}.device-chip{cursor:pointer}.device-chip:hover{border-color:#58a6ff}.device-label-btn{padding:3px 7px;font-size:.72rem;border-radius:7px}
+.device-label-cell{width:16%;vertical-align:top}.device-ip-ping{display:inline-flex;align-items:center;gap:5px;margin-left:5px;padding:2px 0}.device-ip-ping-dot{width:8px;height:8px;border-radius:50%;display:inline-block;border:1px solid #30363d;background:#8b949e;flex:0 0 8px}.device-ip-ping-dot.online{background:#3fb950;border-color:#3fb950}.device-ip-ping-dot.offline{background:#f85149;border-color:#f85149}.device-ip-ping-dot.pending{background:#d29922;border-color:#d29922;animation:dnsInspectorPulse 1s ease-in-out infinite}@keyframes dnsInspectorPulse{50%{opacity:.35}}.device-ip-ping-btn{padding:2px 6px;font-size:.68rem;border-radius:6px}.device-ip-ping-btn:disabled{opacity:.55;cursor:default}.device-label-cell .device-label-inline{margin-top:0;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.device-label-cell .device-label-text{font-size:.8rem}.device-table-label-col{width:16%}
+.refresh-status{position:fixed;top:10px;right:16px;z-index:100;display:none;align-items:center;gap:8px;padding:7px 10px;border:1px solid #30363d;border-radius:999px;background:rgba(17,22,29,.96);box-shadow:0 6px 20px rgba(0,0,0,.25);color:#c9d1d9;font-size:.78rem}
+.refresh-status.show{display:inline-flex}.refresh-spinner{width:13px;height:13px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:dnsInspectorSpin .75s linear infinite}@keyframes dnsInspectorSpin{to{transform:rotate(360deg)}}
+.device-label-inline{display:inline-flex;align-items:center;gap:6px;margin-top:4px}.device-label-text{color:#c9d1d9;font-size:.76rem}.clickable-label{cursor:pointer}.glance-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;color:#8b949e;font-size:.78rem}.glance-devices{max-width:520px}
 .tabs{display:flex;gap:6px;margin:18px 0 0;padding:0 4px;position:sticky;top:0;z-index:5;background:#0d1117}
 .tab-btn{border:1px solid #30363d;background:#161b22;color:#8b949e;padding:9px 14px;border-radius:9px 9px 0 0;cursor:pointer;font-weight:700}
 .tab-btn:hover{border-color:#58a6ff;color:#c9d1d9}.tab-btn.active{background:#11161d;color:#e6edf3;border-bottom-color:#11161d}
@@ -86,6 +130,11 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 </style></head><body>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
+<div class="observability-strip" aria-label="Application runtime status">
+  <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
+  <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
+  <button type="button" class="debug-button" onclick="window.location='/debug/bundle'">Generate Debug Bundle</button>
+</div>
 <p class="muted">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <div class="tabs" role="tablist" aria-label="DNS Inspector sections">
@@ -146,29 +195,48 @@ function ipLink(ip){ return `<a class="client-chip mono link-ip" href="${ipHref(
 function magnifierSvg(){ return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l5 5"></path></svg>`; }
 function deviceTypeSvg(type, fallback='', large=false){ const t=String(type||'').toLowerCase(); let b='<rect x=\"5\" y=\"6\" width=\"14\" height=\"14\" rx=\"3\"/><path d=\"M9 3v3M15 3v3M9 20v1M15 20v1M3 10h2M3 16h2M19 10h2M19 16h2\"/><circle cx=\"12\" cy=\"13\" r=\"2\"/>'; if(t.includes('phone')||t.includes('tablet')) b='<rect x=\"7\" y=\"3\" width=\"10\" height=\"18\" rx=\"2\"/><circle cx=\"12\" cy=\"18\" r=\"1\" fill=\"currentColor\" stroke=\"none\"/>'; else if(t.includes('computer')) b='<rect x=\"3\" y=\"4\" width=\"18\" height=\"12\" rx=\"2\"/><path d=\"M9 20h6M12 16v4\"/>'; else if(t.includes('console')) b='<rect x=\"3\" y=\"7\" width=\"18\" height=\"10\" rx=\"3\"/><path d=\"M7 12h4M9 10v4M16 10h.01M18 12h.01\"/>'; else if(t.includes('camera')) b='<path d=\"M5 8h4l2-3h2l2 3h4v10H5z\"/><circle cx=\"12\" cy=\"13\" r=\"3\"/>'; else if(t.includes('speaker')) b='<rect x=\"7\" y=\"3\" width=\"10\" height=\"18\" rx=\"2\"/><circle cx=\"12\" cy=\"9\" r=\"2\"/><circle cx=\"12\" cy=\"16\" r=\"3\"/>'; else if(t.includes('network')) b='<rect x=\"9\" y=\"3\" width=\"6\" height=\"5\" rx=\"1\"/><rect x=\"3\" y=\"16\" width=\"6\" height=\"5\" rx=\"1\"/><rect x=\"15\" y=\"16\" width=\"6\" height=\"5\" rx=\"1\"/><path d=\"M12 8v4M6 16v-2h12v2\"/>'; else if(t.includes('tv')) b='<rect x=\"3\" y=\"5\" width=\"18\" height=\"12\" rx=\"2\"/><path d=\"M9 21h6M12 17v4\"/>'; else if(t.includes('washing')||t.includes('dishwasher')||t.includes('appliance')) b='<rect x=\"5\" y=\"3\" width=\"14\" height=\"18\" rx=\"2\"/><circle cx=\"12\" cy=\"13\" r=\"4\"/><path d=\"M8 6h.01M11 6h.01M14 6h.01\"/>'; const cls=large?'device-type-icon-lg':'device-type-icon'; return `<span class=\"${cls}\"><svg viewBox=\"0 0 24 24\">${b}</svg></span>`; }
 function externalButton(url,label,icon=''){ const glyph = icon === '' ? magnifierSvg() : esc(icon); return `<a class="external-tool ${label ? '' : 'icon-only'}" href="${esc(url)}" target="_blank" rel="noopener noreferrer" title="${esc(label || 'External lookup')}">${glyph}${label ? ' ' + esc(label) : ''}</a>`; }
+function deviceLabelFor(c){ return String((window.deviceLabels||{})[c.device_key||c.identifier]||c.label||'').trim(); }
 function deviceRow(c){
   const ips = (c.ips || []).map(ipLink).join(' ');
   const host = c.hostname && c.hostname !== (c.name || c.vendor || c.display_name || c.identifier) ? `<div class="technical mono"><a class="link-device" href="${deviceHref(c)}" title="Open device details">HOST ${esc(c.hostname)}</a></div>` : '';
   const vendor = c.vendor ? `<div class="sub">${c.vendor_logo ? `<img class="vendor-logo" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : `<span class="vendor-mark">◈</span>`}${esc(c.vendor)} ${externalButton(`https://www.google.com/search?q=${encodeURIComponent(c.vendor)}`,'Search vendor')}</div>` : '';
-  const mac = c.mac ? `<div class="technical mono">${esc(c.mac)} ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'MAC lookup')}</div>` : '';
+  const mac = c.mac ? `<div class="technical mono">${esc(c.mac)} ${externalButton(`https://maclookup.app/search/result?mac=${encodeURIComponent(c.mac)}`,'MAC lookup')}</div>` : '';
   const source = c.source ? `<div class="technical">${esc(c.source)}</div>` : '';
-  const linkedPrimary = realDeviceLabel(c);
+  const explicitLabel = deviceLabelFor(c);
+  const linkedPrimary = explicitLabel || realDeviceLabel(c);
   const primary = linkedPrimary || c.vendor || c.identifier;
   const primaryHtml = linkedPrimary ? deviceLink(c, `<div class="device-name">${esc(primary)}</div>`, 'primary-device') : `<div class="device-name">${esc(primary)}</div>`;
   const visual = c.vendor_logo ? `<img class="vendor-logo-lg" src="${esc(c.vendor_logo)}" alt="" loading="lazy">` : deviceTypeSvg(c.type, c.icon, true);
   const visualHtml = linkedPrimary ? deviceLink(c, visual) : visual;
-  return `<tr data-sort-device="${esc(primary)}" data-sort-identity="${esc(c.mac || '')}" data-sort-ips="${esc((c.ips || []).join(' '))}" data-sort-requests="${Number(c.requests)||0}"><td><div class="device">${visualHtml}<span>${primaryHtml}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://macvendors.com/${encodeURIComponent(c.mac)}`,'MAC lookup')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
+  const labelButton = `<button type="button" class="device-label-btn" data-device-key="${esc(c.device_key||c.identifier||'')}" data-device-label="${esc(explicitLabel)}">${explicitLabel?'Edit label':'Add label'}</button>`; const labelMeta = `<div class="device-label-inline"><span class="device-label-text">${explicitLabel?'Label: '+esc(explicitLabel):'No label'}</span>${labelButton}</div>`; return `<tr data-sort-device="${esc(primary)}" data-sort-identity="${esc(c.mac || '')}" data-sort-ips="${esc((c.ips || []).join(' '))}" data-sort-requests="${Number(c.requests)||0}"><td><div class="device">${visualHtml}<span>${primaryHtml}${vendor}${host}<div class="confidence">${esc(c.type)} · ${esc(c.confidence_label)}</div>${labelMeta}${source}</span></div></td><td>${ips || '—'}</td><td>${c.mac ? `<span class="mono">${esc(c.mac)}</span> ${externalButton(`https://maclookup.app/search/result?mac=${encodeURIComponent(c.mac)}`,'MAC lookup')}` : '—'}</td><td>${esc(c.requests)}</td></tr>`;
 }
 let recentMeta={page:1,pages:1,total:0,page_size:50,new_count:0,status_counts:{All:0,Allowed:0,Blocked:0,Unknown:0}};let recentFilters={status:'',newOnly:false,classification:'',severity:'',device:'',vendor:'',page:1,page_size:50};let knownDomains=new Set();let initialDomainSnapshot=false;
 function ageText(iso){const t=new Date(iso).getTime();if(!Number.isFinite(t))return '';const m=Math.max(0,Math.floor((Date.now()-t)/60000));if(m<1)return 'now';if(m<60)return `${m}m`;const h=Math.floor(m/60);if(h<24)return `${h}h`;return `${Math.floor(h/24)}d`}
 function isNewRow(r){const t=new Date(r.first_seen||'').getTime();return Number.isFinite(t)&&(Date.now()-t)<86400000}
-function renderRecent(rows){document.getElementById('recent-body').innerHTML=(rows||[]).map(r=>{const devices=(r.devices||[]).map(d=>`<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo?`<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">`:deviceTypeSvg(d.type,d.icon,false)}${esc(d.name)}</a>`).join('');const n=isNewRow(r);const badge=n?`<span class="new-badge" title="First seen ${esc(r.first_seen||'')}"><span class="new-badge-dot"></span>NEW · ${esc(ageText(r.first_seen))}</span>`:'';return `<tr class="${n?'row-new':''}" data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a>${badge}<div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices||'<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`}).join('');reapplyTableSorts()}
+function renderRecent(rows){window.__lastRecent=rows||[];document.getElementById('recent-body').innerHTML=(rows||[]).map(r=>{const devices=(r.devices||[]).map(d=>{const label=deviceLabelFor(d);return `<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo?`<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">`:deviceTypeSvg(d.type,d.icon,false)}${esc(label||d.name)}</a>`;}).join('');const n=isNewRow(r);const badge=n?`<span class="new-badge" title="First seen ${esc(r.first_seen||'')}"><span class="new-badge-dot"></span>NEW · ${esc(ageText(r.first_seen))}</span>`:'';return `<tr class="${n?'row-new':''}" data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a>${badge}<div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices||'<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`}).join('');reapplyTableSorts()}
 function setSelectOptions(id,values,selected){const e=document.getElementById(id);if(!e)return;e.innerHTML='<option value="">All</option>'+(values||[]).map(v=>{const value=typeof v==='string'?v:v.value;const label=typeof v==='string'?v:v.label;return `<option value="${esc(value)}">${esc(label)}</option>`}).join('');e.value=selected||''}
 function renderRecentControls(meta,opts){recentMeta=meta||recentMeta;const c=recentMeta.status_counts||{};[['count-all','All'],['count-allowed','Allowed'],['count-blocked','Blocked'],['count-mixed','Mixed'],['count-unknown','Unknown']].forEach(([i,k])=>{const e=document.getElementById(i);if(e)e.textContent=c[k]!=null?` ${c[k]}`:''});const n=document.getElementById('count-new');if(n)n.textContent=recentMeta.new_count!=null?` ${recentMeta.new_count}`:'';document.querySelectorAll('[data-status-filter]').forEach(b=>b.classList.toggle('active',(b.dataset.statusFilter||'')===recentFilters.status));document.getElementById('new-filter')?.classList.toggle('active',recentFilters.newOnly);const sum=document.getElementById('results-summary');if(sum)sum.innerHTML=`<b>${recentMeta.total||0}</b> matching domain${(recentMeta.total||0)===1?'':'s'} · <b>${recentMeta.new_count||0}</b> new in the last 24h`;setSelectOptions('classification-filter',opts?.classifications,recentFilters.classification);setSelectOptions('severity-filter',opts?.severities,recentFilters.severity);setSelectOptions('device-filter',opts?.devices,recentFilters.device);setSelectOptions('vendor-filter',opts?.vendors,recentFilters.vendor);const ps=document.getElementById('page-size');if(ps)ps.value=String(recentFilters.page_size);const label=document.getElementById('page-label');if(label){const a=recentMeta.total?((recentMeta.page-1)*recentMeta.page_size)+1:0;const b=recentMeta.total?Math.min(recentMeta.page*recentMeta.page_size,recentMeta.total):0;label.textContent=`Showing ${a}–${b} of ${recentMeta.total||0}`}const prev=document.getElementById('page-prev'),next=document.getElementById('page-next');if(prev)prev.disabled=recentMeta.page<=1;if(next)next.disabled=recentMeta.page>=recentMeta.pages}
 function showNewBanner(entries){const b=document.getElementById('new-banner'),t=document.getElementById('new-banner-text');if(!b||!t||!entries.length)return;const items=entries.slice(0,3).map(r=>{const status=r.status||'Unknown';const statusClass=r.status_class||'unknown';const href=`/search?q=${encodeURIComponent(r.domain)}`;return `<span class="new-domain-item"><a class="new-domain-link" href="${href}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a><span class="status-pill status-${esc(statusClass)}">${esc(status)}</span></span>`}).join('');t.innerHTML=`<b>${entries.length}</b> new domain${entries.length===1?'':'s'} detected · <span class="new-domain-items">${items}</span>`;b.classList.add('show')}
 function clearNewBanner(){document.getElementById('new-banner')?.classList.remove('show')}
 function updateNewDetection(rows){const current=rows||[];const set=new Set(current.map(r=>r.domain));if(!initialDomainSnapshot){set.forEach(d=>knownDomains.add(d));initialDomainSnapshot=true;return}const fresh=current.filter(r=>!knownDomains.has(r.domain));set.forEach(d=>knownDomains.add(d));if(fresh.length)showNewBanner(fresh)}
-function renderClients(rows){ document.getElementById('clients-body').innerHTML = rows.map(deviceRow).join(''); reapplyTableSorts(); }
+window.deviceLabels={};
+function ensureRefreshStatus(){let el=document.getElementById('refresh-status');if(el)return el;el=document.createElement('div');el.id='refresh-status';el.className='refresh-status';el.innerHTML='<span class="refresh-spinner"></span><span>Se încarcă lista…</span>';document.body.appendChild(el);return el}
+function showRefreshStatus(){ensureRefreshStatus().classList.add('show')}
+function hideRefreshStatus(){const el=document.getElementById('refresh-status');if(el)el.classList.remove('show')}
+function ipPingTitle(s){if(!s)return 'Never checked';const when=new Date(Number(s.last_checked)*1000);const result=s.online?'Reachable':'Unreachable';const latency=s.latency_ms!=null?` · ${s.latency_ms} ms`:'';const err=s.error?` · ${s.error}`:'';return `${result}${latency}${err} · ${when.toLocaleString()}`}
+function ipPingMarkup(ip,s){const state=s?(s.online?'online':'offline'):'pending';const label=s?(s.online?'OK':'FAIL'):'?';return `<span class="device-ip-ping" data-ping-ip="${esc(ip)}" title="${esc(ipPingTitle(s))}"><span class="device-ip-ping-dot ${state}" data-ping-dot></span><button type="button" class="device-ip-ping-btn" data-ping-button="${esc(ip)}">Ping</button></span>`}
+function decorateDeviceIps(){const root=document.getElementById('clients-body');if(!root)return;root.querySelectorAll('a.link-ip').forEach(a=>{if(a.parentElement?.querySelector('.device-ip-ping'))return;const ip=(a.textContent||'').trim();if(!ip)return;const wrap=document.createElement('span');wrap.innerHTML=ipPingMarkup(ip,(window.ipPingStatuses||{})[ip]);a.insertAdjacentElement('afterend',wrap);});bindIpPingButtons();}
+function applyIpPingStatuses(){document.querySelectorAll('[data-ping-ip]').forEach(wrap=>{const ip=wrap.getAttribute('data-ping-ip');const s=(window.ipPingStatuses||{})[ip];const dot=wrap.querySelector('[data-ping-dot]');const btn=wrap.querySelector('[data-ping-button]');if(!dot||!btn)return;dot.className='device-ip-ping-dot '+(s?(s.online?'online':'offline'):'pending');wrap.title=ipPingTitle(s);btn.disabled=false;btn.textContent='Ping';});}
+async function loadIpPingStatuses(){try{const r=await fetch('/api/ip/ping/status',{cache:'no-store'});if(!r.ok)return;const data=await r.json();window.ipPingStatuses=data.statuses||{};decorateDeviceIps();applyIpPingStatuses();}catch(e){console.debug('IP ping status load failed',e)}}
+async function pingDeviceIp(ip,button){if(!ip||!button)return;button.disabled=true;button.textContent='…';const wrap=button.closest('[data-ping-ip]');const dot=wrap?.querySelector('[data-ping-dot]');if(dot)dot.className='device-ip-ping-dot pending';try{const r=await fetch('/api/ip/ping',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ip})});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'Ping failed');window.ipPingStatuses=window.ipPingStatuses||{};window.ipPingStatuses[ip]=data.result;applyIpPingStatuses();}catch(e){window.ipPingStatuses=window.ipPingStatuses||{};window.ipPingStatuses[ip]={online:false,error:e.message,last_checked:Date.now()/1000};applyIpPingStatuses();alert(`Ping ${ip} failed: ${e.message}`);}}
+function bindIpPingButtons(){document.querySelectorAll('[data-ping-button]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();pingDeviceIp(b.dataset.pingButton,b)});});}
+function injectIpPingControls(){decorateDeviceIps();loadIpPingStatuses();}
+function placeDeviceLabelsInColumn(){const body=document.getElementById('clients-body');const table=body?.closest('table');if(!body||!table)return;table.classList.add('device-table');const head=table.tHead?.rows?.[0];if(head&&!head.querySelector('.device-label-head')){const th=document.createElement('th');th.className='device-label-head';th.textContent='Label';head.insertBefore(th,head.cells[1]||null)}body.querySelectorAll('tr').forEach(row=>{if(row.querySelector('.device-label-cell'))return;const label=row.querySelector('.device-label-inline');if(!label)return;const td=document.createElement('td');td.className='device-label-cell';td.appendChild(label);row.insertBefore(td,row.cells[1]||null)});}
+
+async function loadDeviceLabels(){try{const r=await fetch('/api/device/label',{cache:'no-store'});if(!r.ok)return;const data=await r.json();window.deviceLabels=data.labels||{};}catch(e){console.debug('device labels load failed',e)}}
+async function editDeviceLabel(button){const key=button?.dataset?.deviceKey||'';if(!key)return;const current=button.dataset.deviceLabel||'';const value=window.prompt('Device label',current);if(value===null)return;const label=value.trim().slice(0,80);try{const r=await fetch('/api/device/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_key:key,label})});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'Save failed');window.deviceLabels[key]=label;renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();}catch(e){alert('Could not save device label: '+e.message)}}
+function bindDeviceLabelButtons(){document.querySelectorAll('.device-label-btn').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>editDeviceLabel(b));})}
+function renderClients(rows){ window.__lastClients=rows||[]; document.getElementById('clients-body').innerHTML = rows.map(deviceRow).join(''); bindDeviceLabelButtons(); placeDeviceLabelsInColumn(); injectIpPingControls(); reapplyTableSorts(); }
 let tableSortState = {recent:{key:null,dir:1}, clients:{key:null,dir:1}};
 function rowSortValue(row,key,type){ const raw=row.dataset['sort'+key.charAt(0).toUpperCase()+key.slice(1)] ?? ''; return type==='number' ? (Number(raw)||0) : String(raw).toLowerCase(); }
 function applySort(table,key,dir){ const th=[...table.querySelectorAll('th.sortable')].find(x=>x.dataset.sortKey===key); if(!th)return; table.querySelectorAll('th.sortable').forEach(x=>x.classList.remove('sort-asc','sort-desc')); th.classList.add(dir===1?'sort-asc':'sort-desc'); const type=th.dataset.sortType||'text'; const body=table.tBodies[0]; [...body.rows].sort((a,b)=>{const av=rowSortValue(a,key,type),bv=rowSortValue(b,key,type); if(av<bv)return -1*dir; if(av>bv)return 1*dir; return 0;}).forEach(r=>body.appendChild(r)); }
@@ -208,12 +276,32 @@ try{
 }catch(e){}
 renderStats({{ stats|tojson }});
 function buildStateUrl(){const p=new URLSearchParams();if(currentQuery)p.set('q',currentQuery);if(recentFilters.status)p.set('status',recentFilters.status);if(recentFilters.newOnly)p.set('new','1');if(recentFilters.classification)p.set('classification',recentFilters.classification);if(recentFilters.severity)p.set('severity',recentFilters.severity);if(recentFilters.device)p.set('device',recentFilters.device);if(recentFilters.vendor)p.set('vendor',recentFilters.vendor);p.set('page',String(recentFilters.page));p.set('page_size',String(recentFilters.page_size));return '/api/state?'+p.toString()}
-function applyRecentFilterChanges(){recentFilters.page=1;refresh(true)}
-async function refresh(force=false){try{const r=await fetch(buildStateUrl(),{cache:'no-store'});if(!r.ok)return;const data=await r.json();renderRecent(data.recent);updateNewDetection(data.recent);renderRecentControls(data.recent_meta,data.filter_options);if(initialDomainSnapshot&&data.recent_meta?.new_domains?.length)showNewBanner(data.recent_meta.new_domains);renderClients(data.clients);renderStats(data.stats);if(data.inspect_html!==null)document.getElementById('inspect-root').innerHTML=data.inspect_html;const stamp=formatUpdated(data.updated);document.getElementById('last-update-time').textContent=stamp.time;document.getElementById('last-update-date').textContent=stamp.date}catch(e){console.debug('refresh failed',e)}finally{setTimeout(refresh,refreshMs)}}
-document.querySelectorAll('[data-status-filter]').forEach(b=>b.addEventListener('click',()=>{recentFilters.status=b.dataset.statusFilter||'';applyRecentFilterChanges()}));document.getElementById('new-filter')?.addEventListener('click',()=>{recentFilters.newOnly=!recentFilters.newOnly;applyRecentFilterChanges()});for(const [id,key] of [['classification-filter','classification'],['severity-filter','severity'],['device-filter','device'],['vendor-filter','vendor']])document.getElementById(id)?.addEventListener('change',e=>{recentFilters[key]=e.target.value;applyRecentFilterChanges()});document.getElementById('page-size')?.addEventListener('change',e=>{recentFilters.page_size=Number(e.target.value)||50;applyRecentFilterChanges()});document.getElementById('page-prev')?.addEventListener('click',()=>{if(recentFilters.page>1){recentFilters.page--;refresh(true)}});document.getElementById('page-next')?.addEventListener('click',()=>{if(recentFilters.page<recentMeta.pages){recentFilters.page++;refresh(true)}});
-const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;setTimeout(()=>refresh(true),refreshMs);
+function applyRecentFilterChanges(){recentFilters.page=1;requestRefresh()}
+let refreshTimer=null;
+let refreshInFlight=false;
+let refreshPending=false;
+function scheduleRefresh(delay=refreshMs){
+  if(refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer=setTimeout(()=>{ refreshTimer=null; refresh(); }, Math.max(250, delay));
+}
+function requestRefresh(){
+  if(refreshTimer){ clearTimeout(refreshTimer); refreshTimer=null; }
+  if(refreshInFlight){ refreshPending=true; return; }
+  refresh();
+}
+async function refresh(force=false){
+  showRefreshStatus();
+  if(refreshInFlight){ refreshPending=true; return; }
+  refreshInFlight=true;
+  try{const r=await fetch(buildStateUrl(),{cache:'no-store'});if(!r.ok)return;const data=await r.json();renderRecent(data.recent);updateNewDetection(data.recent);renderRecentControls(data.recent_meta,data.filter_options);if(initialDomainSnapshot&&data.recent_meta?.new_domains?.length)showNewBanner(data.recent_meta.new_domains);renderClients(data.clients);renderStats(data.stats);renderObservability(data.observability);if(data.inspect_html!==null)document.getElementById('inspect-root').innerHTML=data.inspect_html;const stamp=formatUpdated(data.updated);document.getElementById('last-update-time').textContent=stamp.time;document.getElementById('last-update-date').textContent=stamp.date}catch(e){console.debug('refresh failed',e)}finally{hideRefreshStatus();refreshInFlight=false;if(refreshPending){refreshPending=false;scheduleRefresh(0)}else{scheduleRefresh(refreshMs)}}}
+document.querySelectorAll('[data-status-filter]').forEach(b=>b.addEventListener('click',()=>{recentFilters.status=b.dataset.statusFilter||'';applyRecentFilterChanges()}));document.getElementById('new-filter')?.addEventListener('click',()=>{recentFilters.newOnly=!recentFilters.newOnly;applyRecentFilterChanges()});for(const [id,key] of [['classification-filter','classification'],['severity-filter','severity'],['device-filter','device'],['vendor-filter','vendor']])document.getElementById(id)?.addEventListener('change',e=>{recentFilters[key]=e.target.value;applyRecentFilterChanges()});document.getElementById('page-size')?.addEventListener('change',e=>{recentFilters.page_size=Number(e.target.value)||50;applyRecentFilterChanges()});document.getElementById('page-prev')?.addEventListener('click',()=>{if(recentFilters.page>1){recentFilters.page--;requestRefresh()}});document.getElementById('page-next')?.addEventListener('click',()=>{if(recentFilters.page<recentMeta.pages){recentFilters.page++;requestRefresh()}});
+const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;loadDeviceLabels().then(()=>{renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();placeDeviceLabelsInColumn();});requestRefresh();
 </script>
-</body></html>
+<script>
+function observabilityDuration(seconds){let s=Math.max(0,Math.floor(Number(seconds)||0));const d=Math.floor(s/86400);s%=86400;const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;if(d)return `${d}d ${h}h ${m}m`;if(h)return `${h}h ${m}m ${s}s`;if(m)return `${m}m ${s}s`;return `${s}s`}
+function observabilityRam(value){const mb=Number(value);return Number.isFinite(mb)?`${mb.toFixed(mb>=100?0:1)} MB`:'—'}
+function renderObservability(d){if(!d)return;const u=document.getElementById('obs-uptime');const m=document.getElementById('obs-memory');if(u)u.textContent=`Uptime ${observabilityDuration(d.uptime_seconds)}`;if(m)m.textContent=`RAM ${observabilityRam(d.ram_mb)}`}
+</script></body></html>
 """
 
 
@@ -228,7 +316,7 @@ def add_column_if_missing(c, table, column, ddl):
 
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         c.execute("""CREATE TABLE IF NOT EXISTS domains(
             domain TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT,
             requests INTEGER NOT NULL DEFAULT 0, clients_json TEXT NOT NULL DEFAULT '{}',
@@ -278,6 +366,18 @@ def init_db():
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_processed_seen ON processed_queries(seen_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")
+        c.execute("""CREATE TABLE IF NOT EXISTS ip_ping_status(
+            ip TEXT PRIMARY KEY,
+            last_checked REAL NOT NULL,
+            online INTEGER NOT NULL,
+            latency_ms REAL,
+            error TEXT NOT NULL DEFAULT '')""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_ip_ping_status_last_checked ON ip_ping_status(last_checked)")
+        c.execute("""CREATE TABLE IF NOT EXISTS enrichment_attempts(
+            domain TEXT PRIMARY KEY,
+            attempted_at REAL NOT NULL,
+            next_attempt_at REAL NOT NULL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_attempt_next ON enrichment_attempts(next_attempt_at)")
         c.commit()
 
 
@@ -435,7 +535,7 @@ def adguard_current_status(domain):
 def cached_adguard_status(domain, max_age_seconds=300):
     domain = str(domain or "").strip().rstrip(".").lower()
     now = datetime.now(timezone.utc)
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         row = c.execute("SELECT fetched_at,status,reason FROM adguard_status_cache WHERE domain=?", (domain,)).fetchone()
     if row:
         try:
@@ -457,10 +557,44 @@ def refresh_adguard_status(domain):
     if status == "Unknown" and not reason:
         return
     now = utcnow()
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         c.execute("INSERT OR REPLACE INTO adguard_status_cache(domain,fetched_at,status,reason) VALUES(?,?,?,?)", (domain, now, status, reason))
         c.execute("UPDATE domains SET current_status=?, current_reason=? WHERE domain=?", (status, reason, domain))
         c.commit()
+
+
+def _schedule_adguard_status(domain):
+    """Queue at most one AdGuard status refresh per domain.
+
+    Overview requests must never create an unbounded number of threads.
+    """
+    domain = str(domain or "").strip().rstrip(".").lower()
+    if not domain:
+        return False
+    if not _status_slots.acquire(blocking=False):
+        return False
+    with _status_guard:
+        if domain in _status_inflight:
+            _status_slots.release()
+            return False
+        _status_inflight.add(domain)
+    def run():
+        try:
+            refresh_adguard_status(domain)
+        except Exception as e:
+            print(f"AdGuard status refresh error for {domain}: {e!r}", flush=True)
+        finally:
+            with _status_guard:
+                _status_inflight.discard(domain)
+            _status_slots.release()
+    try:
+        _status_executor.submit(run)
+        return True
+    except Exception:
+        with _status_guard:
+            _status_inflight.discard(domain)
+        _status_slots.release()
+        return False
 
 
 def fetch_clients():
@@ -519,7 +653,7 @@ def hostname_for_ip(ip, allow_network=True):
     if not is_ip(ip):
         return ""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,hostname FROM hostname_cache WHERE ip=?", (ip,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -538,7 +672,7 @@ def hostname_for_ip(ip, allow_network=True):
     except Exception:
         hostname = ""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO hostname_cache(ip,fetched_at,hostname) VALUES(?,?,?)", (ip, utcnow(), hostname))
             c.commit()
     except Exception:
@@ -551,7 +685,7 @@ def mac_vendor_lookup(mac, allow_network=True):
     if not mac:
         return ""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,vendor FROM mac_vendor_cache WHERE mac=?", (mac,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -569,7 +703,7 @@ def mac_vendor_lookup(mac, allow_network=True):
     except Exception as e:
         print("MAC vendor lookup error:", repr(e), flush=True)
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO mac_vendor_cache(mac,fetched_at,vendor) VALUES(?,?,?)", (mac, utcnow(), vendor))
             c.commit()
     except Exception:
@@ -598,7 +732,7 @@ def _schedule_device_network_enrichment(device_key, ips, mac, hostname_hint=""):
                     if hostname:
                         break
             vendor = mac_vendor_lookup(mac, allow_network=True) if mac else ""
-            with db_lock, sqlite3.connect(DB_PATH) as c:
+            with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
                 row = c.execute("SELECT hostname,mac,vendor FROM devices WHERE device_key=?", (key,)).fetchone()
                 if row:
                     final_hostname = row[0] or hostname
@@ -813,9 +947,10 @@ def ingest(force=False):
         data = fetch_querylog()
         entries = data.get("data") or []
         now = utcnow()
-        with db_lock, sqlite3.connect(DB_PATH) as c:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
             new_count = 0
             status_backfilled = 0
+            new_domains_for_enrichment = []
             for e in entries:
                 fp = query_fingerprint(e)
                 existing = c.execute("SELECT status_counted FROM processed_queries WHERE fingerprint=?", (fp,)).fetchone()
@@ -859,6 +994,7 @@ def ingest(force=False):
                     allowed = 1 if qstatus == "Allowed" else 0
                     unknown = 1 if qstatus == "Unknown" else 0
                     c.execute("INSERT INTO domains(domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason,current_status,current_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (domain, now, now, 1, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), qstatus, str(e.get("reason") or "")))
+                    new_domains_for_enrichment.append(domain)
                 old = c.execute("SELECT request_count FROM client_cache WHERE identifier=?", (ident,)).fetchone()
                 if old:
                     c.execute("""UPDATE client_cache SET name=?, source=?, last_seen=?, request_count=request_count+1, info_json=?, device_key=?, mac=?, hostname=? WHERE identifier=?""",
@@ -874,6 +1010,8 @@ def ingest(force=False):
             # Keep the dedupe table bounded while retaining enough history for repeated 500-entry query-log snapshots.
             c.execute("DELETE FROM processed_queries WHERE rowid IN (SELECT rowid FROM processed_queries ORDER BY seen_at DESC LIMIT -1 OFFSET 100000)")
             c.commit()
+        for new_domain in dict.fromkeys(new_domains_for_enrichment):
+            _queue_domain_enrichment(new_domain)
         refresh_runtime_clients()
         reconcile_neighbors()
         last_ingest_at = time.time()
@@ -881,6 +1019,137 @@ def ingest(force=False):
             print(f"Ingested {new_count} new DNS queries; backfilled {status_backfilled} query statuses.", flush=True)
     except Exception as e:
         print("ingest error:", repr(e), flush=True)
+
+
+def _validate_ping_ip(value):
+    value = str(value or '').strip()
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError('Invalid IP address')
+    if addr.is_loopback or addr.is_multicast or not addr.is_private:
+        raise ValueError('Only private LAN IP addresses can be pinged')
+    return value
+
+
+def _run_ip_ping(ip):
+    ip = _validate_ping_ip(ip)
+    started = time.monotonic()
+    online = False
+    latency_ms = None
+    error = ''
+    try:
+        proc = subprocess.run(
+            ['ping', '-c', '1', '-W', str(IP_PING_TIMEOUT_SECONDS), ip],
+            capture_output=True,
+            text=True,
+            timeout=IP_PING_TIMEOUT_SECONDS + 2,
+            check=False,
+        )
+        output = (proc.stdout or '') + '\n' + (proc.stderr or '')
+        online = proc.returncode == 0
+        if online:
+            match = re.search(r'time[=<]([0-9.]+)\s*ms', output)
+            latency_ms = float(match.group(1)) if match else round((time.monotonic() - started) * 1000.0, 1)
+        else:
+            error = 'No reply'
+    except FileNotFoundError:
+        error = 'ping command unavailable'
+    except subprocess.TimeoutExpired:
+        error = 'Timeout'
+    except Exception as e:
+        error = str(e)[:200]
+
+    checked = time.time()
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+        c.execute(
+            'INSERT OR REPLACE INTO ip_ping_status(ip,last_checked,online,latency_ms,error) VALUES(?,?,?,?,?)',
+            (ip, checked, 1 if online else 0, latency_ms, error),
+        )
+        c.commit()
+    return {'ip': ip, 'online': online, 'latency_ms': latency_ms, 'error': error, 'last_checked': checked}
+
+
+def _ping_active_ips():
+    cutoff = time.time() - DEVICE_IP_RETENTION_HOURS * 3600.0
+    try:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+            ips = [row[0] for row in c.execute(
+                'SELECT DISTINCT ip FROM device_ips WHERE last_seen >= ? AND ip IS NOT NULL AND TRIM(ip) <> ""',
+                (cutoff,),
+            ).fetchall()]
+        for ip in ips:
+            try:
+                _run_ip_ping(ip)
+            except Exception as e:
+                print(f'IP ping error for {ip}: {e!r}', flush=True)
+        if ips:
+            print(f'IP reachability sweep checked {len(ips)} active addresses', flush=True)
+    except Exception as e:
+        print('IP reachability sweep error:', repr(e), flush=True)
+
+
+def _ip_ping_worker():
+    time.sleep(IP_PING_INITIAL_DELAY_SECONDS)
+    while True:
+        _ping_active_ips()
+        time.sleep(IP_PING_INTERVAL_HOURS * 3600.0)
+
+
+@app.route('/api/ip/ping/status', methods=['GET'])
+def api_ip_ping_status():
+    try:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+            rows = c.execute('SELECT ip,last_checked,online,latency_ms,error FROM ip_ping_status').fetchall()
+        return jsonify({
+            'ok': True,
+            'statuses': {
+                row[0]: {
+                    'last_checked': row[1],
+                    'online': bool(row[2]),
+                    'latency_ms': row[3],
+                    'error': row[4] or '',
+                }
+                for row in rows
+            },
+        })
+    except Exception as e:
+        print('IP ping status error:', repr(e), flush=True)
+        return jsonify({'ok': False, 'statuses': {}}), 500
+
+
+@app.route('/api/ip/ping', methods=['POST'])
+def api_ip_ping():
+    try:
+        data = request.get_json(silent=True) or {}
+        ip = _validate_ping_ip(data.get('ip'))
+        return jsonify({'ok': True, 'result': _run_ip_ping(ip)})
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+    except Exception as e:
+        print('manual IP ping error:', repr(e), flush=True)
+        return jsonify({'ok': False, 'error': 'Ping failed'}), 500
+
+
+def _prune_stale_device_ips():
+    cutoff = time.time() - DEVICE_IP_RETENTION_HOURS * 3600.0
+    try:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+            cur = c.execute("DELETE FROM device_ips WHERE last_seen < ?", (cutoff,))
+            removed = int(cur.rowcount or 0)
+            c.commit()
+        if removed:
+            print(f"Pruned {removed} stale device IP associations older than {DEVICE_IP_RETENTION_HOURS:g}h", flush=True)
+        return removed
+    except Exception as e:
+        print('device IP cleanup error:', repr(e), flush=True)
+        return 0
+
+
+def _device_ip_cleanup_worker():
+    while True:
+        _prune_stale_device_ips()
+        time.sleep(DEVICE_IP_CLEANUP_INTERVAL_MINUTES * 60)
 
 
 def refresh_runtime_clients():
@@ -893,7 +1162,7 @@ def refresh_runtime_clients():
     if not auto and not manual:
         return
     now = utcnow()
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         rows = c.execute("SELECT identifier,device_key FROM client_cache").fetchall()
         for ident, current_device_key in rows:
             x = manual.get(ident) or auto.get(ident)
@@ -915,7 +1184,7 @@ def refresh_runtime_clients():
 
 def migrate_legacy_domain_clients():
     """One-time-ish reconciliation of v0.3 domain keys after stable device IDs are discovered."""
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         cache_rows = c.execute("SELECT identifier,device_key FROM client_cache WHERE device_key<>''").fetchall()
         aliases = {ident: dkey for ident, dkey in cache_rows}
         if not aliases:
@@ -1027,7 +1296,7 @@ def netify_ip_lookup(ip, force=False):
     if not ip:
         return {}
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,json FROM netify_ip_cache WHERE ip=?", (ip,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1049,7 +1318,7 @@ def netify_ip_lookup(ip, force=False):
     except Exception as e:
         print("Netify IP lookup error:", repr(e), flush=True)
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO netify_ip_cache(ip,fetched_at,json) VALUES(?,?,?)", (ip, utcnow(), json.dumps(result)))
             c.commit()
     except Exception:
@@ -1066,7 +1335,7 @@ def netify_lookup(domain, force=False):
     if not domain:
         return {}
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,json FROM netify_cache WHERE domain=?", (domain,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1205,7 +1474,7 @@ def netify_lookup(domain, force=False):
         print("Netify lookup error:", repr(e), flush=True)
 
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO netify_cache(domain,fetched_at,json) VALUES(?,?,?)", (domain, utcnow(), json.dumps(result)))
             c.commit()
     except Exception:
@@ -1221,7 +1490,7 @@ def rdap_lookup(domain, force=False):
         candidates.append(apex)
     for candidate in candidates:
         try:
-            with sqlite3.connect(DB_PATH) as c:
+            with closing(sqlite3.connect(DB_PATH)) as c:
                 row = c.execute("SELECT fetched_at,json FROM rdap_cache WHERE domain=?", (candidate,)).fetchone()
             if row:
                 age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1261,7 +1530,7 @@ def rdap_lookup(domain, force=False):
                                     break
                         if result["registrar"]:
                             break
-            with sqlite3.connect(DB_PATH) as c:
+            with closing(sqlite3.connect(DB_PATH)) as c:
                 c.execute("INSERT OR REPLACE INTO rdap_cache(domain,fetched_at,json) VALUES(?,?,?)", (candidate, utcnow(), json.dumps(result)))
                 c.commit()
             if result.get("org") or candidate == apex:
@@ -1281,7 +1550,7 @@ def dns_records_lookup(domain, force=False):
     if not domain:
         return {}
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,json FROM dns_records_cache WHERE domain=?", (domain,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1314,7 +1583,7 @@ def dns_records_lookup(domain, force=False):
             records[rtype] = values[:20]
 
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO dns_records_cache(domain,fetched_at,json) VALUES(?,?,?)", (domain, utcnow(), json.dumps(records)))
             c.commit()
     except Exception:
@@ -1325,7 +1594,7 @@ def dns_records_lookup(domain, force=False):
 def _cache_needs_refresh(table, domain, max_age_hours):
     """Return True when a cache row is missing or older than its TTL."""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute(f"SELECT fetched_at FROM {table} WHERE domain=?", (domain,)).fetchone()
         if not row:
             return True
@@ -1335,28 +1604,90 @@ def _cache_needs_refresh(table, domain, max_age_hours):
         return True
 
 
-def refresh_domain_enrichment(domain):
-    """Refresh slow external enrichment in the background, never in the request path."""
+_enrichment_queue = queue.Queue(maxsize=500)
+_enrichment_queue_lock = threading.Lock()
+_enrichment_queued = set()
+_enrichment_retry_until = {}
+_enrichment_retry_loaded = set()
+
+def _enrichment_retry_allowed(domain, now_ts=None):
+    now_ts = time.time() if now_ts is None else now_ts
+    until = _enrichment_retry_until.get(domain)
+    if until is not None:
+        return until <= now_ts
+    if domain in _enrichment_retry_loaded:
+        return True
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            row = c.execute("SELECT next_attempt_at FROM enrichment_attempts WHERE domain=?", (domain,)).fetchone()
+        if row:
+            until = float(row[0] or 0)
+            _enrichment_retry_until[domain] = until
+        else:
+            until = 0.0
+    except Exception:
+        until = 0.0
+    _enrichment_retry_loaded.add(domain)
+    return until <= now_ts
+
+def _mark_enrichment_attempt(domain, now_ts=None):
+    now_ts = time.time() if now_ts is None else now_ts
+    next_ts = now_ts + ENRICHMENT_RETRY_HOURS * 3600.0
+    _enrichment_retry_until[domain] = next_ts
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            c.execute(
+                "INSERT OR REPLACE INTO enrichment_attempts(domain,attempted_at,next_attempt_at) VALUES(?,?,?)",
+                (domain, now_ts, next_ts),
+            )
+            c.commit()
+    except Exception as e:
+        print('enrichment retry-state error:', repr(e), flush=True)
+    return next_ts
+
+def _queue_domain_enrichment(domain):
     domain = str(domain or '').strip('.').lower()
     if not domain:
-        return
-    with enrichment_lock:
-        if domain in enrichment_refreshing:
-            return
-        enrichment_refreshing.add(domain)
-
-    def run():
+        return False
+    with _enrichment_queue_lock:
+        if domain in _enrichment_queued or domain in enrichment_refreshing:
+            return False
+        if not _enrichment_retry_allowed(domain):
+            return False
         try:
-            netify_lookup(domain, force=True)
-            rdap_lookup(domain, force=True)
-            dns_records_lookup(domain, force=True)
+            _enrichment_queue.put_nowait(domain)
+        except queue.Full:
+            return False
+        _enrichment_queued.add(domain)
+        next_ts = _mark_enrichment_attempt(domain)
+    print(f"Enrichment queued: {domain}; next retry after {datetime.fromtimestamp(next_ts, timezone.utc).isoformat()}", flush=True)
+    return True
+
+def _enrichment_needs_refresh(table, domain, ttl_hours):
+    return _cache_needs_refresh(table, domain, ttl_hours)
+
+def _enrichment_worker():
+    while True:
+        domain = _enrichment_queue.get()
+        with _enrichment_queue_lock:
+            _enrichment_queued.discard(domain)
+        with enrichment_lock:
+            enrichment_refreshing.add(domain)
+        try:
+            # Re-check every source at execution time. Fresh data is never touched.
+            if _enrichment_needs_refresh('netify_cache', domain, NETIFY_CACHE_HOURS):
+                netify_lookup(domain, force=True)
+            if _enrichment_needs_refresh('rdap_cache', apex_domain(domain), RDAP_CACHE_HOURS):
+                rdap_lookup(domain, force=True)
+            if _enrichment_needs_refresh('dns_records_cache', domain, DNS_RECORDS_CACHE_HOURS):
+                dns_records_lookup(domain, force=True)
         except Exception as e:
-            print("enrichment refresh error:", repr(e), flush=True)
+            print('enrichment worker error:', repr(e), flush=True)
         finally:
             with enrichment_lock:
                 enrichment_refreshing.discard(domain)
-
-    threading.Thread(target=run, daemon=True, name=f"enrich:{domain}").start()
+            _enrichment_queue.task_done()
+            time.sleep(max(0.0, float(os.getenv('ENRICHMENT_DELAY_SECONDS', '1.0'))))
 
 
 def resolve_dns(domain, records=None):
@@ -1393,7 +1724,7 @@ def dnschecker_url(hostname):
 
 def mac_lookup_url(mac):
     mac = normalize_mac(mac)
-    return f"https://macvendors.com/{quote(mac, safe=':') }" if mac else ''
+    return f"https://maclookup.app/search/result?mac={quote(mac, safe=':')}" if mac else ''
 
 
 def device_search_url(name, hostname='', vendor=''):
@@ -1654,9 +1985,56 @@ def build_explanation(domain, tracker, rdap, client_details, netify=None):
     return {"summary": summary, "tone": tone, "confidence": confidence, "evidence": evidence or ["No strong identifying signals are available yet"]}
 
 
+def _resolve_search_domain(query):
+    q = str(query or '').strip().lower().rstrip('.')
+    if not q:
+        return ''
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        exact = c.execute("SELECT domain FROM domains WHERE domain=?", (q,)).fetchone()
+        if exact:
+            return exact[0]
+
+        like = f"%{q}%"
+        rows = c.execute("SELECT domain FROM domains WHERE lower(domain) LIKE ? ORDER BY requests DESC LIMIT 20", (like,)).fetchall()
+        if rows:
+            return rows[0][0]
+
+        device_rows = c.execute(
+            "SELECT device_key FROM devices WHERE lower(device_key) LIKE ? OR lower(name) LIKE ? OR lower(hostname) LIKE ? OR lower(mac) LIKE ? OR lower(vendor) LIKE ? ORDER BY request_count DESC LIMIT 25",
+            (like, like, like, like, like),
+        ).fetchall()
+        device_keys = {r[0] for r in device_rows}
+
+        ip_rows = c.execute(
+            "SELECT DISTINCT device_key FROM device_ips WHERE lower(ip) LIKE ? ORDER BY last_seen DESC LIMIT 25",
+            (like,),
+        ).fetchall()
+        device_keys.update(r[0] for r in ip_rows)
+
+        if not device_keys:
+            return ''
+
+        best = None
+        best_requests = -1
+        for domain, requests_count, raw_clients in c.execute(
+            "SELECT domain,requests,clients_json FROM domains ORDER BY requests DESC LIMIT 3000"
+        ).fetchall():
+            try:
+                clients = json.loads(raw_clients or '{}')
+            except Exception:
+                clients = {}
+            count = sum(int(clients.get(k, 0) or 0) for k in device_keys)
+            if count > 0 and (count > best_requests or (count == best_requests and int(requests_count or 0) > int(best[1] if best else -1))):
+                best = (domain, int(requests_count or 0))
+                best_requests = count
+        return best[0] if best else ''
+
+
 def inspect_domain(domain):
-    domain = domain.lower().rstrip(".")
-    with sqlite3.connect(DB_PATH) as c:
+    domain = _resolve_search_domain(domain)
+    if not domain:
+        return None
+    with closing(sqlite3.connect(DB_PATH)) as c:
         row = c.execute("SELECT domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason,current_status,current_reason FROM domains WHERE domain=?", (domain,)).fetchone()
         if not row:
             return None
@@ -1677,7 +2055,7 @@ def inspect_domain(domain):
         or _cache_needs_refresh("dns_records_cache", domain, DNS_RECORDS_CACHE_HOURS)
     )
     if needs_refresh:
-        refresh_domain_enrichment(domain)
+        _queue_domain_enrichment(domain)
 
     dns = resolve_dns(domain, dns_records)
     return {
@@ -1712,35 +2090,96 @@ def _is_new_domain(first_seen):
 
 
 def get_filter_options():
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         vendors=[r[0] for r in c.execute("SELECT DISTINCT vendor FROM devices WHERE TRIM(vendor)<>'' ORDER BY vendor COLLATE NOCASE").fetchall()]
-        devices=[{"value":k,"label":lbl} for k,lbl in c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key) AS lbl FROM devices ORDER BY lbl COLLATE NOCASE").fetchall()]
+        rows=c.execute("SELECT device_key,name,hostname,vendor FROM devices ORDER BY request_count DESC, device_key COLLATE NOCASE").fetchall()
+        devices=[]
+        for device_key,name,hostname,vendor in rows:
+            label=real_device_label({"device_key":device_key,"identifier":device_key,"name":name,"hostname":hostname,"display_name":hostname or name or vendor or device_key,"vendor":vendor})
+            label=label or str(vendor or '').strip() or device_key
+            devices.append({"value":device_key,"label":label})
     return {"classifications":["Known service","Telemetry / Tracking","Advertising","Suspicious","Unknown"],"severities":["Info","Low","Medium","High","Unknown"],"vendors":vendors,"devices":devices}
+
+
+def _status_from_counts(blocked, allowed):
+    blocked = int(blocked or 0)
+    allowed = int(allowed or 0)
+    if blocked and allowed:
+        return "Mixed", "mixed"
+    if blocked:
+        return "Blocked", "blocked"
+    if allowed:
+        return "Allowed", "allowed"
+    return "Unknown", "unknown"
 
 
 def get_recent(page=1,page_size=50,status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter=""):
     page=max(1,int(page or 1)); page_size=max(10,min(500,int(page_size or 50)))
     order_sql="first_seen DESC" if new_only else "requests DESC"
-    scan_limit=max(500,min(3000,page*page_size+500))
-    with sqlite3.connect(DB_PATH) as c:
-        rows=c.execute(f"SELECT domain,requests,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason FROM domains ORDER BY {order_sql} LIMIT ?",(scan_limit,)).fetchall()
+    now_dt=datetime.now(timezone.utc)
+    cutoff=(now_dt-timedelta(hours=24)).isoformat()
+
+    # Status and NEW are persisted in the domains table, so do not scan thousands
+    # of domains and run TrackerDB/RDAP/Netify lookups just to answer a simple
+    # Overview filter. This is the main latency fix for Allowed/Blocked/Mixed/NEW.
+    simple_filter = not (classification_filter or severity_filter or device_filter or vendor_filter)
+    where=[]
+    params=[]
+    if new_only:
+        where.append("first_seen>=?")
+        params.append(cutoff)
+    if status_filter:
+        if status_filter == "Allowed":
+            where.append("blocked_requests=0 AND allowed_requests>0")
+        elif status_filter == "Blocked":
+            where.append("blocked_requests>0 AND allowed_requests=0")
+        elif status_filter == "Mixed":
+            where.append("blocked_requests>0 AND allowed_requests>0")
+        elif status_filter == "Unknown":
+            where.append("blocked_requests=0 AND allowed_requests=0")
+
+    sql_where = (" WHERE " + " AND ".join(where)) if where else ""
+
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        status_rows = c.execute("SELECT SUM(CASE WHEN blocked_requests=0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests=0 AND allowed_requests>0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests>0 THEN 1 ELSE 0 END) FROM domains").fetchone()
+        status_counts={
+            "All": int(c.execute("SELECT COUNT(*) FROM domains").fetchone()[0] or 0),
+            "Unknown": int(status_rows[0] or 0),
+            "Allowed": int(status_rows[1] or 0),
+            "Blocked": int(status_rows[2] or 0),
+            "Mixed": int(status_rows[3] or 0),
+        }
+
+        if simple_filter:
+            total=int(c.execute("SELECT COUNT(*) FROM domains" + sql_where, tuple(params)).fetchone()[0] or 0)
+            pages=max(1,(total+page_size-1)//page_size)
+            page=min(page,pages)
+            offset=(page-1)*page_size
+            rows=c.execute(f"SELECT domain,requests,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason FROM domains{sql_where} ORDER BY {order_sql} LIMIT ? OFFSET ?", tuple(params)+ (page_size,offset)).fetchall()
+        else:
+            # Complex filters still need enrichment, but status/NEW constraints are
+            # pushed into SQL first so we do not scan unrelated domains.
+            scan_limit=max(500,min(3000,page*page_size+500))
+            rows=c.execute(f"SELECT domain,requests,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason FROM domains{sql_where} ORDER BY {order_sql} LIMIT ?", tuple(params)+(scan_limit,)).fetchall()
+
         matched=[]
-        status_counts={"All":0,"Allowed":0,"Blocked":0,"Mixed":0,"Unknown":0}
         for domain,requests_count,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason in rows:
-            clients=canonicalize_client_map(json.loads(clients_json or "{}"))
+            try:
+                clients=canonicalize_client_map(json.loads(clients_json or "{}"))
+            except Exception:
+                clients={}
             devices=[]; row_vendors=set(); row_keys=set()
             for key,count in sorted(clients.items(),key=lambda kv:kv[1],reverse=True)[:6]:
                 d=client_display(c,key,count); dkey=d.get("device_key",key); row_keys.add(dkey)
                 vendor=d.get("vendor","")
                 if vendor: row_vendors.add(vendor)
                 devices.append({"device_key":dkey,"identifier":d.get("identifier",key),"name":d.get("hostname") or d.get("name") or vendor or d.get("display_name") or key,"icon":d.get("icon","📦"),"type":d.get("type","IoT / Unknown"),"vendor_logo":d.get("vendor_logo",""),"vendor":vendor})
+
+            # Enrichment is needed for the classification/severity columns, but it
+            # is performed only for rows that can actually appear on this page.
             t=tracker_lookup(domain); rd=rdap_lookup(domain); n=netify_lookup(domain)
             cls,badge,severity=classify(t,rd,n)
-            cached_status,cached_reason,stale=cached_adguard_status(domain)
-            if cached_status!="Unknown": status,status_class=cached_status,cached_status.lower()
-            elif current_status and current_status!="Unknown": status,status_class=current_status,current_status.lower()
-            else: status,status_class=status_summary(int(blocked_requests or 0),int(allowed_requests or 0),int(unknown_requests or 0))
-            status_counts[status if status in status_counts else "Unknown"]+=1
+            status,status_class=_status_from_counts(blocked_requests,allowed_requests)
             if status_filter and status!=status_filter: continue
             is_new=_is_new_domain(first_seen)
             if new_only and not is_new: continue
@@ -1749,20 +2188,44 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
             if severity_filter and sev!=severity_filter: continue
             if device_filter and device_filter not in row_keys: continue
             if vendor_filter and vendor_filter not in row_vendors: continue
-            if stale and len(matched)<page_size*2:
-                threading.Thread(target=refresh_adguard_status,args=(domain,),daemon=True,name=f"agh-status:{domain}").start()
+
+            # Only queue stale status refreshes when the row is actually relevant.
+            try:
+                cached_status,cached_reason,stale=cached_adguard_status(domain)
+                if cached_status!="Unknown":
+                    status,status_class=cached_status,cached_status.lower()
+                if stale:
+                    _schedule_adguard_status(domain)
+            except Exception:
+                cached_reason=""
+
             matched.append({"domain":domain,"requests":int(requests_count),"clients":len(clients),"devices":devices,"classification":cls,"badge_class":badge,"severity_class":severity,"severity":sev,"severity_text_class":sev_class,"status":status,"status_class":status_class,"last_status":last_status,"current_reason":cached_reason or current_reason,"first_seen":first_seen,"is_new":is_new})
-        total=len(matched); pages=max(1,(total+page_size-1)//page_size); page=min(page,pages); start_i=(page-1)*page_size; page_rows=matched[start_i:start_i+page_size]
-    with sqlite3.connect(DB_PATH) as c:
-        now_dt=datetime.now(timezone.utc)
-        cutoff=(now_dt-timedelta(hours=24)).isoformat()
-        exact_new=int(c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=?",(cutoff,)).fetchone()[0])
+
+        if simple_filter:
+            # SQL already selected the exact page. Keep the pagination metadata exact.
+            page_rows=matched
+        else:
+            total=len(matched)
+            pages=max(1,(total+page_size-1)//page_size)
+            page=min(page,pages)
+            start_i=(page-1)*page_size
+            page_rows=matched[start_i:start_i+page_size]
+
+        exact_new=int(c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=?",(cutoff,)).fetchone()[0] or 0)
         fresh_cutoff=(now_dt-timedelta(seconds=max(30,UI_REFRESH_SECONDS*2))).isoformat()
         fresh_domains=[r[0] for r in c.execute("SELECT domain FROM domains WHERE first_seen>=? ORDER BY first_seen DESC LIMIT 10",(fresh_cutoff,)).fetchall()]
+
+    if simple_filter:
+        total=int(total)
+        pages=max(1,(total+page_size-1)//page_size)
+    else:
+        total=len(matched)
+        pages=max(1,(total+page_size-1)//page_size)
     return {"rows":page_rows,"meta":{"page":page,"pages":pages,"total":total,"page_size":page_size,"new_count":exact_new,"new_domains":fresh_domains,"status_counts":status_counts}}
 
+
 def get_clients():
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         rows = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices ORDER BY request_count DESC").fetchall()
         out = []
         for device_key, name, hostname, mac, vendor, dtype, icon, confidence, source, count in rows:
@@ -1789,7 +2252,7 @@ def domains_for_device(c, device_key, limit=25):
 def device_detail(device_key):
     if not device_key:
         return None
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,first_seen,last_seen,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
         if not row:
             return None
@@ -1802,7 +2265,7 @@ def device_detail(device_key):
 def ip_detail(ip):
     if not is_ip(ip):
         return None
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         rows = c.execute("SELECT d.device_key,d.name,d.hostname,d.mac,d.vendor,d.device_type,d.icon,d.confidence,d.source,di.first_seen,di.last_seen,di.requests FROM device_ips di JOIN devices d ON d.device_key=di.device_key WHERE di.ip=? ORDER BY di.last_seen DESC", (ip,)).fetchall()
         devices = []
         device_keys = set()
@@ -1884,7 +2347,7 @@ def clients_html(clients):
 
 
 def get_stats(limit=10):
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         top_domains = c.execute("SELECT domain,requests FROM domains ORDER BY requests DESC LIMIT ?", (limit,)).fetchall()
         top_devices = c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key),request_count FROM devices ORDER BY request_count DESC LIMIT ?", (limit,)).fetchall()
         top_vendors = c.execute("SELECT vendor,SUM(request_count) AS total FROM devices WHERE TRIM(vendor)<>'' GROUP BY vendor ORDER BY total DESC LIMIT ?", (limit,)).fetchall()
@@ -1900,7 +2363,8 @@ def get_stats(limit=10):
 def state_payload(q="",status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter="",page=1,page_size=50):
     result=inspect_domain(q) if q else None
     recent=get_recent(page=page,page_size=page_size,status_filter=status_filter,new_only=new_only,classification_filter=classification_filter,severity_filter=severity_filter,device_filter=device_filter,vendor_filter=vendor_filter)
-    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":inspect_html(result) if result else None}
+    uptime = _observability_uptime_seconds()
+    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":inspect_html(result) if result else None,"observability":{"uptime_seconds":round(uptime,1),"uptime_human":_observability_uptime_human(uptime),"ram_mb":_observability_rss_mb()}}
 
 def client_display(c, device_key, count):
     row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
@@ -1919,7 +2383,7 @@ def reconcile_neighbors():
         return 0
     changed = 0
     now = utcnow()
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         # Merge per-device records first. This preserves the historical IP list.
         for ip, mac in neighbors.items():
             old_key = "ip:" + ip
@@ -2033,6 +2497,27 @@ def api_state():
         return jsonify({"updated":utcnow(),"recent":[],"recent_meta":{"page":1,"pages":1,"total":0,"page_size":50,"new_count":0,"new_domains":[],"status_counts":{}},"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":None,"error":str(e)}),200
 
 
+@app.route("/api/device/label", methods=["GET", "POST"])
+def api_device_label():
+    try:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+            c.execute("CREATE TABLE IF NOT EXISTS device_labels(device_key TEXT PRIMARY KEY, label TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)")
+            if request.method == "GET":
+                rows = c.execute("SELECT device_key,label FROM device_labels WHERE TRIM(label)<>''").fetchall()
+                return jsonify({"ok": True, "labels": {k: v for k, v in rows}})
+            data = request.get_json(silent=True) or {}
+            device_key = str(data.get("device_key") or "").strip()
+            label = str(data.get("label") or "").strip()[:80]
+            if not device_key:
+                return jsonify({"ok": False, "error": "device_key is required"}), 400
+            c.execute("INSERT OR REPLACE INTO device_labels(device_key,label,updated_at) VALUES(?,?,?)", (device_key, label, utcnow()))
+            c.commit()
+            return jsonify({"ok": True, "device_key": device_key, "label": label})
+    except Exception as e:
+        print("device label error:", repr(e), flush=True)
+        return jsonify({"ok": False, "error": "Unable to save device label"}), 500
+
+
 @app.route("/device")
 def device_view():
     key = request.args.get("key", "").strip()
@@ -2056,7 +2541,665 @@ def health():
     return jsonify({"ok": True, "version": APP_VERSION, "adguard": AGH_URL, "trackerdb": trackerdb_ready(), "poll_seconds": POLL_SECONDS, "ui_refresh_seconds": UI_REFRESH_SECONDS})
 
 
-if __name__ == "__main__":
-    init_db()
-    threading.Thread(target=worker, daemon=True).start()
+# === DEEP DEBUG BUNDLE PATCH 0.7.13-HF2 ===
+# === DEEP DEBUG BUNDLE FIX PATCH 0.7.13-HF2.2 ===
+
+def _deep_debug_read_text(path):
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            return f.read()
+    except Exception as e:
+        return f'ERROR: {type(e).__name__}: {e}'
+
+
+def _deep_debug_parse_kb_lines(text):
+    out = {}
+    for line in text.splitlines():
+        if ':' not in line:
+            continue
+        key, rest = line.split(':', 1)
+        parts = rest.strip().split()
+        if not parts:
+            continue
+        value = parts[0]
+        try:
+            out[key] = int(value) * (1024 if len(parts) > 1 and parts[1].lower() == 'kb' else 1)
+        except ValueError:
+            out[key] = rest.strip()
+    return out
+
+
+def _deep_debug_proc_status():
+    raw = _deep_debug_read_text('/proc/self/status')
+    wanted = {
+        'VmSize', 'VmPeak', 'VmRSS', 'VmHWM', 'RssAnon', 'RssFile', 'RssShmem',
+        'VmData', 'VmStk', 'VmExe', 'VmLib', 'VmSwap', 'HugetlbPages'
+    }
+    parsed = _deep_debug_parse_kb_lines(raw)
+    return {k: parsed.get(k) for k in sorted(wanted)}
+
+
+def _deep_debug_smaps_rollup():
+    path = '/proc/self/smaps_rollup'
+    if not Path(path).exists():
+        return {'available': False}
+    parsed = _deep_debug_parse_kb_lines(_deep_debug_read_text(path))
+    wanted = [
+        'Rss', 'Pss', 'Pss_Anon', 'Pss_File', 'Pss_Shmem',
+        'Private_Clean', 'Private_Dirty', 'Shared_Clean', 'Shared_Dirty',
+        'Anonymous', 'AnonHugePages', 'Swap', 'SwapPss'
+    ]
+    return {'available': True, **{k: parsed.get(k) for k in wanted}}
+
+
+def _deep_debug_top_mappings(limit=25):
+    path = '/proc/self/smaps'
+    if not Path(path).exists():
+        return {'available': False, 'mappings': []}
+    header_re = re.compile(r'^([0-9a-f]+-[0-9a-f]+)\s+\S+\s+\S+\s+\S+\s+\S+(?:\s+(.*))?$')
+    rows = []
+    current = None
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                m = header_re.match(line.rstrip('\n'))
+                if m:
+                    if current:
+                        rows.append(current)
+                    current = {
+                        'address': m.group(1),
+                        'path': (m.group(2) or '').strip() or '[anonymous]',
+                        'rss': 0,
+                        'pss': 0,
+                        'private_dirty': 0,
+                        'anonymous': 0,
+                    }
+                    continue
+                if current is None or ':' not in line:
+                    continue
+                key, rest = line.split(':', 1)
+                value = rest.strip().split()
+                if not value:
+                    continue
+                try:
+                    kb = int(value[0]) * 1024
+                except ValueError:
+                    continue
+                if key == 'Rss':
+                    current['rss'] = kb
+                elif key == 'Pss':
+                    current['pss'] = kb
+                elif key == 'Private_Dirty':
+                    current['private_dirty'] = kb
+                elif key == 'Anonymous':
+                    current['anonymous'] = kb
+            if current:
+                rows.append(current)
+    except Exception as e:
+        return {'available': True, 'error': f'{type(e).__name__}: {e}', 'mappings': []}
+    rows.sort(key=lambda x: x['rss'], reverse=True)
+    return {'available': True, 'mappings': rows[:max(1, int(limit))]}
+
+
+def _deep_debug_cgroup_memory():
+    candidates = [
+        '/sys/fs/cgroup/memory.current',
+        '/sys/fs/cgroup/memory.max',
+    ]
+    values = {}
+    for path in candidates:
+        if Path(path).exists():
+            raw = _deep_debug_read_text(path).strip()
+            key = Path(path).name
+            try:
+                values[key] = int(raw) if raw != 'max' else raw
+            except ValueError:
+                values[key] = raw
+    for name in ('memory.stat', 'memory.events'):
+        path = f'/sys/fs/cgroup/{name}'
+        if Path(path).exists():
+            parsed = {}
+            for line in _deep_debug_read_text(path).splitlines():
+                parts = line.split()
+                if len(parts) == 2:
+                    try:
+                        parsed[parts[0]] = int(parts[1])
+                    except ValueError:
+                        parsed[parts[0]] = parts[1]
+            values[name] = parsed
+    return values
+
+
+def _deep_debug_mallinfo2():
+    try:
+        import ctypes
+        import ctypes.util
+        libc_path = ctypes.util.find_library('c') or 'libc.so.6'
+        libc = ctypes.CDLL(libc_path)
+        if not hasattr(libc, 'mallinfo2'):
+            return {'available': False, 'reason': 'mallinfo2 not exported by libc'}
+
+        class MallInfo2(ctypes.Structure):
+            _fields_ = [
+                ('arena', ctypes.c_size_t),
+                ('ordblks', ctypes.c_size_t),
+                ('smblks', ctypes.c_size_t),
+                ('hblks', ctypes.c_size_t),
+                ('hblkhd', ctypes.c_size_t),
+                ('usmblks', ctypes.c_size_t),
+                ('fsmblks', ctypes.c_size_t),
+                ('uordblks', ctypes.c_size_t),
+                ('fordblks', ctypes.c_size_t),
+                ('keepcost', ctypes.c_size_t),
+            ]
+
+        libc.mallinfo2.restype = MallInfo2
+        info = libc.mallinfo2()
+        return {'available': True, **{name: int(getattr(info, name)) for name, _ in MallInfo2._fields_}}
+    except Exception as e:
+        return {'available': False, 'error': f'{type(e).__name__}: {e}'}
+
+
+def _deep_debug_threads():
+    root = Path('/proc/self/task')
+    rows = []
+    try:
+        for child in root.iterdir():
+            tid = child.name
+            comm_path = child / 'comm'
+            stat_path = child / 'status'
+            comm = _deep_debug_read_text(comm_path).strip()
+            status = _deep_debug_read_text(stat_path)
+            state = None
+            voluntary = None
+            nonvoluntary = None
+            for line in status.splitlines():
+                if line.startswith('State:'):
+                    state = line.split(':', 1)[1].strip()
+                elif line.startswith('voluntary_ctxt_switches:'):
+                    voluntary = line.split(':', 1)[1].strip()
+                elif line.startswith('nonvoluntary_ctxt_switches:'):
+                    nonvoluntary = line.split(':', 1)[1].strip()
+            rows.append({
+                'tid': tid,
+                'name': comm,
+                'state': state,
+                'voluntary_ctxt_switches': voluntary,
+                'nonvoluntary_ctxt_switches': nonvoluntary,
+            })
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {e}', 'threads': []}
+    rows.sort(key=lambda x: int(x['tid']) if x['tid'].isdigit() else 0)
+    return {'count': len(rows), 'threads': rows}
+
+
+def _deep_debug_fds():
+    root = Path('/proc/self/fd')
+    rows = []
+    counts = {}
+    try:
+        for child in sorted(root.iterdir(), key=lambda p: p.name):
+            try:
+                target = os.readlink(child)
+            except Exception as e:
+                target = f'<unreadable: {type(e).__name__}>'
+            if target.startswith('socket:['):
+                kind = 'socket'
+            elif target.startswith('pipe:['):
+                kind = 'pipe'
+            elif target.startswith('anon_inode:'):
+                kind = 'anon_inode'
+            elif target.startswith('/'):
+                kind = 'file'
+            else:
+                kind = 'other'
+            counts[kind] = counts.get(kind, 0) + 1
+            rows.append({'fd': child.name, 'kind': kind, 'target': target})
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {e}', 'counts': counts, 'entries': rows}
+    return {'count': len(rows), 'counts': counts, 'entries': rows[:200]}
+
+
+def _deep_debug_sqlite():
+    result = {}
+    try:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+            for pragma in (
+                'journal_mode', 'journal_size_limit', 'page_count', 'page_size',
+                'freelist_count', 'cache_size', 'cache_spill', 'temp_store',
+                'mmap_size', 'synchronous', 'locking_mode'
+            ):
+                try:
+                    row = c.execute(f'PRAGMA {pragma}').fetchone()
+                    result[pragma] = row[0] if row else None
+                except Exception as e:
+                    result[pragma] = f'{type(e).__name__}: {e}'
+    except Exception as e:
+        result['error'] = f'{type(e).__name__}: {e}'
+    return result
+
+
+def _deep_debug_http_pools():
+    out = []
+    try:
+        adapters = getattr(session, 'adapters', {})
+        for prefix, adapter in adapters.items():
+            row = {'prefix': prefix, 'adapter_type': type(adapter).__name__}
+            poolmanager = getattr(adapter, 'poolmanager', None)
+            if poolmanager is not None:
+                row['poolmanager_type'] = type(poolmanager).__name__
+                pools = getattr(poolmanager, 'pools', None)
+                try:
+                    row['pool_count'] = len(pools) if pools is not None else None
+                except Exception:
+                    row['pool_count'] = None
+                row['num_pools'] = getattr(poolmanager, 'num_pools', None)
+                row['maxsize'] = getattr(poolmanager, 'connection_pool_kw', {}).get('maxsize') if hasattr(poolmanager, 'connection_pool_kw') else None
+            out.append(row)
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {e}', 'adapters': []}
+    return {'adapters': out}
+
+
+def _deep_debug_python_objects():
+    try:
+        import gc
+        from collections import Counter
+
+        counts = Counter()
+        object_count = 0
+        for obj in gc.get_objects():
+            object_count += 1
+            try:
+                typ = type(obj)
+                module = getattr(typ, '__module__', None) or '<unknown>'
+                qualname = getattr(typ, '__qualname__', None) or getattr(typ, '__name__', None) or repr(typ)
+                counts[f'{module}.{qualname}'] += 1
+            except Exception:
+                counts['<unclassifiable>'] += 1
+
+        top = [
+            {'type': name, 'count': count}
+            for name, count in counts.most_common(50)
+        ]
+        return {'gc_object_count': object_count, 'top_types': top}
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {e}'}
+
+
+def _deep_debug_tracemalloc():
+    try:
+        import tracemalloc
+        if not tracemalloc.is_tracing():
+            return {'available': False, 'reason': 'tracemalloc not active'}
+        current, peak = tracemalloc.get_traced_memory()
+        snap = tracemalloc.take_snapshot()
+        stats = snap.statistics('traceback')[:40]
+        top = []
+        for stat in stats:
+            top.append({
+                'size_bytes': stat.size,
+                'count': stat.count,
+                'traceback': [str(frame) for frame in stat.traceback.format()],
+            })
+        return {'available': True, 'current_bytes': current, 'peak_bytes': peak, 'top_tracebacks': top}
+    except Exception as e:
+        return {'available': False, 'error': f'{type(e).__name__}: {e}'}
+
+
+def _deep_debug_limits():
+    try:
+        import resource
+        names = {
+            'RLIMIT_AS': getattr(resource, 'RLIMIT_AS', None),
+            'RLIMIT_DATA': getattr(resource, 'RLIMIT_DATA', None),
+            'RLIMIT_STACK': getattr(resource, 'RLIMIT_STACK', None),
+        }
+        out = {}
+        for name, ident in names.items():
+            if ident is None:
+                continue
+            soft, hard = resource.getrlimit(ident)
+            out[name] = {'soft': soft, 'hard': hard}
+        return out
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {e}'}
+
+
+# === DEBUG BUNDLE RESILIENCE PATCH 0.7.13-HF2.1 ===
+
+def _deep_debug_safe_call(name, fn):
+    try:
+        return {'ok': True, 'data': fn()}
+    except BaseException as e:
+        import traceback
+        return {
+            'ok': False,
+            'error': f'{type(e).__name__}: {e}',
+            'traceback': traceback.format_exc(),
+        }
+
+
+def _deep_debug_memory_snapshot_safe():
+    collectors = [
+        ('proc_status', _deep_debug_proc_status),
+        ('smaps_rollup', _deep_debug_smaps_rollup),
+        ('top_memory_mappings', _deep_debug_top_mappings),
+        ('cgroup_memory', _deep_debug_cgroup_memory),
+        ('glibc_mallinfo2', _deep_debug_mallinfo2),
+        ('threads', _deep_debug_threads),
+        ('file_descriptors', _deep_debug_fds),
+        ('sqlite', _deep_debug_sqlite),
+        ('http_pools', _deep_debug_http_pools),
+        ('python_object_types', _deep_debug_python_objects),
+        ('tracemalloc', _deep_debug_tracemalloc),
+        ('resource_limits', _deep_debug_limits),
+    ]
+    return {name: _deep_debug_safe_call(name, fn) for name, fn in collectors}
+
+
+def _deep_debug_memory_snapshot():
+    return {
+        'proc_status_bytes': _deep_debug_proc_status(),
+        'smaps_rollup_bytes': _deep_debug_smaps_rollup(),
+        'top_memory_mappings': _deep_debug_top_mappings(),
+        'cgroup_memory': _deep_debug_cgroup_memory(),
+        'glibc_mallinfo2': _deep_debug_mallinfo2(),
+        'threads': _deep_debug_threads(),
+        'file_descriptors': _deep_debug_fds(),
+        'sqlite': _deep_debug_sqlite(),
+        'http_pools': _deep_debug_http_pools(),
+        'python_object_types': _deep_debug_python_objects(),
+        'tracemalloc': _deep_debug_tracemalloc(),
+        'resource_limits': _deep_debug_limits(),
+    }
+
+
+
+def _observability_uptime_seconds():
+    return max(0.0, time.monotonic() - OBSERVABILITY_START_MONOTONIC)
+
+
+def _observability_uptime_human(seconds):
+    total = max(0, int(seconds))
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours or days:
+        parts.append(f"{hours}h")
+    if minutes or hours or days:
+        parts.append(f"{minutes}m")
+    parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+def _observability_rss_mb():
+    try:
+        with open('/proc/self/status', 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return round(float(line.split()[1]) / 1024.0, 1)
+    except Exception:
+        pass
+    try:
+        import resource
+        return round(float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0, 1)
+    except Exception:
+        return None
+
+
+def _observability_db_counts():
+    tables = [
+        'domains','devices','device_ips','device_labels','processed_queries',
+        'adguard_status_cache','enrichment_attempts','ip_ping_status',
+        'rdap_cache','netify_cache','dns_records_cache','mac_vendor_cache',
+        'hostname_cache','client_cache'
+    ]
+    counts = {}
+    try:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+            for table in tables:
+                try:
+                    counts[table] = int(c.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0])
+                except Exception:
+                    counts[table] = None
+    except Exception as e:
+        counts['_error'] = str(e)
+    return counts
+
+
+def _observability_payload():
+    uptime = _observability_uptime_seconds()
+    try:
+        db_size = os.path.getsize(DB_PATH)
+    except OSError:
+        db_size = None
+    return {
+        'version': APP_VERSION,
+        'started_at': OBSERVABILITY_START_AT,
+        'uptime_seconds': round(uptime, 1),
+        'uptime_human': _observability_uptime_human(uptime),
+        'ram_mb': _observability_rss_mb(),
+        'pid': os.getpid(),
+        'thread_count': threading.active_count(),
+        'python': platform.python_version(),
+        'platform': platform.platform(),
+        'db_size_bytes': db_size,
+        'db_counts': _observability_db_counts(),
+    }
+
+
+@app.route('/api/observability')
+
+def _memory_diagnostics_container_summary(value):
+    """Return cheap, shallow diagnostics for long-lived module globals."""
+    try:
+        size = sys.getsizeof(value)
+    except Exception:
+        size = None
+    info = {'type': type(value).__name__, 'size_bytes': size}
+    try:
+        if isinstance(value, dict):
+            info['length'] = len(value)
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            info['length'] = len(value)
+        elif hasattr(value, 'qsize') and callable(value.qsize):
+            info['length'] = int(value.qsize())
+        elif hasattr(value, '__len__'):
+            info['length'] = len(value)
+    except Exception:
+        pass
+    return info
+
+
+def _memory_diagnostics():
+    if not MEMORY_DIAGNOSTICS_ENABLED or not tracemalloc.is_tracing():
+        return {'enabled': False}
+
+    current, peak = tracemalloc.get_traced_memory()
+    result = {
+        'enabled': True,
+        'tracemalloc_current_mb': round(current / (1024 * 1024), 2),
+        'tracemalloc_peak_mb': round(peak / (1024 * 1024), 2),
+        'gc_counts': list(gc.get_count()),
+        'gc_stats': gc.get_stats(),
+    }
+
+    try:
+        objects = gc.get_objects()
+        result['gc_object_count'] = len(objects)
+    except Exception:
+        result['gc_object_count'] = None
+
+    # Capture only a compact top-of-process allocation view. The snapshot is
+    # immediately discarded, so diagnostics do not build a historical leak log.
+    try:
+        snapshot = tracemalloc.take_snapshot()
+        snapshot = snapshot.filter_traces((
+            tracemalloc.Filter(False, '<frozen importlib._bootstrap>'),
+            tracemalloc.Filter(False, '<unknown>'),
+        ))
+        stats = snapshot.statistics('lineno')[:25]
+        top = []
+        for stat in stats:
+            frame = stat.traceback[0]
+            top.append({
+                'file': frame.filename,
+                'line': frame.lineno,
+                'size_mb': round(stat.size / (1024 * 1024), 3),
+                'count': stat.count,
+                'text': frame.name if hasattr(frame, 'name') else '',
+            })
+        result['top_allocations'] = top
+    except Exception as e:
+        result['top_allocations_error'] = str(e)
+
+    # Surface suspiciously long-lived module-level containers without walking
+    # their contents. This is intentionally shallow and only runs on demand.
+    try:
+        module_globals = {}
+        for name, value in globals().items():
+            if name.startswith('_'):
+                continue
+            if isinstance(value, (dict, list, tuple, set, frozenset)) or hasattr(value, 'qsize'):
+                try:
+                    info = _memory_diagnostics_container_summary(value)
+                    length = info.get('length')
+                    size = info.get('size_bytes')
+                    # Ignore tiny/static containers unless they are surprisingly large.
+                    if (isinstance(length, int) and length >= 10) or (isinstance(size, int) and size >= 65536):
+                        module_globals[name] = info
+                except Exception:
+                    continue
+        result['large_globals'] = dict(sorted(module_globals.items(), key=lambda item: (item[1].get('size_bytes') or 0), reverse=True)[:50])
+    except Exception as e:
+        result['large_globals_error'] = str(e)
+
+    try:
+        result['fd_count'] = len(os.listdir('/proc/self/fd'))
+    except Exception:
+        result['fd_count'] = None
+
+    return result
+
+
+# Extend the 0.7.12 observability payload without changing its existing API.
+_original_observability_payload = _observability_payload
+
+def _observability_payload():
+    payload = _original_observability_payload()
+    payload['memory_diagnostics'] = _memory_diagnostics()
+    return payload
+
+
+def api_observability():
+    try:
+        return jsonify(_observability_payload())
+    except Exception as e:
+        print('observability endpoint error:', repr(e), flush=True)
+        return jsonify({
+            'version': APP_VERSION,
+            'uptime_seconds': _observability_uptime_seconds(),
+            'ram_mb': None,
+        }), 200
+
+
+def _observability_safe_config():
+    names = [
+        'POLL_SECONDS','UI_REFRESH_SECONDS','TRACKERDB_REFRESH_HOURS',
+        'TRACKERDB_DOWNLOAD_CHUNK_SIZE','MACVENDOR_CACHE_HOURS',
+        'HOSTNAME_CACHE_HOURS','NETIFY_CACHE_HOURS','RDAP_CACHE_HOURS',
+        'DNS_RECORDS_CACHE_HOURS','ENRICHMENT_RETRY_HOURS',
+        'ENRICHMENT_DELAY_SECONDS','DEVICE_IP_RETENTION_HOURS',
+        'DEVICE_IP_CLEANUP_INTERVAL_MINUTES','IP_PING_INTERVAL_HOURS',
+        'IP_PING_INITIAL_DELAY_SECONDS','IP_PING_TIMEOUT_SECONDS'
+    ]
+    safe = {name: globals().get(name) for name in names}
+    safe['adguard_configured'] = bool(AGH_URL)
+    safe['adguard_username_configured'] = bool(AGH_USER)
+    safe['adguard_password_configured'] = bool(AGH_PASS)
+    return safe
+
+
+@app.route('/debug/bundle')
+def debug_bundle():
+    try:
+        runtime = _observability_payload()
+        deep_memory = _deep_debug_memory_snapshot_safe()
+        bundle = io.BytesIO()
+        with zipfile.ZipFile(bundle, 'w', compression=zipfile.ZIP_DEFLATED) as z:
+            z.writestr(
+                'manifest.txt',
+                f'DNS Inspector {APP_VERSION}\nGenerated: {datetime.now(timezone.utc).isoformat()}\nPurpose: safe deep memory diagnostic snapshot\nPatch: 0.7.13-hotfix.2.1\n'
+            )
+            z.writestr('runtime.json', json.dumps(runtime, indent=2, ensure_ascii=False, sort_keys=True, default=str))
+            z.writestr('memory-deep.json', json.dumps(deep_memory, indent=2, ensure_ascii=False, sort_keys=True, default=str))
+            z.writestr('config-safe.json', json.dumps(_observability_safe_config(), indent=2, ensure_ascii=False, sort_keys=True, default=str))
+            z.writestr(
+                'logs-note.txt',
+                'DNS Inspector does not persist historical stdout/stderr logs. Retrieve container/application logs from Docker or TrueNAS when a historical log stream is needed.\n'
+            )
+            try:
+                usage = shutil.disk_usage(os.path.dirname(DB_PATH) or '/')
+                z.writestr(
+                    'storage.json',
+                    json.dumps({
+                        'data_path': os.path.dirname(DB_PATH) or '/',
+                        'total_bytes': usage.total,
+                        'used_bytes': usage.used,
+                        'free_bytes': usage.free,
+                    }, indent=2)
+                )
+            except Exception as e:
+                z.writestr('storage.json', json.dumps({'error': str(e)}, indent=2))
+        bundle.seek(0)
+        filename = f'dns-inspector-debug-{APP_VERSION}-{datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")}.zip'
+        return send_file(bundle, mimetype='application/zip', as_attachment=True, download_name=filename)
+    except Exception as e:
+        print('debug bundle error:', repr(e), flush=True)
+        return jsonify({'ok': False, 'error': 'Could not generate debug bundle'}), 500
+
+
+# === APPLICATION ENTRY POINT (0.8.0) ===
+# Startup used to live inline under `if __name__ == "__main__"`, which meant the
+# only way to exercise it was to launch the real server. The steps below are the
+# same steps, in the same order, as 0.7.14 -- they are now named so that tests and
+# future module boundaries have something explicit to call.
+
+#: Long-lived background threads, in the order 0.7.14 started them.
+BACKGROUND_WORKERS = (
+    ("agh-ingest", worker),
+    ("enrichment-queue", _enrichment_worker),
+    ("device-ip-cleanup", _device_ip_cleanup_worker),
+    ("ip-ping", _ip_ping_worker),
+)
+
+
+def start_background_workers():
+    """Start every long-lived background thread and return the started threads."""
+    threads = []
+    for name, target in BACKGROUND_WORKERS:
+        thread = threading.Thread(target=target, daemon=True, name=name)
+        thread.start()
+        threads.append(thread)
+    return threads
+
+
+def serve():
+    """Run the built-in Flask server. Blocks until the process is stopped."""
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+
+
+def main():
+    """The single startup path for DNS Inspector."""
+    init_db()
+    _prune_stale_device_ips()
+    start_background_workers()
+    serve()
+
+
+if __name__ == "__main__":
+    main()

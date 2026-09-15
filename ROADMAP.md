@@ -1,5 +1,12 @@
 # DNS Inspector → Inspector BEMO Roadmap
 
+> **Note (0.8.0):** versioning changed with the 0.8.0 foundation release. Development
+> now proceeds as `0.8.1`, `0.8.2`, `0.8.3`, each carrying one focused change, with no
+> `-hotfix.N` or `-dev.N` suffixes. The `v0.7.13-hotfix.2.x` headings below describe
+> *scope*, not version numbers that will be used again. The 2.5 and 2.6 work described
+> here remains the intended product direction; see `docs/MODULARIZATION.md` for the
+> structural steps that have to land alongside it.
+
 The roadmap has changed direction slightly after the recent memory investigation and the review of commercial DNS-visibility reports and DNS-security guidance.
 
 The goal is no longer to make DNS Inspector a prettier AdGuard query log. The product direction is **network intelligence**: observe what happened, identify what it is, explain why we think that, score confidence/severity, detect unusual behavior, and surface the things worth investigating.
