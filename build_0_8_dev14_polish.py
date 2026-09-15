@@ -10,10 +10,10 @@ if MARKER in text:
     raise SystemExit(0)
 
 if 'NEW_DOMAIN_WINDOW_HOURS' not in text:
-    anchor = 'UI_REFRESH_SECONDS = max(5, int(os.getenv("UI_REFRESH_SECONDS", "10")))\n'
-    if anchor not in text:
+    m = re.search(r'(?m)^UI_REFRESH_SECONDS\s*=.*$', text)
+    if not m:
         raise SystemExit('DEV14: UI_REFRESH_SECONDS anchor not found')
-    text = text.replace(anchor, anchor + 'NEW_DOMAIN_WINDOW_HOURS = max(1.0, float(os.getenv("NEW_DOMAIN_WINDOW_HOURS", "2")))\n', 1)
+    text = text[:m.end()] + '\nNEW_DOMAIN_WINDOW_HOURS = max(1.0, float(os.getenv("NEW_DOMAIN_WINDOW_HOURS", "2")))' + text[m.end():]
 
 if 'def age_text_for_iso(value):' not in text:
     anchor = 'def utcnow():\n'
@@ -40,11 +40,11 @@ if 'def age_text_for_iso(value):' not in text:
 '''
     text = text.replace(anchor, helper + anchor, 1)
 
-old_recent = '''        fresh_cutoff = (now_dt - timedelta(seconds=max(30, UI_REFRESH_SECONDS * 2))).isoformat()
-        fresh_domains = [r[0] for r in c.execute(
-            "SELECT domain FROM domains WHERE first_seen>=? ORDER BY first_seen DESC LIMIT 10", (fresh_cutoff,)
-        ).fetchall()]
-'''
+fresh_re = re.compile(
+    r'\s*fresh_cutoff\s*=\s*\(now_dt\s*-\s*timedelta\(seconds\s*=\s*max\(30,\s*UI_REFRESH_SECONDS\s*\*\s*2\)\)\)\.isoformat\(\)\s*\n'
+    r'fresh_domains\s*=\s*\[[^\n]*?fetchall\(\)\]\s*',
+    re.S,
+)
 new_recent = '''        fresh_cutoff = (now_dt - timedelta(hours=NEW_DOMAIN_WINDOW_HOURS)).isoformat()
         fresh_window_count = int(c.execute(
             "SELECT COUNT(*) FROM domains WHERE first_seen>=?", (fresh_cutoff,)
@@ -67,9 +67,10 @@ new_recent = '''        fresh_cutoff = (now_dt - timedelta(hours=NEW_DOMAIN_WIND
                 "age": age_text_for_iso(first_seen),
             })
 '''
-if old_recent not in text:
+recent_match = fresh_re.search(text)
+if not recent_match:
     raise SystemExit('DEV14: get_recent new-domain block not found')
-text = text.replace(old_recent, new_recent, 1)
+text = text[:recent_match.start()] + new_recent + text[recent_match.end():]
 
 old_meta = '            "new_count": exact_new,\n            "new_domains": fresh_domains,\n'
 new_meta = '            "new_count": exact_new,\n            "new_window_count": fresh_window_count,\n            "new_domains": fresh_domains,\n'
