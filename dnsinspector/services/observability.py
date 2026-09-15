@@ -1,0 +1,7 @@
+import dnsinspector.legacy_app as legacy
+
+_observability_uptime_seconds = legacy._observability_uptime_seconds
+_observability_uptime_human = legacy._observability_uptime_human
+_observability_rss_mb = legacy._observability_rss_mb
+_observability_payload = legacy._observability_payload
+_api_observability_live = legacy._api_observability_live
