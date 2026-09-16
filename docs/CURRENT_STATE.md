@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`
+- Foundation version: `0.8.0`, current release: `0.8.3`
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
 
@@ -55,6 +55,8 @@ The previous `dev-0.8` branch name is retired as the active development branch.
 ## Recent implementation note
 
 The repository recently underwent a modularization/observability refactor. Focused fixes must be based on the actual code at the requested commit/branch, not on older ZIP archives or remembered pre-0.8 structure.
+
+0.8.3 (Issue #20) is a front-end-only UI overhaul: a single token-driven "Inspector BEMO" visual design system (colors, spacing, radii, shadows, typography) now spans Overview, DNS Inspector, device/IP views, the shared shell/navigation and Analytics. It restyles the existing `HTML` template string and its CSS in place — same IDs, classes, routes and JSON payload shapes — so no Python data/route logic changed. Treat the `HTML` string in `app.py` as carrying real product design intent now, not placeholder styling.
 
 ## How to update this file
 

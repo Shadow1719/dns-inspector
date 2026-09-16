@@ -2,6 +2,54 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.3]
+
+UI overhaul (Issue #20): a single "Inspector BEMO" visual design system
+replaces the ad-hoc styling that had accumulated across Overview, DNS
+Inspector, device/IP views, shared shell/navigation and Analytics. This is a
+front-end-only change — no API contract, route, database schema or JSON
+payload shape changed.
+
+**Design system**
+
+- a token layer (`--surface-*`, `--border*`, `--text-*`, `--accent*`,
+  `--radius-*`, `--space-*`, `--shadow-*`, `--font-*`, `--transition`) drives
+  color, spacing, radius, shadow and typography everywhere; the existing
+  semantic status variables (`--sem-ok`/`--sem-info`/`--sem-blocked`/
+  `--sem-warn`/`--sem-crit`/`--sem-live`) are unchanged in name so the
+  Analytics charts and status pills keep working without a JS change
+- every existing selector (cards, tables, tags, status pills, filters,
+  pager, device chips, ping indicators, tabs, forms) is re-styled through
+  those tokens rather than renamed, so Python-rendered and JS-rendered
+  markup stay visually identical
+- a dedicated `.empty-state` treatment for "no data yet" / "no activity yet"
+  messages, used consistently across Analytics charts, recent-activity feeds
+  and device/IP detail tables
+
+**Shell / navigation**
+
+- the header is now a proper product shell: an "Inspector BEMO" platform
+  label above the "DNS Inspector" module title, with the observability
+  strip and live status grouped to one side
+- the tab bar gained inline SVG icons and a pill-style active indicator;
+  the DEV banner keeps its exact `DEVELOPMENT ENVIRONMENT` / `NOT
+  PRODUCTION` / `dev-badge` markup so `tests/test_environment.py` still
+  passes, with the emoji glyph replaced by an inline SVG warning icon
+
+**Analytics**
+
+- the live-activity card and sparkline get a distinct accent treatment so
+  live data reads as a first-class component, not a bolted-on panel; the
+  same status colors and legend now match the rest of the app
+- no changes to the live sampling behavior, the `/api/analytics` endpoint,
+  or the historical range logic
+
+**Polish**
+
+- replaced a stray non-English loading-state string with English text
+- focus-visible outlines added across interactive controls so keyboard
+  focus is never conveyed by color alone
+
 ## [0.8.2]
 
 Analytics overhaul (Issue #16): the Analytics tab is redesigned as an
