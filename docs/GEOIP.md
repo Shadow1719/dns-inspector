@@ -7,22 +7,28 @@ repository by default, and how to supply one.
 ## What the map represents
 
 The map aggregates **observed DNS destinations**, not verified physical
-server locations: for each domain the Inspector has seen queried, it uses
-the domain's already-cached resolved A/AAAA answers and looks up the
-country each public IP is allocated to. CDN, anycast and multi-region
-services legitimately resolve to whichever country the answering edge node's
-IP happens to be allocated in -- the UI always labels this "observed
+server locations: for each DNS query AdGuard actually answered, the
+Inspector captures the real A/AAAA answer IP(s) from that query's own
+`answer` section and looks up the country each public IP is allocated to.
+This is the IP AdGuard's query log says the query received -- not a
+separately, asynchronously re-resolved snapshot (see "Why not
+`dns_records_cache`" below). CDN, anycast and multi-region services
+legitimately resolve to whichever country the answering edge node's IP
+happens to be allocated in -- the UI always labels this "observed
 destinations", never "server locations", and reports an honest
-`% geolocated` coverage figure rather than implying full coverage.
+`% geolocated` coverage figure rather than implying full coverage. Each
+destination IP's own observation count drives its country's weight, so a
+domain that legitimately answers from more than one country (multi-CDN)
+contributes to each of them instead of having its whole query volume
+attributed to a single arbitrarily-picked IP.
 
 ## Data flow
 
 ```text
 DNS query (AdGuard query log, already ingested)
-    -> domain (domains.domain / domains.requests / domains.clients_json)
-    -> cached A/AAAA answers (dns_records_cache, resolved in the background
-       by dns_records_lookup() via DNS-over-HTTPS -- unchanged from 0.8.5,
-       just read here instead of only being used for the domain detail page)
+    -> that query's own `answer` records (extract_observed_answer_ips())
+    -> domain_destination_ips -- bounded per-domain observed-IP counter,
+       populated at ingestion time (_record_domain_destination_ips())
     -> normalize_public_ip() -- drop private/loopback/link-local/multicast/
        reserved/unspecified/CGNAT addresses
     -> geoip_lookup() -- local/offline table lookup, cached
@@ -32,8 +38,21 @@ DNS query (AdGuard query log, already ingested)
 ```
 
 No step in this path makes a network request. GeoIP lookups are always a
-local table scan against a CSV file; per-query enrichment already happens in
-the existing background worker, not on this path.
+local table scan against a CSV file, and destination-IP capture is a plain
+read of data AdGuard already returned for that query -- not a new resolution
+step, so it adds no blocking work to ingestion.
+
+### Why not `dns_records_cache`?
+
+`dns_records_cache` is populated by `dns_records_lookup()`, which
+independently re-resolves a domain's current A/AAAA records via
+DNS-over-HTTPS in the background (for the domain detail page). Because it
+resolves asynchronously and independently of any specific query, it can
+disagree with -- and go stale relative to -- what a given AdGuard query
+actually received, especially for CDNs and any DNS load-balancing/rotation.
+The map instead reads `domain_destination_ips`, which is filled in directly
+from each query's own answer at ingestion time, so it represents genuinely
+observed destinations rather than a relabeled independent lookup.
 
 ## Why no database ships by default
 
@@ -115,3 +134,4 @@ container/process -- the provider loads the file once at startup.
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP lookup results. |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | How long an aggregated map payload is reused before recomputing. |
 | `GEOIP_MAP_DOMAIN_LIMIT` | `1500` | Upper bound on domains scanned per aggregation pass (most-recently-active first). |
+| `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` | `32` | Upper bound on distinct observed destination IPs retained per domain. |

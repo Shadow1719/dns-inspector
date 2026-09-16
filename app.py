@@ -104,6 +104,10 @@ GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", os.path.join(BASE_DIR, "data", "geoip
 GEOIP_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CACHE_MAX_ENTRIES", "8192")))
 GEOIP_MAP_CACHE_SECONDS = max(5, int(os.getenv("GEOIP_MAP_CACHE_SECONDS", "30")))
 GEOIP_MAP_DOMAIN_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DOMAIN_LIMIT", "1500")))
+# Upper bound on distinct observed destination IPs retained per domain (see
+# `domain_destination_ips` / `_record_domain_destination_ips()`) -- keeps a
+# single high-rotation multi-CDN domain from growing the table unboundedly.
+GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT = max(4, int(os.getenv("GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT", "32")))
 
 app = Flask(__name__)
 db_lock = threading.Lock()
@@ -475,11 +479,15 @@ html:not([data-motion="reduced"]) .specter-radar .radar-sweep-group{animation:dn
 html[data-motion="reduced"] .metric-sweep,html[data-motion="reduced"] .radar-sweep-group{display:none}
 
 /* ---- Instrument gauges (0.8.5.1): bounded-ratio metrics, reusing the
-   analog-gauge look. The needle transitions between renders instead of
-   jumping, honoring the reduced-motion preference. ---- */
+   analog-gauge look. The needle is a fixed-length line rotated around the
+   hub via `transform`, updated in place on re-render (see
+   `updateGaugeNeedle()`) rather than replaced wholesale, so this transition
+   actually has a previous value to animate from; `x1`/`y1`/`x2`/`y2` are not
+   real CSS/animatable properties on an SVG `<line>`, unlike `transform`.
+   Honors the reduced-motion preference. ---- */
 .gauge-cluster{display:flex;flex-wrap:wrap;gap:18px;justify-content:center}
 .gauge-face{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:180px}
-html:not([data-motion="reduced"]) .analog-gauge .gauge-needle{transition:x2 .5s ease,y2 .5s ease}
+html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:transform .5s ease}
 
 /* ---- DNS Destinations map (0.8.5.1): a bounded graticule + country-bubble
    visualization, not a bundled coastline asset -- see docs/GEOIP.md. Bubble
@@ -788,21 +796,36 @@ function specterRadarSvg(pct, current){
    as analogGaugeSvg (ticks/needle/hub/readout), generalized to any metric
    with a real 0-100% range/scale rather than a live-count peak. Used only
    for metrics that genuinely have a meaningful bounded range -- not every
-   KPI becomes a gauge. The needle position transitions via CSS (see
-   `.gauge-needle` transition rule) so re-renders read as a data-driven sweep
-   rather than a hard cut, and that transition is suppressed under
-   `prefers-reduced-motion` / the in-app reduced-motion preference. */
+   KPI becomes a gauge. Unlike analogGaugeSvg, the needle is a fixed-length
+   line rotated around the hub (`transform:rotate(...)`, a real animatable
+   CSS property -- `x1`/`y1`/`x2`/`y2` are not) and `renderInstrumentGauges`
+   updates that rotation on the existing element on re-render instead of
+   replacing the SVG outright, so the CSS transition (see `.gauge-needle`
+   transition rule) has a previous value to animate from rather than jumping;
+   that transition is suppressed under `prefers-reduced-motion` / the in-app
+   reduced-motion preference. */
+function gaugeNeedleRotationDeg(pct){
+  return (Math.max(0,Math.min(1,pct))*180-90).toFixed(2);
+}
 function instrumentPercentGaugeSvg(pct, valueText, rangeLabel){
   const cx=98, cy=98, r=78, p=Math.max(0,Math.min(1,pct));
-  const angleDeg = 180 - p*180, rad = angleDeg*Math.PI/180;
-  const nx=(cx+(r-16)*Math.cos(rad)).toFixed(1), ny=(cy-(r-16)*Math.sin(rad)).toFixed(1);
   let ticks = '';
   for (let i=0;i<=10;i++){
     const a = 180 - (i/10)*180, ar = a*Math.PI/180, major = i%5===0;
     const rOuter=r+2, rInner=major?r-11:r-5;
     ticks += `<line class="gauge-tick${major?' gauge-tick-major':''}" x1="${(cx+rOuter*Math.cos(ar)).toFixed(1)}" y1="${(cy-rOuter*Math.sin(ar)).toFixed(1)}" x2="${(cx+rInner*Math.cos(ar)).toFixed(1)}" y2="${(cy-rInner*Math.sin(ar)).toFixed(1)}"/>`;
   }
-  return `<div class="analog-gauge"><svg viewBox="0 0 196 114" aria-hidden="true"><path class="gauge-arc-bg" d="M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}" fill="none" stroke-width="3"/>${ticks}<line class="gauge-needle" x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}"/><circle class="gauge-hub" cx="${cx}" cy="${cy}" r="5"/><text class="gauge-value" x="${cx}" y="${cy-22}" text-anchor="middle" font-size="20">${esc(valueText)}</text><text class="gauge-label" x="${cx}" y="${cy-6}" text-anchor="middle" font-size="9">${esc(rangeLabel)}</text></svg></div>`;
+  return `<div class="analog-gauge instrument-gauge"><svg viewBox="0 0 196 114" aria-hidden="true"><path class="gauge-arc-bg" d="M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}" fill="none" stroke-width="3"/>${ticks}<line class="gauge-needle" x1="${cx}" y1="${cy}" x2="${cx}" y2="${cy-(r-16)}" style="transform-origin:${cx}px ${cy}px;transform:rotate(${gaugeNeedleRotationDeg(p)}deg)"/><circle class="gauge-hub" cx="${cx}" cy="${cy}" r="5"/><text class="gauge-value" x="${cx}" y="${cy-22}" text-anchor="middle" font-size="20">${esc(valueText)}</text><text class="gauge-label" x="${cx}" y="${cy-6}" text-anchor="middle" font-size="9">${esc(rangeLabel)}</text></svg></div>`;
+}
+function updateGaugeNeedle(slot, pct, valueText, rangeLabel){
+  const needle = slot.querySelector('.gauge-needle');
+  const valueEl = slot.querySelector('.gauge-value');
+  const labelEl = slot.querySelector('.gauge-label');
+  if (!needle || !valueEl || !labelEl) return false;
+  needle.style.transform = `rotate(${gaugeNeedleRotationDeg(pct)}deg)`;
+  valueEl.textContent = valueText;
+  labelEl.textContent = rangeLabel;
+  return true;
 }
 function renderInstrumentGauges(data){
   const wrap = document.getElementById('instrument-gauges'); if (!wrap) return;
@@ -814,13 +837,17 @@ function renderInstrumentGauges(data){
   const totalDevices = Number(data?.total_devices)||0;
   const activePct = totalDevices ? Math.min(1, activeDevices/totalDevices) : 0;
   const blockedSlot = document.getElementById('gauge-blocked-ratio');
-  if (blockedSlot) blockedSlot.innerHTML = knownTotal
-    ? instrumentPercentGaugeSvg(blockedPct, Math.round(blockedPct*100)+'%', `${blocked} of ${knownTotal} classified domains`)
-    : '<div class="empty-state">No classified domains yet.</div>';
+  if (blockedSlot){
+    const valueText = Math.round(blockedPct*100)+'%', rangeLabel = `${blocked} of ${knownTotal} classified domains`;
+    if (!knownTotal) blockedSlot.innerHTML = '<div class="empty-state">No classified domains yet.</div>';
+    else if (!updateGaugeNeedle(blockedSlot, blockedPct, valueText, rangeLabel)) blockedSlot.innerHTML = instrumentPercentGaugeSvg(blockedPct, valueText, rangeLabel);
+  }
   const devicesSlot = document.getElementById('gauge-active-devices');
-  if (devicesSlot) devicesSlot.innerHTML = totalDevices
-    ? instrumentPercentGaugeSvg(activePct, String(activeDevices), `of ${totalDevices} known devices, last 5m`)
-    : '<div class="empty-state">No known devices yet.</div>';
+  if (devicesSlot){
+    const valueText = String(activeDevices), rangeLabel = `of ${totalDevices} known devices, last 5m`;
+    if (!totalDevices) devicesSlot.innerHTML = '<div class="empty-state">No known devices yet.</div>';
+    else if (!updateGaugeNeedle(devicesSlot, activePct, valueText, rangeLabel)) devicesSlot.innerHTML = instrumentPercentGaugeSvg(activePct, valueText, rangeLabel);
+  }
 }
 </script>
 <section id="tab-overview" class="tab-panel active" data-panel="overview">
@@ -1176,7 +1203,7 @@ function renderMapDetail(country){
   const domains = (country.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
   const devices = (country.sample_devices||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No associated devices</span>';
   el.innerHTML = `<h3>${esc(country.country_name)} <span class="sub">${esc(country.country_code)}</span></h3>`
-    + `<div class="stats-note">${esc(country.query_count)} observed queries &middot; ${esc(country.domain_count)} domain${country.domain_count===1?'':'s'} &middot; ${esc(country.device_count)} device${country.device_count===1?'':'s'}</div>`
+    + `<div class="stats-note">${esc(country.observation_count)} destination observation${country.observation_count===1?'':'s'} &middot; ${esc(country.domain_count)} domain${country.domain_count===1?'':'s'} &middot; ${esc(country.device_count)} device${country.device_count===1?'':'s'}</div>`
     + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`
     + `<div class="map-detail-row"><b>Devices</b><div class="chip-row">${devices}</div></div>`;
 }
@@ -1190,24 +1217,38 @@ function renderDestinationMap(data){
     renderMapDetail(null);
     return;
   }
-  const countries = (data?.countries || []).filter(c => c.centroid);
-  if (!countries.length){
-    el.innerHTML = '<div class="empty-state">No geolocated destinations yet. This fills in as domains resolve and get matched against the configured GeoIP database in the background.</div>';
+  const allCountries = data?.countries || [];
+  if (!allCountries.length){
+    el.innerHTML = '<div class="empty-state">No geolocated destinations yet. This fills in as domains are queried and their actual DNS answers get matched against the configured GeoIP database.</div>';
     renderMapDetail(null);
     return;
   }
-  const maxCount = Math.max(1, ...countries.map(c => c.query_count));
+  // Only geolocated countries with a plotted-bubble centroid (COUNTRY_CENTROIDS
+  // is a bounded subset, see docs/GEOIP.md) can appear on the map itself; a
+  // country missing one is still real data, so it must stay visible in the
+  // coverage line below rather than silently vanishing.
+  const countries = allCountries.filter(c => c.centroid);
+  const unplottedCount = allCountries.length - countries.length;
+  const plottedNote = unplottedCount
+    ? `${esc(countries.length)} of ${esc(allCountries.length)} geolocated countries plotted (${esc(unplottedCount)} lack bubble coordinates but are counted below)`
+    : `${esc(countries.length)} countr${countries.length===1?'y':'ies'} plotted`;
+  const coverageNote = `<div class="stats-note">${esc(cov.geolocated_pct ?? 0)}% of observed destinations geolocated &middot; ${plottedNote} &middot; ${esc(unknownDomains)} domain${unknownDomains===1?'':'s'} unmapped</div>`;
+  if (!countries.length){
+    el.innerHTML = `<div class="empty-state">${esc(allCountries.length)} countr${allCountries.length===1?'y':'ies'} geolocated, but none have map bubble coordinates configured yet -- see the country list below.</div>` + coverageNote;
+    renderMapDetail(null);
+    return;
+  }
+  const maxCount = Math.max(1, ...countries.map(c => c.observation_count));
   const topCode = countries[0].country_code;
   const bubbles = countries.map(c => {
     const [lat, lon] = c.centroid;
     const {x, y} = mapProject(lat, lon);
-    const r = (3 + Math.sqrt(c.query_count / maxCount) * 14).toFixed(1);
+    const r = (3 + Math.sqrt(c.observation_count / maxCount) * 14).toFixed(1);
     const selected = mapSelectedCountry === c.country_code ? ' map-bubble-selected' : '';
     const pulse = c.country_code === topCode ? `<circle class="map-bubble-pulse-ring" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>` : '';
-    return `${pulse}<circle class="map-bubble${selected}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"><title>${esc(c.country_name)}: ${esc(c.query_count)} observed queries, ${esc(c.domain_count)} domains</title></circle>`;
+    return `${pulse}<circle class="map-bubble${selected}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"><title>${esc(c.country_name)}: ${esc(c.observation_count)} destination observations, ${esc(c.domain_count)} domains</title></circle>`;
   }).join('');
-  el.innerHTML = `<svg viewBox="0 0 ${MAP_W} ${MAP_H}" class="destination-map-svg" role="img" aria-label="Observed DNS destinations by country">${mapGraticule()}${bubbles}</svg>`
-    + `<div class="stats-note">${esc(cov.geolocated_pct ?? 0)}% of observed query volume geolocated &middot; ${esc(countries.length)} countr${countries.length===1?'y':'ies'} &middot; ${esc(unknownDomains)} domain${unknownDomains===1?'':'s'} unmapped</div>`;
+  el.innerHTML = `<svg viewBox="0 0 ${MAP_W} ${MAP_H}" class="destination-map-svg" role="img" aria-label="Observed DNS destinations by country">${mapGraticule()}${bubbles}</svg>` + coverageNote;
   el.querySelectorAll('[data-country]').forEach(node => node.addEventListener('click', () => {
     const code = node.getAttribute('data-country');
     mapSelectedCountry = (mapSelectedCountry === code) ? null : code;
@@ -1588,6 +1629,17 @@ def init_db():
             attempted_at REAL NOT NULL,
             next_attempt_at REAL NOT NULL)""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_attempt_next ON enrichment_attempts(next_attempt_at)")
+        # Observed DNS destination IPs (0.8.5.1): the actual A/AAAA answer(s)
+        # AdGuard returned for a query, captured at ingestion time from the
+        # query log entry itself -- distinct from `dns_records_cache`, which
+        # is an independently DNS-over-HTTPS-resolved snapshot and is not
+        # necessarily the IP the original query actually received. Bounded to
+        # `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` distinct IPs per domain.
+        c.execute("""CREATE TABLE IF NOT EXISTS domain_destination_ips(
+            domain TEXT NOT NULL, ip TEXT NOT NULL, first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL, observations INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(domain, ip))""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_domain_destination_ips_domain ON domain_destination_ips(domain)")
         c.commit()
 
 
@@ -2012,6 +2064,54 @@ def normalize_public_ip(value):
     return str(addr)
 
 
+def extract_observed_answer_ips(entry):
+    """Return normalized public A/AAAA IPs actually present in this AdGuard
+    query log entry's `answer` section -- the real destination(s) that query
+    received, not an independently re-resolved snapshot. AdGuard's querylog
+    API returns `answer` as a list of `{"type": "A"|"AAAA"|..., "value": ...}`
+    records; unrelated record types (CNAME, TXT, ...) are ignored."""
+    ips = []
+    for ans in entry.get("answer") or []:
+        if not isinstance(ans, dict):
+            continue
+        if str(ans.get("type") or "").upper() not in ("A", "AAAA"):
+            continue
+        normalized = normalize_public_ip(ans.get("value"))
+        if normalized and normalized not in ips:
+            ips.append(normalized)
+    return ips
+
+
+def _record_domain_destination_ips(c, domain, ips, now):
+    """Upsert observed destination IPs for `domain`, bounded to
+    `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` distinct IPs. Each IP's own
+    `observations` counter -- not the domain's overall request count -- is
+    what the destination map aggregates by, so a domain with several
+    concurrently-valid answers (CDN/anycast) does not have its whole query
+    volume attributed to whichever IP happened to be looked up first."""
+    if not ips:
+        return
+    existing_count = None
+    for ip in ips:
+        updated = c.execute(
+            "UPDATE domain_destination_ips SET last_seen=?, observations=observations+1 WHERE domain=? AND ip=?",
+            (now, domain, ip),
+        ).rowcount
+        if updated:
+            continue
+        if existing_count is None:
+            existing_count = c.execute(
+                "SELECT COUNT(*) FROM domain_destination_ips WHERE domain=?", (domain,)
+            ).fetchone()[0]
+        if existing_count >= GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT:
+            continue
+        c.execute(
+            "INSERT INTO domain_destination_ips(domain,ip,first_seen,last_seen,observations) VALUES(?,?,?,?,1)",
+            (domain, ip, now, now),
+        )
+        existing_count += 1
+
+
 def extract_identity(info, identifier, client_id=None):
     """Extract the best available stable identity plus current IP observations.
 
@@ -2230,6 +2330,7 @@ def ingest(force=False):
                     unknown = 1 if qstatus == "Unknown" else 0
                     c.execute("INSERT INTO domains(domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason,current_status,current_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (domain, now, now, 1, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), qstatus, str(e.get("reason") or "")))
                     new_domains_for_enrichment.append(domain)
+                _record_domain_destination_ips(c, domain, extract_observed_answer_ips(e), now)
                 old = c.execute("SELECT request_count FROM client_cache WHERE identifier=?", (ident,)).fetchone()
                 if old:
                     c.execute("""UPDATE client_cache SET name=?, source=?, last_seen=?, request_count=request_count+1, info_json=?, device_key=?, mac=?, hostname=? WHERE identifier=?""",
@@ -2827,14 +2928,20 @@ def dns_records_lookup(domain, force=False):
 
 
 # ---- GeoIP / DNS Destinations map (0.8.5.1) --------------------------------
-# Data flow: DNS query -> domain -> cached A/AAAA answers (`dns_records_cache`,
-# already resolved in the background above by `dns_records_lookup`) -> public
-# IP filter (`normalize_public_ip`) -> local/offline GeoIP lookup -> country
-# aggregate. No step here makes a network request; GeoIP lookups are a local
-# table scan against an operator-supplied CSV database (see docs/GEOIP.md).
-# The map represents *observed DNS destinations*, not verified physical
-# server locations -- CDN/anycast/multi-region destinations legitimately
-# resolve to whichever country their answering edge node's IP is allocated to.
+# Data flow: DNS query -> AdGuard's own answer for that query, captured at
+# ingestion time (`domain_destination_ips`, populated by
+# `_record_domain_destination_ips`/`extract_observed_answer_ips` -- the real
+# A/AAAA answer(s) the query received, not an independently re-resolved
+# snapshot) -> public IP filter (`normalize_public_ip`) -> local/offline
+# GeoIP lookup -> country aggregate. No step here makes a network request;
+# GeoIP lookups are a local table scan against an operator-supplied CSV
+# database (see docs/GEOIP.md). The map represents *observed DNS
+# destinations*, not verified physical server locations -- CDN/anycast/
+# multi-region destinations legitimately resolve to whichever country their
+# answering edge node's IP is allocated to. Each destination IP is weighted
+# by how many times it was actually observed in an answer, not by the
+# domain's total query count, so a multi-CDN domain is not misattributed
+# entirely to whichever IP happened to be checked first.
 
 # Approximate country centroids used only to place a bubble on the map grid.
 # Deliberately a bounded, commonly-hosting-relevant subset (not all ISO
@@ -2915,6 +3022,8 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
         self._path = path
         self._v4 = []  # sorted [(start_int, end_int, country_code, country_name), ...]
         self._v6 = []
+        self._v4_starts = []  # r[0] for each entry in self._v4, precomputed for bisect
+        self._v6_starts = []
         self._loaded = False
         self._load()
 
@@ -2938,6 +3047,10 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
                     bucket.append((int(start_addr), int(end_addr), code, name or code))
             self._v4.sort(key=lambda r: r[0])
             self._v6.sort(key=lambda r: r[0])
+            # Precomputed once at load time so `lookup()` can bisect directly
+            # instead of rebuilding this list on every call.
+            self._v4_starts = [r[0] for r in self._v4]
+            self._v6_starts = [r[0] for r in self._v6]
             self._loaded = bool(self._v4 or self._v6)
         except (OSError, csv.Error):
             self._loaded = False
@@ -2951,11 +3064,14 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
             addr = ipaddress.ip_address(ip)
         except ValueError:
             return None, None
-        bucket = self._v4 if addr.version == 4 else self._v6
+        if addr.version == 4:
+            bucket, starts = self._v4, self._v4_starts
+        else:
+            bucket, starts = self._v6, self._v6_starts
         if not bucket:
             return None, None
         value = int(addr)
-        idx = bisect.bisect_right([r[0] for r in bucket], value) - 1
+        idx = bisect.bisect_right(starts, value) - 1
         if idx < 0:
             return None, None
         start, end, code, name = bucket[idx]
@@ -2989,21 +3105,6 @@ def geoip_lookup(ip):
     return result
 
 
-def _domain_public_ips(records_json):
-    """Extract normalized public A/AAAA IPs from a `dns_records_cache` row."""
-    try:
-        records = json.loads(records_json or "{}")
-    except (TypeError, ValueError):
-        records = {}
-    ips = []
-    for rtype in ("A", "AAAA"):
-        for value in records.get(rtype, []) or []:
-            normalized = normalize_public_ip(value)
-            if normalized and normalized not in ips:
-                ips.append(normalized)
-    return ips
-
-
 _geoip_map_cache = {"at": 0.0, "data": None}
 _geoip_map_cache_lock = threading.Lock()
 
@@ -3011,11 +3112,17 @@ _geoip_map_cache_lock = threading.Lock()
 def geoip_map_payload():
     """Aggregate observed DNS destinations by GeoIP country.
 
-    Reuses `domains.requests`/`clients_json` and the already-cached
-    `dns_records_cache` A/AAAA answers the background enrichment worker
-    resolves -- no synchronous resolution and no new per-query work is added
-    to ingestion. Bounded by `GEOIP_MAP_DOMAIN_LIMIT` and short-TTL cached by
-    `GEOIP_MAP_CACHE_SECONDS` so repeated polling stays cheap.
+    Reuses `domains.clients_json` and `domain_destination_ips` -- the real
+    A/AAAA answers AdGuard returned for each query, captured at ingestion
+    time (see `_record_domain_destination_ips`) -- so the map represents
+    actually-observed destinations, not an independently re-resolved
+    snapshot. Each destination IP contributes its own observation count to
+    its country, rather than a domain's whole query volume being attributed
+    to a single arbitrarily-chosen IP; a multi-A/AAAA/CDN domain can
+    therefore appear in more than one country. No synchronous resolution and
+    no new per-query network work is added to ingestion. Bounded by
+    `GEOIP_MAP_DOMAIN_LIMIT` and short-TTL cached by `GEOIP_MAP_CACHE_SECONDS`
+    so repeated polling stays cheap.
     """
     now = time.time()
     with _geoip_map_cache_lock:
@@ -3024,10 +3131,15 @@ def geoip_map_payload():
             return cached
 
     with closing(sqlite3.connect(DB_PATH)) as c:
-        rows = c.execute(
-            "SELECT d.domain, d.requests, d.clients_json, r.json "
-            "FROM domains d LEFT JOIN dns_records_cache r ON r.domain = d.domain "
-            "WHERE d.requests > 0 ORDER BY d.last_seen DESC LIMIT ?",
+        domain_rows = c.execute(
+            "SELECT domain, clients_json FROM domains "
+            "WHERE requests > 0 ORDER BY last_seen DESC LIMIT ?",
+            (GEOIP_MAP_DOMAIN_LIMIT,),
+        ).fetchall()
+        destination_rows = c.execute(
+            "SELECT di.domain, di.ip, di.observations FROM domain_destination_ips di "
+            "JOIN (SELECT domain FROM domains WHERE requests > 0 ORDER BY last_seen DESC LIMIT ?) lim "
+            "ON lim.domain = di.domain",
             (GEOIP_MAP_DOMAIN_LIMIT,),
         ).fetchall()
         device_labels = {
@@ -3037,66 +3149,72 @@ def geoip_map_payload():
             ).fetchall()
         }
 
-    countries = {}
-    unknown_domains = unknown_queries = 0
-    geolocated_domains = geolocated_queries = 0
-    total_domains = total_queries = 0
+    destinations_by_domain = {}
+    for domain, ip, observations in destination_rows:
+        destinations_by_domain.setdefault(domain, []).append((ip, int(observations or 0)))
 
-    for domain, requests, clients_json, records_json in rows:
-        requests = int(requests or 0)
-        total_domains += 1
-        total_queries += requests
-        matched_code = matched_name = None
-        for ip in _domain_public_ips(records_json)[:4]:
-            result = geoip_lookup(ip)
-            if result["country_code"]:
-                matched_code, matched_name = result["country_code"], result["country_name"]
-                break
-        if not matched_code:
-            unknown_domains += 1
-            unknown_queries += requests
-            continue
-        geolocated_domains += 1
-        geolocated_queries += requests
-        bucket = countries.setdefault(matched_code, {
-            "country_name": matched_name or matched_code,
-            "domain_count": 0, "query_count": 0,
-            "sample_domains": [], "device_keys": set(),
-        })
-        bucket["domain_count"] += 1
-        bucket["query_count"] += requests
-        if len(bucket["sample_domains"]) < 8:
-            bucket["sample_domains"].append((domain, requests))
+    countries = {}
+    unknown_domains = unknown_observations = 0
+    geolocated_domains = geolocated_observations = 0
+    total_domains = len(domain_rows)
+    total_observations = 0
+
+    for domain, clients_json in domain_rows:
         try:
             clients = json.loads(clients_json or "{}")
         except (TypeError, ValueError):
             clients = {}
-        bucket["device_keys"].update(clients.keys())
+        destinations = destinations_by_domain.get(domain, [])
+        domain_geolocated = False
+        domain_unmatched_observations = 0
+        for ip, observations in destinations:
+            total_observations += observations
+            result = geoip_lookup(ip)
+            code, name = result["country_code"], result["country_name"]
+            if not code:
+                domain_unmatched_observations += observations
+                continue
+            domain_geolocated = True
+            geolocated_observations += observations
+            bucket = countries.setdefault(code, {
+                "country_name": name or code,
+                "domain_keys": set(), "observation_count": 0,
+                "sample_domains": {}, "device_keys": set(),
+            })
+            bucket["observation_count"] += observations
+            bucket["domain_keys"].add(domain)
+            bucket["sample_domains"][domain] = bucket["sample_domains"].get(domain, 0) + observations
+            bucket["device_keys"].update(clients.keys())
+        if domain_geolocated:
+            geolocated_domains += 1
+        else:
+            unknown_domains += 1
+            unknown_observations += domain_unmatched_observations
 
     country_list = []
     for code, bucket in countries.items():
-        top_domains = sorted(bucket["sample_domains"], key=lambda d: -d[1])[:5]
+        top_domains = sorted(bucket["sample_domains"].items(), key=lambda kv: -kv[1])[:5]
         country_list.append({
             "country_code": code,
             "country_name": bucket["country_name"],
-            "domain_count": bucket["domain_count"],
-            "query_count": bucket["query_count"],
+            "domain_count": len(bucket["domain_keys"]),
+            "observation_count": bucket["observation_count"],
             "device_count": len(bucket["device_keys"]),
-            "sample_domains": [d[0] for d in top_domains],
+            "sample_domains": [d for d, _ in top_domains],
             "sample_devices": [device_labels.get(k, k) for k in list(bucket["device_keys"])[:5]],
             "centroid": COUNTRY_CENTROIDS.get(code),
         })
-    country_list.sort(key=lambda c: -c["query_count"])
+    country_list.sort(key=lambda c: -c["observation_count"])
 
     payload = {
         "updated": utcnow(),
         "provider": {"configured": _geoip_provider.available, "path": GEOIP_DB_PATH if _geoip_provider.available else None},
         "countries": country_list,
-        "unknown": {"domain_count": unknown_domains, "query_count": unknown_queries},
+        "unknown": {"domain_count": unknown_domains, "observation_count": unknown_observations},
         "coverage": {
             "total_domains": total_domains, "geolocated_domains": geolocated_domains,
-            "total_queries": total_queries, "geolocated_queries": geolocated_queries,
-            "geolocated_pct": round((geolocated_queries / total_queries) * 100, 1) if total_queries else 0.0,
+            "total_observations": total_observations, "geolocated_observations": geolocated_observations,
+            "geolocated_pct": round((geolocated_observations / total_observations) * 100, 1) if total_observations else 0.0,
         },
     }
     with _geoip_map_cache_lock:
@@ -4197,8 +4315,8 @@ def api_analytics_map():
             "updated": utcnow(),
             "provider": {"configured": False, "path": None},
             "countries": [],
-            "unknown": {"domain_count": 0, "query_count": 0},
-            "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_queries": 0, "geolocated_queries": 0, "geolocated_pct": 0.0},
+            "unknown": {"domain_count": 0, "observation_count": 0},
+            "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0},
             "error": str(e),
         }), 200
 
@@ -4657,7 +4775,7 @@ def _observability_db_counts():
         'domains','devices','device_ips','device_labels','processed_queries',
         'adguard_status_cache','enrichment_attempts','ip_ping_status',
         'rdap_cache','netify_cache','dns_records_cache','mac_vendor_cache',
-        'hostname_cache','client_cache'
+        'hostname_cache','client_cache','domain_destination_ips'
     ]
     counts = {}
     try:

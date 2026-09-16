@@ -6,18 +6,27 @@ All notable DNS Inspector changes are tracked here.
 
 Functional DNS Destinations / GeoIP map and instrument gauges (Issue #27):
 the first real functional map in Analytics, plus a focused expansion of the
-Analog gauge direction from 0.8.5. Builds on the existing enrichment/data
-model -- no ingestion path changes, no new mandatory dependency.
+Analog gauge direction from 0.8.5. No new mandatory dependency; one small,
+bounded, read-only addition to ingestion (see below), otherwise builds on
+the existing data model.
 
 **DNS Destinations map**
 
-- new data flow: `domains` (already-recorded query activity) joined against
-  the existing `dns_records_cache` (A/AAAA answers the background enrichment
-  worker already resolves via DNS-over-HTTPS for every domain, unchanged
-  from earlier releases) -> `normalize_public_ip()` filters out
+- destination IPs are the real A/AAAA answer(s) each AdGuard query actually
+  received, captured at ingestion time from that query's own `answer` data
+  into a new bounded table, `domain_destination_ips`
+  (`extract_observed_answer_ips()` / `_record_domain_destination_ips()`) --
+  not `dns_records_cache`, which is an independently, asynchronously
+  DNS-over-HTTPS-re-resolved snapshot that can disagree with what a given
+  query actually received (see `docs/GEOIP.md`)
+- data flow: `domain_destination_ips` -> `normalize_public_ip()` filters out
   private/loopback/link-local/multicast/reserved/unspecified/CGNAT addresses
   -> a local/offline `GeoIPProvider.lookup()` -> aggregated by country in
   `geoip_map_payload()`, served from the new `GET /api/analytics/map` route
+- each destination IP's own observation count drives its country's weight,
+  not the domain's whole query volume -- a multi-A/AAAA/CDN domain answering
+  from more than one country now contributes to each of them, instead of
+  having its full request count attributed to whichever IP was checked first
 - `GeoIPProvider` is a small abstraction (`NullGeoIPProvider` /
   `CsvRangeGeoIPProvider`) over a CSV range database at `GEOIP_DB_PATH`; no
   database ships in the repository by default, so out of the box every
@@ -25,16 +34,22 @@ model -- no ingestion path changes, no new mandatory dependency.
   guessed -- see `docs/GEOIP.md` for the schema, recommended sources
   (DB-IP Lite / MaxMind GeoLite2-Country) and how to supply one
 - GeoIP lookups are always local (a bounded, FIFO-capped in-process cache
-  over a sorted/bisected CSV range table) -- never a per-query network call
+  over a per-address-family range table, sorted and bisected against a
+  precomputed start-key array so each lookup is a real O(log n) binary
+  search, not a per-lookup list rebuild) -- never a per-query network call
 - the new "DNS Destinations" Analytics widget renders a bounded SVG
-  graticule with country bubbles sized by observed query count (not one
-  marker per request), a click-through detail panel (sample domains/devices
-  per country) and an explicit `% geolocated` coverage line; copy
-  consistently says "observed destinations", never "server locations"
+  graticule with country bubbles sized by observed destination count (not
+  one marker per request), a click-through detail panel (sample
+  domains/devices per country) and an explicit `% geolocated` coverage line;
+  copy consistently says "observed destinations", never "server locations".
+  `COUNTRY_CENTROIDS` only plots a bounded, commonly-hosting-relevant subset
+  of countries, so the widget explicitly reports how many geolocated
+  countries are plotted vs. the total rather than silently dropping the rest
 - bounded by design: aggregation scans at most `GEOIP_MAP_DOMAIN_LIMIT`
-  domains (most-recently-active first) and is cached for
-  `GEOIP_MAP_CACHE_SECONDS` per the new dedicated route, independent of the
-  `/api/analytics` poll cadence
+  domains (most-recently-active first), retains at most
+  `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` distinct destination IPs per
+  domain, and is cached for `GEOIP_MAP_CACHE_SECONDS` per the new dedicated
+  route, independent of the `/api/analytics` poll cadence
 
 **Instrument gauges**
 
@@ -42,10 +57,13 @@ model -- no ingestion path changes, no new mandatory dependency.
   look (ticks/needle/numeric readout): blocked-vs-allowed ratio and active
   devices (of all known devices) -- both have a genuine 0-100% range, unlike
   a raw KPI count
-- the gauge needle transitions between renders via CSS instead of jumping,
-  and that transition (along with the map's pulse ring on the top country)
-  is suppressed under `prefers-reduced-motion` / the existing in-app
-  reduced-motion preference
+- the gauge needle is a fixed-length line rotated around the hub via CSS
+  `transform`, updated in place on re-render rather than the whole gauge
+  being replaced, so it genuinely transitions between values via CSS instead
+  of jumping (SVG `<line>` endpoints such as `x2`/`y2` are not themselves
+  animatable CSS properties); that transition (along with the map's pulse
+  ring on the top country) is suppressed under `prefers-reduced-motion` /
+  the existing in-app reduced-motion preference
 
 **Analytics payload**
 

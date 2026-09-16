@@ -110,6 +110,7 @@ All configuration is environment variables, read once at startup.
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded per-IP GeoIP lookup cache size |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | Server-side cache TTL for the aggregated destination map payload |
 | `GEOIP_MAP_DOMAIN_LIMIT` | `1500` | Max domains scanned per map aggregation pass |
+| `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` | `32` | Max distinct observed destination IPs retained per domain |
 
 ## Tests
 

@@ -210,19 +210,23 @@ The rule for future inspectors is simple:
 destination/GeoIP map for Analytics and deliberately did not implement it (see
 the 0.8.5 CHANGELOG.md entry for why). 0.8.5.1 implements it:
 
-- destination IPs are the domain's already-cached resolved A/AAAA answers
-  (`dns_records_cache`, resolved in the background via DNS-over-HTTPS since
-  earlier releases) -- not the RDAP/company `country` field, and not a new
-  synchronous resolution step
+- destination IPs are the real A/AAAA answer(s) each AdGuard query actually
+  received, captured at ingestion time from that query's own answer data
+  (`domain_destination_ips`) -- not the RDAP/company `country` field, not a
+  new synchronous resolution step, and not the independently/asynchronously
+  DNS-over-HTTPS-re-resolved `dns_records_cache`, which can disagree with
+  what a specific query actually received
 - GeoIP lookup is a `GeoIPProvider` abstraction (`app.py`) over a local CSV
   range database (`GEOIP_DB_PATH`); no database ships in the repository by
   default (see `docs/GEOIP.md` for why and how to supply one), so out of the
   box the map honestly reports 0% geolocated rather than guessing -- there is
   no live third-party GeoIP API call on any path
-- aggregation is by country and observed query/domain count, not one marker
+- aggregation is by country and observed destination count, not one marker
   per request or per domain name; CDN/anycast/multi-region destinations are
-  represented as whichever country's IP actually answered, with UI copy that
-  consistently says "observed destinations"
+  represented as whichever country's IP actually answered, each weighted by
+  its own observation count (not the domain's whole query volume) so a
+  multi-destination domain can appear in more than one country, with UI copy
+  that consistently says "observed destinations"
 
 ---
 

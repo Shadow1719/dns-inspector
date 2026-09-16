@@ -8,6 +8,11 @@ is a `NullGeoIPProvider` unless a test explicitly swaps it in via
 the underlying SQLite database is session-scoped (see conftest.py), every
 aggregation assertion below is a targeted delta around a uniquely-tagged
 domain, matching the style already used in test_analytics.py.
+
+Destination IPs come from `domain_destination_ips`, populated at ingestion
+time from each query's own AdGuard answer (`extract_observed_answer_ips`),
+not from `dns_records_cache` (an independently, asynchronously
+DNS-over-HTTPS-re-resolved snapshot used only by the domain detail page).
 """
 
 import json
@@ -32,11 +37,12 @@ def _insert_domain(db_path, domain, now, requests=1, clients=None):
         conn.commit()
 
 
-def _set_dns_records(db_path, domain, now, records):
+def _add_destination_ip(db_path, domain, now, ip, observations=1):
     with closing(sqlite3.connect(db_path)) as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO dns_records_cache(domain,fetched_at,json) VALUES(?,?,?)",
-            (domain, now, json.dumps(records)),
+            "INSERT OR REPLACE INTO domain_destination_ips(domain,ip,first_seen,last_seen,observations) "
+            "VALUES(?,?,?,?,?)",
+            (domain, ip, now, now, observations),
         )
         conn.commit()
 
@@ -119,6 +125,63 @@ def test_normalize_public_ip_unwraps_ipv4_mapped_ipv6(app_module):
     assert app_module.normalize_public_ip("::ffff:8.8.8.8") == "8.8.8.8"
 
 
+# --- extract_observed_answer_ips: real per-query destination capture --------
+
+
+def test_extract_observed_answer_ips_pulls_a_and_aaaa_values(app_module):
+    entry = {
+        "answer": [
+            {"type": "A", "value": "203.0.113.5"},
+            {"type": "AAAA", "value": "2001:db8::1"},
+            {"type": "CNAME", "value": "cdn.example.net."},
+        ]
+    }
+    assert app_module.extract_observed_answer_ips(entry) == ["203.0.113.5", "2001:db8::1"]
+
+
+def test_extract_observed_answer_ips_drops_private_answers(app_module):
+    entry = {"answer": [{"type": "A", "value": "10.0.0.5"}]}
+    assert app_module.extract_observed_answer_ips(entry) == []
+
+
+def test_extract_observed_answer_ips_ignores_duplicate_values(app_module):
+    entry = {"answer": [{"type": "A", "value": "203.0.113.5"}, {"type": "A", "value": "203.0.113.5"}]}
+    assert app_module.extract_observed_answer_ips(entry) == ["203.0.113.5"]
+
+
+def test_extract_observed_answer_ips_handles_missing_or_malformed_answer(app_module):
+    assert app_module.extract_observed_answer_ips({}) == []
+    assert app_module.extract_observed_answer_ips({"answer": None}) == []
+    assert app_module.extract_observed_answer_ips({"answer": ["not-a-dict"]}) == []
+
+
+def test_record_domain_destination_ips_accumulates_observation_counts(app_module, initialised_db):
+    domain = _unique("record-destinations")
+    now = app_module.utcnow()
+    with closing(sqlite3.connect(initialised_db)) as conn:
+        app_module._record_domain_destination_ips(conn, domain, ["203.0.113.7"], now)
+        app_module._record_domain_destination_ips(conn, domain, ["203.0.113.7", "203.0.113.8"], now)
+        conn.commit()
+        rows = dict(conn.execute(
+            "SELECT ip, observations FROM domain_destination_ips WHERE domain=?", (domain,)
+        ).fetchall())
+    assert rows == {"203.0.113.7": 2, "203.0.113.8": 1}
+
+
+def test_record_domain_destination_ips_is_bounded_per_domain(app_module, initialised_db, monkeypatch):
+    domain = _unique("bounded-destinations")
+    now = app_module.utcnow()
+    monkeypatch.setattr(app_module, "GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT", 2)
+    with closing(sqlite3.connect(initialised_db)) as conn:
+        for i in range(5):
+            app_module._record_domain_destination_ips(conn, domain, [f"203.0.113.{i + 1}"], now)
+        conn.commit()
+        count = conn.execute(
+            "SELECT COUNT(*) FROM domain_destination_ips WHERE domain=?", (domain,)
+        ).fetchone()[0]
+    assert count == 2
+
+
 # --- GeoIPProvider abstraction + local caching -------------------------------
 
 
@@ -166,6 +229,21 @@ def test_csv_range_provider_skips_malformed_rows_without_failing(tmp_path, app_m
     assert provider.lookup("203.0.113.1") == ("US", "United States")
 
 
+def test_csv_range_provider_precomputes_start_key_arrays_for_bisect(tmp_path, app_module):
+    """lookup() must bisect a precomputed start-key array (built once at load
+    time) rather than rebuilding `[r[0] for r in bucket]` on every call --
+    otherwise each lookup does O(n) work despite the binary search."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "203.0.113.0,203.0.113.63,US,United States\n"
+        "198.51.100.0,198.51.100.63,DE,Germany\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert provider._v4_starts == [r[0] for r in provider._v4]
+    assert provider.lookup("198.51.100.10") == ("DE", "Germany")
+    assert provider.lookup("203.0.113.10") == ("US", "United States")
+
+
 def test_geoip_lookup_is_cached_and_bounded(app_module, monkeypatch):
     calls = []
 
@@ -194,25 +272,60 @@ def test_geoip_map_payload_aggregates_a_geolocated_domain_by_country(app_module,
     device_key = _unique("mac:aa:bb:cc:dd:ee")
     now = app_module.utcnow()
     _insert_domain(initialised_db, domain, now, requests=7, clients={device_key: 7})
-    _set_dns_records(initialised_db, domain, now, {"A": ["203.0.113.10"]})
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.10", observations=7)
     _use_provider(app_module, monkeypatch, _FixedProvider({"203.0.113.10": ("US", "United States")}))
 
     payload = app_module.geoip_map_payload()
 
     us = next(c for c in payload["countries"] if c["country_code"] == "US")
     assert domain in us["sample_domains"]
-    assert us["query_count"] >= 7
+    assert us["observation_count"] >= 7
     assert us["domain_count"] >= 1
     assert us["centroid"] is not None
     assert payload["provider"]["configured"] is True
     assert payload["coverage"]["geolocated_pct"] > 0
 
 
+def test_geoip_map_payload_attributes_each_destination_to_its_own_country(app_module, initialised_db, monkeypatch):
+    """A domain answering from more than one country (CDN/multi-region) must
+    contribute to each country by that destination's own observation count --
+    not have its whole request count attributed to a single arbitrary IP."""
+    domain = _unique("geo-multi-destination")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=10)
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.20", observations=6)
+    _add_destination_ip(initialised_db, domain, now, "198.51.100.20", observations=4)
+    _use_provider(app_module, monkeypatch, _FixedProvider({
+        "203.0.113.20": ("US", "United States"),
+        "198.51.100.20": ("DE", "Germany"),
+    }))
+
+    payload = app_module.geoip_map_payload()
+
+    us = next(c for c in payload["countries"] if c["country_code"] == "US")
+    de = next(c for c in payload["countries"] if c["country_code"] == "DE")
+    assert domain in us["sample_domains"]
+    assert domain in de["sample_domains"]
+    assert us["observation_count"] >= 6
+    assert de["observation_count"] >= 4
+
+
 def test_geoip_map_payload_filters_private_answers_before_geolocating(app_module, initialised_db, monkeypatch):
+    """A query whose only answer is a private/CGNAT/etc. address must never
+    reach `domain_destination_ips` at all -- filtering happens once, at
+    ingestion time (`extract_observed_answer_ips`), not re-derived on every
+    aggregation read."""
     domain = _unique("geo-private-only")
     now = app_module.utcnow()
     _insert_domain(initialised_db, domain, now, requests=3)
-    _set_dns_records(initialised_db, domain, now, {"A": ["10.0.0.5"]})
+    with closing(sqlite3.connect(initialised_db)) as conn:
+        observed = app_module.extract_observed_answer_ips({"answer": [{"type": "A", "value": "10.0.0.5"}]})
+        app_module._record_domain_destination_ips(conn, domain, observed, now)
+        conn.commit()
+        stored = conn.execute(
+            "SELECT COUNT(*) FROM domain_destination_ips WHERE domain=?", (domain,)
+        ).fetchone()[0]
+    assert stored == 0
     _use_provider(app_module, monkeypatch, _FixedProvider({"10.0.0.5": ("US", "United States")}))
 
     payload = app_module.geoip_map_payload()
@@ -221,8 +334,8 @@ def test_geoip_map_payload_filters_private_answers_before_geolocating(app_module
         assert domain not in country["sample_domains"]
 
 
-def test_geoip_map_payload_counts_a_domain_with_no_cached_records_as_unknown(app_module, initialised_db, monkeypatch):
-    domain = _unique("geo-no-records")
+def test_geoip_map_payload_counts_a_domain_with_no_observed_destinations_as_unknown(app_module, initialised_db, monkeypatch):
+    domain = _unique("geo-no-destinations")
     now = app_module.utcnow()
     _insert_domain(initialised_db, domain, now, requests=2)
     _use_provider(app_module, monkeypatch, _FixedProvider({}))
@@ -232,14 +345,13 @@ def test_geoip_map_payload_counts_a_domain_with_no_cached_records_as_unknown(app
     for country in payload["countries"]:
         assert domain not in country["sample_domains"]
     assert payload["unknown"]["domain_count"] >= 1
-    assert payload["unknown"]["query_count"] >= 2
 
 
 def test_geoip_map_payload_is_honestly_empty_when_no_provider_is_configured(app_module, initialised_db, monkeypatch):
     domain = _unique("geo-unconfigured")
     now = app_module.utcnow()
     _insert_domain(initialised_db, domain, now, requests=4)
-    _set_dns_records(initialised_db, domain, now, {"A": ["203.0.113.50"]})
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.50", observations=4)
     _use_provider(app_module, monkeypatch, app_module.NullGeoIPProvider())
 
     payload = app_module.geoip_map_payload()
@@ -254,7 +366,7 @@ def test_geoip_map_payload_result_is_cached_for_geoip_map_cache_seconds(app_modu
     domain = _unique("geo-cache")
     now = app_module.utcnow()
     _insert_domain(initialised_db, domain, now, requests=1)
-    _set_dns_records(initialised_db, domain, now, {"A": ["203.0.113.60"]})
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.60", observations=1)
     _use_provider(app_module, monkeypatch, _FixedProvider({"203.0.113.60": ("US", "United States")}))
 
     first = app_module.geoip_map_payload()
@@ -280,10 +392,10 @@ def test_api_analytics_map_returns_expected_shape(client):
     assert set(payload) >= {"updated", "provider", "countries", "unknown", "coverage"}
     assert isinstance(payload["countries"], list)
     assert set(payload["coverage"]) >= {
-        "total_domains", "geolocated_domains", "total_queries",
-        "geolocated_queries", "geolocated_pct",
+        "total_domains", "geolocated_domains", "total_observations",
+        "geolocated_observations", "geolocated_pct",
     }
-    assert set(payload["unknown"]) >= {"domain_count", "query_count"}
+    assert set(payload["unknown"]) >= {"domain_count", "observation_count"}
 
 
 def test_api_analytics_includes_total_devices_for_the_active_devices_gauge(client):
@@ -313,7 +425,7 @@ def test_instrument_gauges_widget_is_registered_in_the_dashboard_grid(client):
 def test_map_and_gauge_render_functions_exist(client):
     body = client.get("/").data.decode("utf-8")
     for fn in ("renderDestinationMap", "renderMapDetail", "fetchDestinationMap",
-               "instrumentPercentGaugeSvg", "renderInstrumentGauges"):
+               "instrumentPercentGaugeSvg", "renderInstrumentGauges", "updateGaugeNeedle"):
         assert f"function {fn}(" in body
 
 
@@ -331,7 +443,23 @@ def test_map_empty_state_copy_does_not_claim_server_locations(client):
     assert "Server Locations" not in body
 
 
+def test_map_honestly_reports_plotted_vs_total_geolocated_countries(client):
+    """COUNTRY_CENTROIDS only covers a bounded subset of countries (see
+    docs/GEOIP.md); the widget must not silently drop geolocated countries
+    that lack a plotted bubble -- it needs to say so explicitly."""
+    body = client.get("/").data.decode("utf-8")
+    assert "geolocated countries plotted" in body
+
+
+def test_gauge_needle_uses_a_valid_animatable_css_property(client):
+    """SVG `<line>` endpoints (x1/y1/x2/y2) are not themselves animatable CSS
+    properties -- `transform` is; the needle must be rotated, not stretched."""
+    body = client.get("/").data.decode("utf-8")
+    assert ".instrument-gauge .gauge-needle{transition:transform" in body
+    assert ".gauge-needle{transition:x2" not in body
+
+
 def test_reduced_motion_suppresses_gauge_needle_and_map_pulse_animation(client):
     body = client.get("/").data.decode("utf-8")
-    assert ".analog-gauge .gauge-needle{transition:" in body
+    assert 'html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:' in body
     assert 'html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}' in body
