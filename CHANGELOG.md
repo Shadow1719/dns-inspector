@@ -2,6 +2,57 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.1]
+
+Functional DNS Destinations / GeoIP map and instrument gauges (Issue #27):
+the first real functional map in Analytics, plus a focused expansion of the
+Analog gauge direction from 0.8.5. Builds on the existing enrichment/data
+model -- no ingestion path changes, no new mandatory dependency.
+
+**DNS Destinations map**
+
+- new data flow: `domains` (already-recorded query activity) joined against
+  the existing `dns_records_cache` (A/AAAA answers the background enrichment
+  worker already resolves via DNS-over-HTTPS for every domain, unchanged
+  from earlier releases) -> `normalize_public_ip()` filters out
+  private/loopback/link-local/multicast/reserved/unspecified/CGNAT addresses
+  -> a local/offline `GeoIPProvider.lookup()` -> aggregated by country in
+  `geoip_map_payload()`, served from the new `GET /api/analytics/map` route
+- `GeoIPProvider` is a small abstraction (`NullGeoIPProvider` /
+  `CsvRangeGeoIPProvider`) over a CSV range database at `GEOIP_DB_PATH`; no
+  database ships in the repository by default, so out of the box every
+  destination is honestly reported as unmapped (0% geolocated) rather than
+  guessed -- see `docs/GEOIP.md` for the schema, recommended sources
+  (DB-IP Lite / MaxMind GeoLite2-Country) and how to supply one
+- GeoIP lookups are always local (a bounded, FIFO-capped in-process cache
+  over a sorted/bisected CSV range table) -- never a per-query network call
+- the new "DNS Destinations" Analytics widget renders a bounded SVG
+  graticule with country bubbles sized by observed query count (not one
+  marker per request), a click-through detail panel (sample domains/devices
+  per country) and an explicit `% geolocated` coverage line; copy
+  consistently says "observed destinations", never "server locations"
+- bounded by design: aggregation scans at most `GEOIP_MAP_DOMAIN_LIMIT`
+  domains (most-recently-active first) and is cached for
+  `GEOIP_MAP_CACHE_SECONDS` per the new dedicated route, independent of the
+  `/api/analytics` poll cadence
+
+**Instrument gauges**
+
+- two new bounded-ratio gauges reusing the existing Analog instrument-gauge
+  look (ticks/needle/numeric readout): blocked-vs-allowed ratio and active
+  devices (of all known devices) -- both have a genuine 0-100% range, unlike
+  a raw KPI count
+- the gauge needle transitions between renders via CSS instead of jumping,
+  and that transition (along with the map's pulse ring on the top country)
+  is suppressed under `prefers-reduced-motion` / the existing in-app
+  reduced-motion preference
+
+**Analytics payload**
+
+- `/api/analytics` gains one additional field, `total_devices` (count of all
+  known devices, regardless of recency) -- the denominator the active-devices
+  gauge needs; every existing field is unchanged
+
 ## [0.8.5]
 
 Analytics Visual 2.0, Dashboard Builder and a focused runtime/code cleanup

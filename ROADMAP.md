@@ -204,29 +204,25 @@ The rule for future inspectors is simple:
 
 > **A mini-inspector earns its place by answering a question that the existing inspectors cannot answer cleanly.**
 
-## Deferred: destination / GeoIP map (0.8.5 follow-up)
+## Implemented: destination / GeoIP map (0.8.5.1)
 
 0.8.5 (Analytics Visual 2.0 + Dashboard Builder) investigated a lightweight
-destination/GeoIP map for Analytics and deliberately did not implement it.
+destination/GeoIP map for Analytics and deliberately did not implement it (see
+the 0.8.5 CHANGELOG.md entry for why). 0.8.5.1 implements it:
 
-- the project has no IP geolocation source today; `requirements.txt` is
-  `flask` + `requests` only, and the existing `country` field surfaced for a
-  domain comes from RDAP/company registrant data, not from resolving where a
-  DNS answer actually points
-- a DNS hostname does not by itself identify the geographic location of the
-  service behind it (CDNs, anycast and multi-region hosting all break a
-  naive domain→country mapping), so presenting one without a real
-  resolution/GeoIP basis would be dishonest, not just approximate
-- adding a GeoIP database/dependency purely for this one visual was judged
-  disproportionate to the "keep the home/server deployment lightweight"
-  constraint for a release that was otherwise a cleanup/optimization pass
-
-If a future release adds this, it needs its own decision covering: which
-GeoIP data source (a bundled, licensable, periodically-refreshed database,
-not a live third-party API on every request), how confidence/availability is
-surfaced per-destination, and how CDN/multi-region destinations are
-represented honestly (aggregated by observed resolved IP/ASN, not by domain
-name).
+- destination IPs are the domain's already-cached resolved A/AAAA answers
+  (`dns_records_cache`, resolved in the background via DNS-over-HTTPS since
+  earlier releases) -- not the RDAP/company `country` field, and not a new
+  synchronous resolution step
+- GeoIP lookup is a `GeoIPProvider` abstraction (`app.py`) over a local CSV
+  range database (`GEOIP_DB_PATH`); no database ships in the repository by
+  default (see `docs/GEOIP.md` for why and how to supply one), so out of the
+  box the map honestly reports 0% geolocated rather than guessing -- there is
+  no live third-party GeoIP API call on any path
+- aggregation is by country and observed query/domain count, not one marker
+  per request or per domain name; CDN/anycast/multi-region destinations are
+  represented as whichever country's IP actually answered, with UI copy that
+  consistently says "observed destinations"
 
 ---
 
