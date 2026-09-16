@@ -204,6 +204,30 @@ The rule for future inspectors is simple:
 
 > **A mini-inspector earns its place by answering a question that the existing inspectors cannot answer cleanly.**
 
+## Deferred: destination / GeoIP map (0.8.5 follow-up)
+
+0.8.5 (Analytics Visual 2.0 + Dashboard Builder) investigated a lightweight
+destination/GeoIP map for Analytics and deliberately did not implement it.
+
+- the project has no IP geolocation source today; `requirements.txt` is
+  `flask` + `requests` only, and the existing `country` field surfaced for a
+  domain comes from RDAP/company registrant data, not from resolving where a
+  DNS answer actually points
+- a DNS hostname does not by itself identify the geographic location of the
+  service behind it (CDNs, anycast and multi-region hosting all break a
+  naive domain→country mapping), so presenting one without a real
+  resolution/GeoIP basis would be dishonest, not just approximate
+- adding a GeoIP database/dependency purely for this one visual was judged
+  disproportionate to the "keep the home/server deployment lightweight"
+  constraint for a release that was otherwise a cleanup/optimization pass
+
+If a future release adds this, it needs its own decision covering: which
+GeoIP data source (a bundled, licensable, periodically-refreshed database,
+not a live third-party API on every request), how confidence/availability is
+surfaced per-destination, and how CDN/multi-region destinations are
+represented honestly (aggregated by observed resolved IP/ASN, not by domain
+name).
+
 ---
 
 # Design principles

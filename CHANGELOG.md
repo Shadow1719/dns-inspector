@@ -2,6 +2,76 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5]
+
+Analytics Visual 2.0, Dashboard Builder and a focused runtime/code cleanup
+(Issue #23): the second of the three sequential UI releases before BEMO 0.9.
+Front-end-only -- no new backend route, no database migration, no change to
+the underlying DNS data/API behaviour or metric semantics.
+
+**Analytics Visual 2.0**
+
+- Digital, Analog and Specter are now genuinely distinct presentations of the
+  same live/historical metrics, not palette variations of one chart: Digital
+  adds hard-edged bars behind the line and a radial "current vs. peak" ring
+  for the live card; Analog gets a real instrument-cluster gauge (tick marks,
+  needle, numeric center readout) instead of a bare semicircle; Specter adds
+  an oscilloscope-style scanning sweep, a live pulse on the last point and a
+  radar-style live indicator
+- every historical chart now shows a `Current / Average / Peak` readout, and
+  every chart (live and historical) marks buckets that are a real statistical
+  outlier (mean + 2 standard deviations) against the others in the same
+  series, with a factual "Spike: N at &lt;time&gt;" tooltip -- no severity or
+  cause is invented, only that the observed count stands out
+- `reduce motion` continues to disable the new sweep/pulse/radar animations,
+  matching the existing accessibility preference
+
+**Dashboard Builder**
+
+- a new "Customize" mode on the Analytics tab turns every Analytics widget
+  (live activity, DNS activity over time, new domains/devices, status
+  breakdown, recently-active domains/devices, top activity) into a
+  reorderable, resizable, hideable unit: a drag handle plus move-up/move-down
+  buttons for reordering (the buttons are the touch- and keyboard-accessible
+  path, since HTML5 drag-and-drop is unreliable on touch), a bounded
+  half/full width toggle and compact/normal/tall height toggle, and a hide
+  toggle per widget
+- four presets (`Default`, `Monitoring`, `Compact`, `Investigation`) plus an
+  automatic `Custom` state once a layout is hand-edited, a `Reset layout`
+  button, and a `dnsInspectorDashboardLayout` `localStorage` object so the
+  chosen layout persists per-browser; normal (non-customizing) Analytics
+  stays visually unchanged from 0.8.4 aside from the new toolbar
+  - a mobile media query keeps every widget full-width regardless of its
+    saved width, since half-width has no useful meaning on a single-column
+    layout
+
+**Destination / GeoIP map (not implemented this release)**
+
+- investigated per the task scope; the project has no IP geolocation source
+  today (`requirements.txt` is still just `flask`/`requests`), and a DNS
+  hostname does not by itself identify where a resolved destination is
+  actually served from (CDN/anycast/multi-region), so a truthful map needs a
+  real GeoIP data source, not the existing RDAP/company "country" field.
+  Adding a GeoIP dependency for this alone was judged out of scope for a
+  "lightweight home/server deployment" cleanup release; see `ROADMAP.md` for
+  the documented follow-up instead of a fabricated domain-to-country map
+
+**Runtime / code cleanup**
+
+- the background `/api/state` poll no longer rebuilds the (potentially
+  hundreds-of-rows) Overview and Devices table `innerHTML` while their tab
+  isn't visible; the fetched rows are still cached and the table is rendered
+  from cache the moment its tab becomes active, removing that DOM work from
+  every poll tick spent on the Analytics tab (and vice versa)
+- removed four leftover section-marker comments (`SQLITE CLOSE PATCH`,
+  `DEEP DEBUG BUNDLE PATCH`, etc.) referencing the retired generated-patch
+  chain that `docs/CURRENT_STATE.md` already documents as no longer the
+  runtime source of truth
+- removed the `.analytics-timeline-grid` / `.activity-feed-grid` /
+  `.analytics-feed-heading` / `.live-gauge` CSS rules and the old
+  `liveGaugeSvg()` function, all made fully dead by the Dashboard Builder and
+  Analytics Visual 2.0 markup changes above
+
 ## [0.8.4]
 
 Settings, themes and configurable Analytics visual styles (Issue #22): the
