@@ -115,7 +115,15 @@ IP_RE = re.compile(r"^[0-9a-f:.]+$")
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
 <style>
-:root{color-scheme:dark;--sem-ok:#3fb950;--sem-info:#58a6ff;--sem-blocked:#f85149;--sem-warn:#d29922;--sem-crit:#da3633;--sem-live:#39c5cf}
+:root{color-scheme:dark;--sem-ok:#3fb950;--sem-info:#58a6ff;--sem-blocked:#f85149;--sem-warn:#d29922;--sem-crit:#da3633;--sem-live:#39c5cf;
+--font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+--bg:#090c11;--surface-0:#0d1117;--surface-1:#11161d;--surface-2:#161b22;--surface-3:#1c232e;
+--border:#242b35;--border-strong:#333c49;--text-primary:#e6edf3;--text-secondary:#8b949e;--text-tertiary:#5c6773;
+--accent:#2dd4c8;--accent-strong:#1fb9ae;--accent-soft:rgba(45,212,200,.14);--accent-contrast:#04211d;
+--radius-xs:6px;--radius-sm:9px;--radius-md:13px;--radius-lg:18px;--radius-pill:999px;
+--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:28px;--space-7:36px;--space-8:48px;
+--shadow-sm:0 1px 2px rgba(0,0,0,.3);--shadow-md:0 10px 26px rgba(0,0,0,.32);--shadow-lg:0 22px 52px rgba(0,0,0,.4);
+--transition:150ms ease}
 *{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:28px;max-width:1450px;margin-inline:auto}
 h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}.updated-time{color:#58a6ff;font-weight:700}.updated-date{color:#8b949e}.signal{border-left:3px solid #30363d;padding:10px 12px;background:#0d1117;border-radius:8px}.signal-green{border-color:#3fb950}.signal-blue{border-color:#58a6ff}.signal-yellow{border-color:#d29922}.signal-orange{border-color:#db6d28}.signal-red{border-color:#f85149}.signal-gray{border-color:#8b949e}.signal-title{font-weight:750;margin-bottom:5px}.evidence{margin:6px 0 0;padding-left:18px;color:#c9d1d9}.evidence li{margin:3px 0}.confidence-high{color:#3fb950;font-weight:700}.confidence-medium{color:#d29922;font-weight:700}.confidence-low{color:#8b949e;font-weight:700}.dns-list{display:flex;flex-wrap:wrap;gap:6px}.dns-ip{display:inline-block;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#161b22;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}.vendor-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:6px;border-radius:4px}.vendor-logo-lg{width:30px;height:30px;object-fit:contain;flex:0 0 30px}.vendor-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:6px;border-radius:5px;background:#30363d;font-size:.7rem}.vendor-mark-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;font-size:.75rem;font-weight:800}.device-type-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;margin-right:6px;border-radius:5px;background:#30363d;color:#8b949e}.device-type-icon-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;color:#8b949e}.device-type-icon svg,.device-type-icon-lg svg{width:70%;height:70%;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
@@ -185,21 +193,176 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .sem-dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;display:inline-block;margin-right:6px}
 .sem-ok{background:var(--sem-ok)}.sem-info{background:var(--sem-info)}.sem-blocked{background:var(--sem-blocked)}.sem-warn{background:var(--sem-warn)}.sem-crit{background:var(--sem-crit)}.sem-live{background:var(--sem-live)}
 @media(max-width:900px){.analytics-hero,.analytics-timeline-grid,.activity-feed-grid,.stat-tiles{grid-template-columns:1fr}}
+
+/* ============================================================
+   Inspector BEMO design system
+   A single token-driven visual language layered over the base
+   rules above. Selectors are re-declared here (not renamed) so
+   every element JS/Python already emits picks up the new look.
+   ============================================================ */
+html{background:var(--bg)}
+body{font-family:var(--font-sans);background:var(--bg);background-image:radial-gradient(1100px 480px at 12% -10%,rgba(45,212,200,.06),transparent 60%),radial-gradient(900px 420px at 100% 0%,rgba(88,166,255,.05),transparent 55%);color:var(--text-primary);max-width:1480px;padding:24px 28px 56px;line-height:1.45}
+::selection{background:var(--accent-soft);color:var(--text-primary)}
+h1,h2,h3{font-family:var(--font-sans);letter-spacing:-.015em;color:var(--text-primary)}
+h2{font-size:1.05rem;font-weight:750}
+h3{font-size:.92rem;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.05em;margin:0 0 10px}
+.muted,small{color:var(--text-secondary)}
+a{color:var(--accent);text-decoration:none;transition:color var(--transition)}
+a:hover{color:#7fe9e1;text-decoration:underline}
+.live{color:var(--sem-ok)}
+
+/* focus visibility: color is never the only signal elsewhere, but focus needs to be unmistakable */
+a:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,.tab-btn:focus-visible,.filter-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+
+input,button,select{font-family:var(--font-sans);background:var(--surface-2);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 13px;font-size:.88rem;transition:border-color var(--transition),background var(--transition),color var(--transition)}
+button{cursor:pointer;font-weight:650}
+button:hover,select:hover{border-color:var(--border-strong)}
+button:hover{border-color:var(--accent);color:var(--text-primary)}
+input:focus,button:focus,select:focus{border-color:var(--accent)}
+input::placeholder{color:var(--text-tertiary)}
+
+.card{background:linear-gradient(180deg,var(--surface-1),var(--surface-0));border:1px solid var(--border);border-radius:var(--radius-lg);padding:20px 22px;margin-top:18px;box-shadow:var(--shadow-md)}
+.card>h2{display:flex;align-items:center;gap:8px;margin:0 0 14px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+
+/* ---- application shell / navigation ---- */
+.app-shell{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;flex-wrap:wrap;padding-bottom:18px;border-bottom:1px solid var(--border);margin-bottom:4px}
+.shell-brand{display:flex;align-items:center;gap:14px;min-width:0}
+.brand-mark{flex:0 0 auto;width:44px;height:44px;border-radius:var(--radius-md);background:linear-gradient(155deg,var(--accent-soft),transparent 70%);border:1px solid var(--border-strong);display:flex;align-items:center;justify-content:center;color:var(--accent)}
+.brand-mark svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.brand-text{min-width:0}
+.brand-platform{display:block;font-size:.72rem;font-weight:750;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.brand-title{margin:1px 0 0;font-size:1.7rem;line-height:1.15}
+.version-chip{font-size:.55em;color:var(--text-secondary);font-weight:600;margin-left:6px}
+.shell-status{display:flex;flex-direction:column;align-items:flex-end;gap:6px;text-align:right}
+.shell-meta{margin:0;font-size:.82rem}
+@media(max-width:760px){.app-shell{flex-direction:column}.shell-status{align-items:flex-start;text-align:left}}
+
+.dev-banner{position:sticky;top:0;z-index:1000;display:flex;align-items:center;justify-content:center;gap:9px;background:linear-gradient(90deg,#db6d28,#e2862f);color:#100a04;font-weight:800;text-align:center;padding:10px 16px;letter-spacing:.03em;border-radius:var(--radius-sm);margin-bottom:16px;border:1px solid #f0883e;box-shadow:var(--shadow-sm)}
+.dev-banner svg{width:17px;height:17px;flex:0 0 17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.dev-badge{display:inline-flex;align-items:center;background:var(--sem-warn);color:#100a04;font-weight:800;font-size:.5em;padding:2px 10px;border-radius:var(--radius-pill);vertical-align:middle;margin-left:10px;letter-spacing:.06em}
+
+.observability-strip{gap:8px}
+.observability-pill{background:var(--surface-2);border-color:var(--border);border-radius:var(--radius-pill);color:var(--text-secondary)}
+.observability-dot{background:var(--sem-ok);box-shadow:0 0 0 3px rgba(63,185,80,.15)}
+.debug-button{border-radius:var(--radius-pill);color:var(--text-secondary)}
+.debug-button:hover{border-color:var(--accent);color:var(--text-primary)}
+
+.toolbar{gap:10px;margin:22px 0 18px;padding:6px;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-md)}
+.toolbar input{border:none;background:transparent;padding:9px 12px}
+.toolbar input:focus{outline:none}
+.toolbar button{border-radius:var(--radius-sm)}
+
+.tabs{display:flex;gap:4px;margin:22px 0 0;padding:4px;position:sticky;top:0;z-index:5;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md)}
+.tab-btn{display:inline-flex;align-items:center;gap:7px;border:1px solid transparent;background:transparent;color:var(--text-secondary);padding:9px 15px;border-radius:var(--radius-sm);font-weight:700;font-size:.88rem}
+.tab-btn svg{width:15px;height:15px;flex:0 0 15px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.tab-btn:hover{color:var(--text-primary);background:var(--surface-2)}
+.tab-btn.active{background:var(--accent-soft);color:var(--text-primary);border-color:var(--accent)}
+.tab-panel.active{animation:dnsInspectorFadeIn .22s ease}
+@keyframes dnsInspectorFadeIn{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+
+/* ---- tables ---- */
+table{border-spacing:0}
+th{font-family:var(--font-sans);color:var(--text-tertiary);font-weight:700;background:transparent;border-bottom:1px solid var(--border-strong)}
+td,th{border-bottom:1px solid var(--border);padding:12px 10px}
+tbody tr{transition:background var(--transition)}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+.sortable::after{opacity:.3}
+.sortable.sort-asc::after,.sortable.sort-desc::after{opacity:1;color:var(--accent)}
+
+/* ---- badges / status language (color is never the only signal: text always accompanies these) ---- */
+.tag{background:var(--surface-3);border:1px solid var(--border);border-radius:var(--radius-pill);color:var(--text-secondary);font-weight:650;font-size:.78rem}
+.tag.green{background:rgba(63,185,80,.14);border-color:rgba(63,185,80,.35);color:#7ee787}
+.tag.yellow{background:rgba(210,153,34,.14);border-color:rgba(210,153,34,.35);color:#f2cc60}
+.tag.orange{background:rgba(219,109,40,.14);border-color:rgba(219,109,40,.35);color:#ffa96b}
+.tag.red{background:rgba(248,81,73,.14);border-color:rgba(248,81,73,.35);color:#ffb4b4}
+.tag.blue{background:rgba(88,166,255,.14);border-color:rgba(88,166,255,.35);color:#8fc7ff}
+.tag.gray{background:var(--surface-3);border-color:var(--border);color:var(--text-secondary)}
+.status-pill{border-radius:var(--radius-pill);font-weight:750}
+.status-allowed{background:rgba(63,185,80,.14);color:#7ee787;border:1px solid rgba(63,185,80,.3)}
+.status-blocked{background:rgba(248,81,73,.14);color:#ffb4b4;border:1px solid rgba(248,81,73,.3)}
+.status-mixed{background:rgba(210,153,34,.14);color:#f2cc60;border:1px solid rgba(210,153,34,.3)}
+.status-unknown{background:var(--surface-3);color:var(--text-secondary);border:1px solid var(--border)}
+.new-badge{background:rgba(210,153,34,.16);border:1px solid rgba(210,153,34,.4);color:#f2cc60;border-radius:var(--radius-pill)}
+.new-banner{border-radius:var(--radius-md);background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.4)}
+
+/* ---- filters / controls toolbar ---- */
+.recent-controls{background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-md);padding:14px}
+.filter-label{color:var(--text-tertiary)}
+.filter-btn{border-radius:var(--radius-pill);background:var(--surface-2)}
+.filter-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
+.filter-btn.filter-allowed.active{background:rgba(63,185,80,.14);border-color:var(--sem-ok);color:#7ee787}
+.filter-btn.filter-blocked.active{background:rgba(248,81,73,.14);border-color:var(--sem-blocked);color:#ffb4b4}
+.filter-btn.filter-new.active{background:rgba(210,153,34,.14);border-color:var(--sem-warn);color:#f2cc60}
+.filter-select{border-radius:var(--radius-sm)}
+.results-summary{color:var(--text-tertiary)}
+.pager{border-top-color:var(--border)}
+.pager button{border-radius:var(--radius-sm)}
+
+.client-chip,.device-chip{background:var(--surface-2);border-color:var(--border);border-radius:var(--radius-sm)}
+.device-chip:hover{border-color:var(--accent);background:var(--surface-3)}
+.external-tool,.inline-tool{background:var(--surface-2);border-color:var(--border);color:var(--text-tertiary);border-radius:var(--radius-sm)}
+.external-tool:hover,.inline-tool:hover{border-color:var(--accent);color:var(--accent)}
+.device-label-btn{border-radius:var(--radius-sm)}
+.dns-ip{background:var(--surface-2);border-color:var(--border);border-radius:var(--radius-sm)}
+
+/* ---- device/IP + inspect detail views ---- */
+.signal{border-left-width:3px;background:var(--surface-2);border-radius:var(--radius-sm)}
+.kv{border-bottom-color:var(--border)}
+.vendor-mark,.vendor-mark-lg,.device-type-icon,.device-type-icon-lg{background:var(--surface-3);color:var(--text-secondary)}
+
+/* ---- empty / loading state ---- */
+.empty-state{display:flex;align-items:center;gap:8px;padding:14px 4px;color:var(--text-tertiary);font-size:.85rem}
+.refresh-status{background:rgba(17,22,29,.96);border-color:var(--border);box-shadow:var(--shadow-md)}
+.refresh-spinner{border-color:var(--border);border-top-color:var(--accent)}
+.error{color:#ffb4b4;display:inline-flex;align-items:center;gap:6px}
+.source{color:var(--text-tertiary)}
+pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px}
+
+/* ---- analytics: the live panel is a first-class component ---- */
+.analytics-feed-heading{margin:20px 4px 0}
+.analytics-feed-heading h2{margin:0;padding:0;border:none}
+.live-card{background:linear-gradient(165deg,rgba(45,212,200,.09),var(--surface-1) 55%);border-color:rgba(45,212,200,.35)}
+.live-card::before{background:radial-gradient(620px 220px at 0% 0%,rgba(45,212,200,.16),transparent 62%)}
+.live-title{color:var(--text-primary);font-size:.86rem;text-transform:uppercase;letter-spacing:.06em}
+.live-dot{background:var(--sem-live);box-shadow:0 0 0 4px rgba(57,197,207,.18)}
+.live-rate{color:var(--text-primary);text-shadow:0 0 24px rgba(45,212,200,.25)}
+.stat-tile{background:var(--surface-0);border-color:var(--border);border-radius:var(--radius-md);transition:border-color var(--transition)}
+.stat-tile:hover{border-color:var(--border-strong)}
+.range-btn{border-radius:var(--radius-pill)}
+.range-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
+.status-bar{border-radius:var(--radius-pill);background:var(--surface-2);border-color:var(--border)}
+.legend-item{color:var(--text-secondary)}
+.activity-row{border-bottom-color:var(--border)}
+.chart-card{background:var(--surface-1)}
+.bar-track{background:var(--surface-2);border-color:var(--border)}
+.bar-fill{background:var(--accent);background-image:linear-gradient(90deg,var(--accent-strong),var(--accent))}
+
+@media(max-width:900px){.card{padding:16px}.tabs{overflow-x:auto}.tab-btn{flex:0 0 auto}}
 </style></head><body>
-{% if is_dev_environment %}<div class="dev-banner" role="alert">⚠️ DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</div>{% endif %}
-<h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span>{% if is_dev_environment %} <span class="dev-badge">DEV</span>{% endif %}</h1>
-<div class="observability-strip" aria-label="Application runtime status">
-  <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
-  <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
-  <button type="button" class="debug-button" onclick="window.location='/debug/bundle'">Generate Debug Bundle</button>
-</div>
-<p class="muted">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
+{% if is_dev_environment %}<div class="dev-banner" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4"/><circle cx="12" cy="17.5" r=".1" fill="currentColor" stroke="currentColor" stroke-width="2"/></svg><span>DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</span></div>{% endif %}
+<header class="app-shell">
+  <div class="shell-brand">
+    <div class="brand-mark"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5v17M3.5 12h17"/><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"/></svg></div>
+    <div class="brand-text">
+      <span class="brand-platform">Inspector BEMO</span>
+      <h1 class="brand-title">DNS Inspector <span class="muted version-chip">v{{version}}</span>{% if is_dev_environment %} <span class="dev-badge">DEV</span>{% endif %}</h1>
+    </div>
+  </div>
+  <div class="shell-status">
+    <div class="observability-strip" aria-label="Application runtime status">
+      <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
+      <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
+      <button type="button" class="debug-button" onclick="window.location='/debug/bundle'">Generate Debug Bundle</button>
+    </div>
+    <p class="muted shell-meta">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
+  </div>
+</header>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
-<div class="tabs" role="tablist" aria-label="DNS Inspector sections">
-  <button class="tab-btn active" data-tab="overview" role="tab">Overview</button>
-  <button class="tab-btn" data-tab="devices" role="tab">Devices</button>
-  <button class="tab-btn" data-tab="analytics" role="tab">Analytics</button>
-</div>
+<nav class="tabs" role="tablist" aria-label="DNS Inspector sections">
+  <button class="tab-btn active" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+  <button class="tab-btn" data-tab="devices" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Devices</button>
+  <button class="tab-btn" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
+</nav>
 <section id="tab-overview" class="tab-panel active" data-panel="overview">
   <div id="inspect-root">
   {% if inspect_html %}{{ inspect_html|safe }}{% endif %}
@@ -265,7 +428,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
     <div class="stats-note">All known domains, grouped by their current AdGuard filtering outcome.</div>
   </div>
 
-  <div class="analytics-feed-heading"><h2 style="margin:18px 4px 0">Recent activity</h2></div>
+  <div class="analytics-feed-heading"><h2>Recent activity</h2></div>
   <div class="activity-feed-grid">
     <div class="card"><h2>Recently active domains</h2><div id="activity-domains"></div></div>
     <div class="card"><h2>Recently active devices</h2><div id="activity-devices"></div></div>
@@ -322,7 +485,7 @@ function showNewBanner(entries){const b=document.getElementById('new-banner'),t=
 function clearNewBanner(){document.getElementById('new-banner')?.classList.remove('show')}
 function updateNewDetection(rows){const current=rows||[];const set=new Set(current.map(r=>r.domain));if(!initialDomainSnapshot){set.forEach(d=>knownDomains.add(d));initialDomainSnapshot=true;return}const fresh=current.filter(r=>!knownDomains.has(r.domain));set.forEach(d=>knownDomains.add(d));if(fresh.length)showNewBanner(fresh)}
 window.deviceLabels={};
-function ensureRefreshStatus(){let el=document.getElementById('refresh-status');if(el)return el;el=document.createElement('div');el.id='refresh-status';el.className='refresh-status';el.innerHTML='<span class="refresh-spinner"></span><span>Se încarcă lista…</span>';document.body.appendChild(el);return el}
+function ensureRefreshStatus(){let el=document.getElementById('refresh-status');if(el)return el;el=document.createElement('div');el.id='refresh-status';el.className='refresh-status';el.innerHTML='<span class="refresh-spinner"></span><span>Refreshing…</span>';document.body.appendChild(el);return el}
 function showRefreshStatus(){ensureRefreshStatus().classList.add('show')}
 function hideRefreshStatus(){const el=document.getElementById('refresh-status');if(el)el.classList.remove('show')}
 function ipPingTitle(s){if(!s)return 'Never checked';const when=new Date(Number(s.last_checked)*1000);const result=s.online?'Reachable':'Unreachable';const latency=s.latency_ms!=null?` · ${s.latency_ms} ms`:'';const err=s.error?` · ${s.error}`:'';return `${result}${latency}${err} · ${when.toLocaleString()}`}
@@ -352,7 +515,7 @@ function setActiveTab(name){
 }
 function chartBars(elId, items){
   const el=document.getElementById(elId); if(!el) return;
-  if(!items || !items.length){ el.innerHTML='<div class="sub">No data yet.</div>'; return; }
+  if(!items || !items.length){ el.innerHTML='<div class="empty-state">No data yet.</div>'; return; }
   const max=Math.max(...items.map(x=>Number(x.value)||0),1);
   el.innerHTML=items.map(x=>{
     const pct=Math.max(2, Math.round(((Number(x.value)||0)/max)*100));
@@ -436,7 +599,7 @@ function renderTimelineChart(elId, points, colorVar, unitLabel){
   const el = document.getElementById(elId); if (!el) return;
   const pts = points || [];
   const hasData = pts.some(p => p.count != null);
-  if (!hasData){ el.innerHTML = '<div class="sub">No data yet.</div>'; return; }
+  if (!hasData){ el.innerHTML = '<div class="empty-state">No data yet.</div>'; return; }
   const w = 600, h = 120;
   const d = svgSparkPath(pts, w, h);
   const vals = pts.map(p=>p.count).filter(v=>v!=null);
@@ -463,12 +626,12 @@ function renderRecentActivity(domains, devices){
   const dEl = document.getElementById('activity-domains');
   if (dEl){
     const rows = domains || [];
-    dEl.innerHTML = rows.length ? rows.map(r => `<div class="activity-row"><span><span class="sem-dot ${statusSemClass(r.status)}"></span><a href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a></span><span class="sub">${esc(r.status)} &middot; ${esc(ageText(r.last_seen))} ago</span></div>`).join('') : '<div class="sub">No recent activity yet.</div>';
+    dEl.innerHTML = rows.length ? rows.map(r => `<div class="activity-row"><span><span class="sem-dot ${statusSemClass(r.status)}"></span><a href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a></span><span class="sub">${esc(r.status)} &middot; ${esc(ageText(r.last_seen))} ago</span></div>`).join('') : '<div class="empty-state">No recent activity yet.</div>';
   }
   const vEl = document.getElementById('activity-devices');
   if (vEl){
     const rows = devices || [];
-    vEl.innerHTML = rows.length ? rows.map(d => `<div class="activity-row"><span><span class="sem-dot sem-live"></span><a href="/device?key=${encodeURIComponent(d.device_key)}">${esc(d.label)}</a></span><span class="sub">${esc(ageText(d.last_seen))} ago &middot; ${esc(d.requests)} total</span></div>`).join('') : '<div class="sub">No recent activity yet.</div>';
+    vEl.innerHTML = rows.length ? rows.map(d => `<div class="activity-row"><span><span class="sem-dot sem-live"></span><a href="/device?key=${encodeURIComponent(d.device_key)}">${esc(d.label)}</a></span><span class="sub">${esc(ageText(d.last_seen))} ago &middot; ${esc(d.requests)} total</span></div>`).join('') : '<div class="empty-state">No recent activity yet.</div>';
   }
 }
 function renderLiveHero(windowSeconds){
@@ -2511,7 +2674,7 @@ def detail_html_device(d):
     primary = d.get("hostname") or d.get("name") or d.get("vendor") or d.get("device_key")
     logo = vendor_visual(d.get("vendor"), d.get("vendor_logo"), True, d.get("icon", "◈"))
     ips = "".join(f"<a class='client-chip mono link-ip' href='/ip?addr={quote(x['ip'], safe='')}'>{_html(x['ip'])}</a>" for x in d['ips']) or "—"
-    domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}' title='Inspect domain in DNS Inspector'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No domain activity recorded.</td></tr>"
+    domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}' title='Inspect domain in DNS Inspector'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='empty-state'>No domain activity recorded.</td></tr>"
     device_tools = []
     search_url = device_search_url(primary, d.get('hostname'), d.get('vendor'))
     if search_url: device_tools.append(inline_external_button(search_url, 'Search device'))
@@ -2528,8 +2691,8 @@ def detail_html_ip(d):
         label = f"<a class='link-device' href='/device?key={href}'>{_html(primary)}</a>" if linked_primary else _html(primary)
         visual = vendor_visual(x.get('vendor'), x.get('vendor_logo'), False, x.get('icon','◈'), x.get('type', ''))
         device_rows.append(f"<tr><td>{visual}{label}</td><td class='mono'>{_html(x.get('mac') or '—')} {inline_external_button(mac_lookup_url(x.get('mac')), 'MAC vendor lookup', '') if x.get('mac') else ''}</td><td>{x['requests']}</td></tr>")
-    devices = ''.join(device_rows) or "<tr><td colspan='3' class='sub'>No known device mapping.</td></tr>"
-    domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}' title='Inspect domain in DNS Inspector'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='sub'>No DNS activity recorded.</td></tr>"
+    devices = ''.join(device_rows) or "<tr><td colspan='3' class='empty-state'>No known device mapping.</td></tr>"
+    domains = "".join(f"<tr><td><a href='/search?q={quote(x['domain'], safe='')}' title='Inspect domain in DNS Inspector'>{_html(x['domain'])}</a></td><td>{x['requests']}</td><td class='mono'>{_html(x['last_seen'])}</td></tr>" for x in d['domains']) or "<tr><td colspan='3' class='empty-state'>No DNS activity recorded.</td></tr>"
     return f"""<div class='card'><p><a href='/'>&larr; Back to dashboard</a></p><h2 class='mono'>{_html(d['ip'])}</h2><p class='muted'>IP observation · {len(d['devices'])} known device(s)</p><h3>Known devices</h3><table><thead><tr><th>Device</th><th>MAC</th><th>Queries</th></tr></thead><tbody>{devices}</tbody></table><h3>Domains contacted</h3><table><thead><tr><th>Domain</th><th>Queries</th><th>Last seen</th></tr></thead><tbody>{domains}</tbody></table></div>"""
 
 def recent_html(recent):
