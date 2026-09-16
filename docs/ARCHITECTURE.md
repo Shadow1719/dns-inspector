@@ -136,24 +136,32 @@ main()                  Flask routes              background threads
 ## Regions within `app.py`
 
 `app.py` is still one file. It is not yet modular, but the code does fall into
-recognisable contiguous regions. Approximate line ranges as of 0.8.0:
+recognisable contiguous regions. Approximate line ranges as of 0.8.2:
 
 | Region | Lines | Key entry points |
 | --- | --- | --- |
-| Imports and configuration constants | 1–90 | `APP_VERSION`, `DB_PATH`, `AGH_URL`, cache TTLs |
-| UI template (HTML/CSS/JS as one string) | 93–305 | `HTML` |
-| Database schema and helpers | 308–400 | `init_db`, `add_column_if_missing` |
-| TrackerDB acquisition | 432–500 | `refresh_trackerdb`, `trackerdb_ready` |
-| AdGuard client | 501–607 | `agh_get`, `fetch_querylog`, `fetch_clients` |
-| Device / IP identity | 608–940 | `upsert_device`, `extract_identity`, `normalize_mac` |
-| Ingestion | 941–1023 | `ingest`, `query_status`, `query_fingerprint` |
-| IP reachability | 1024–1154 | `_ip_ping_worker`, `_prune_stale_device_ips` |
-| Domain enrichment | 1208–1692 | `tracker_lookup`, `rdap_lookup`, `netify_lookup`, `_enrichment_worker` |
-| Presentation helpers | 1693–1966 | `inspect_html`, `classify`, `vendor_visual` |
-| Query / analytics | 1988–2378 | `get_recent`, `get_stats`, `state_payload` |
-| Workers and routes | 2379–2545 | `worker`, `index`, `health` |
-| Diagnostics and observability | 2547–3180 | `debug_bundle`, `_observability_payload` |
-| Entry point | 3181–3205 | `main`, `serve`, `start_background_workers` |
+| Imports and configuration constants | 1–114 | `APP_VERSION`, `DB_PATH`, `AGH_URL`, cache TTLs |
+| UI template (HTML/CSS/JS as one string) | 115–522 | `HTML` |
+| Database schema and helpers | 525–688 | `init_db`, `add_column_if_missing` |
+| TrackerDB acquisition | 689–728 | `refresh_trackerdb`, `trackerdb_ready` |
+| AdGuard client | 729–832 | `agh_get`, `fetch_querylog`, `fetch_clients` |
+| Device / IP identity | 833–1161 | `upsert_device`, `extract_identity`, `normalize_mac` |
+| Ingestion | 1162–1312 | `ingest`, `query_status`, `query_fingerprint` |
+| IP reachability | 1313–1428 | `_ip_ping_worker`, `_prune_stale_device_ips` |
+| Domain enrichment | 1429–1987 | `tracker_lookup`, `rdap_lookup`, `netify_lookup`, `_enrichment_worker` |
+| Presentation helpers | 1988–2336 | `inspect_html`, `classify`, `vendor_visual` |
+| Query / analytics | 2337–2814 | `get_recent`, `get_stats`, `analytics_payload`, `state_payload` |
+| Workers and routes | 2815–3510 | `worker`, `index`, `health`, `api_analytics` |
+| Diagnostics and observability | 3511–3563 | `debug_bundle`, `_observability_payload` |
+| Entry point | 3564–3588 | `main`, `serve`, `start_background_workers` |
+
+The "Query / analytics" region grew in 0.8.2 to add the Analytics dashboard's
+data-selection functions (`get_query_volume_series`, `get_new_domains_series`,
+`get_new_devices_series`, `get_status_breakdown`, `get_recent_activity`,
+`_analytics_live_snapshot`) alongside the existing `get_recent`/`get_stats`.
+They read from data the ingestion pipeline already persists (`processed_queries`,
+`domains.first_seen`/`last_seen`, `devices.first_seen`/`last_seen`); no new
+sampling pipeline or time-series store was introduced.
 
 These regions are observations, not module boundaries. See
 [MODULARIZATION.md](MODULARIZATION.md) for how they are expected to become real

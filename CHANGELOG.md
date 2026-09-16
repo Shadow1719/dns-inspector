@@ -2,6 +2,47 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.2]
+
+Analytics overhaul (Issue #16): the Analytics tab is redesigned as an
+observability dashboard instead of four static "most active" lists. Every
+number comes from data the ingestion pipeline already persists — no new
+sampling pipeline, no time-series database, no per-sample persistence.
+
+**Live activity**
+
+- a "Live activity" card shows queries observed in the last 60 seconds, with
+  an in-browser rolling sparkline (up to 100 samples)
+- the sample rides the existing `/api/state` refresh loop (`live` field) at
+  the app's normal refresh cadence rather than a second, faster polling
+  loop — see the "Analytics Live Activity" note in `ROADMAP.md`
+- recently active domains and devices lists, sourced from `domains.last_seen`
+  / `devices.last_seen`
+
+**Historical trends**
+
+- new `GET /api/analytics?range=1h|6h|24h|7d` endpoint: DNS query volume
+  (bucketed from `processed_queries.seen_at`, the query-log dedup table the
+  ingest worker already writes), new-domains and new-devices-discovered
+  series (bucketed from `first_seen`), and a domain status breakdown
+  (Allowed/Blocked/Mixed/Unknown)
+- `processed_queries` is capped at 100k rows (unchanged); buckets older than
+  the oldest retained row are reported as `null`, not a fabricated zero
+- four new indexes (`idx_domains_last_seen`, `idx_domains_first_seen`,
+  `idx_devices_last_seen`, `idx_devices_first_seen`) back the new queries
+
+**Visual semantics**
+
+- a consistent color palette (`--sem-ok`, `--sem-info`, `--sem-blocked`,
+  `--sem-warn`, `--sem-crit`, `--sem-live`) applied across the new charts,
+  stat tiles, status legend and activity rows; text/labels are always shown
+  alongside color, never color alone
+
+**Tests**
+
+- `tests/test_analytics.py`: the new data-selection functions, the new
+  route, the `live` field on `/api/state`, and the new indexes
+
 ## [0.8.1]
 
 Fixes D-1: `/api/observability` returned HTTP 500 on every request because a

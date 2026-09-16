@@ -115,7 +115,7 @@ IP_RE = re.compile(r"^[0-9a-f:.]+$")
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
 <style>
-:root{color-scheme:dark}
+:root{color-scheme:dark;--sem-ok:#3fb950;--sem-info:#58a6ff;--sem-blocked:#f85149;--sem-warn:#d29922;--sem-crit:#da3633;--sem-live:#39c5cf}
 *{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:28px;max-width:1450px;margin-inline:auto}
 h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}.updated-time{color:#58a6ff;font-weight:700}.updated-date{color:#8b949e}.signal{border-left:3px solid #30363d;padding:10px 12px;background:#0d1117;border-radius:8px}.signal-green{border-color:#3fb950}.signal-blue{border-color:#58a6ff}.signal-yellow{border-color:#d29922}.signal-orange{border-color:#db6d28}.signal-red{border-color:#f85149}.signal-gray{border-color:#8b949e}.signal-title{font-weight:750;margin-bottom:5px}.evidence{margin:6px 0 0;padding-left:18px;color:#c9d1d9}.evidence li{margin:3px 0}.confidence-high{color:#3fb950;font-weight:700}.confidence-medium{color:#d29922;font-weight:700}.confidence-low{color:#8b949e;font-weight:700}.dns-list{display:flex;flex-wrap:wrap;gap:6px}.dns-ip{display:inline-block;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#161b22;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}.vendor-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:6px;border-radius:4px}.vendor-logo-lg{width:30px;height:30px;object-fit:contain;flex:0 0 30px}.vendor-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:6px;border-radius:5px;background:#30363d;font-size:.7rem}.vendor-mark-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;font-size:.75rem;font-weight:800}.device-type-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;margin-right:6px;border-radius:5px;background:#30363d;color:#8b949e}.device-type-icon-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;color:#8b949e}.device-type-icon svg,.device-type-icon-lg svg{width:70%;height:70%;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
@@ -152,6 +152,39 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 .dev-banner{position:sticky;top:0;z-index:1000;background:#db6d28;color:#0d1117;font-weight:800;text-align:center;padding:10px 16px;letter-spacing:.02em;border-radius:8px;margin-bottom:16px;border:2px solid #f0883e}
 .dev-badge{display:inline-block;background:#db6d28;color:#0d1117;font-weight:800;font-size:.5em;padding:2px 10px;border-radius:999px;vertical-align:middle;margin-left:10px;letter-spacing:.05em}
+.analytics-hero{display:grid;grid-template-columns:1.3fr 1fr;gap:14px;align-items:stretch}
+.live-card{position:relative;overflow:hidden;border-color:#1f6feb55}
+.live-card::before{content:'';position:absolute;inset:0;background:radial-gradient(600px 200px at 0% 0%,rgba(57,197,207,.10),transparent 60%);pointer-events:none}
+.live-title{display:flex;align-items:center;gap:8px;font-weight:750;color:#c9d1d9}
+.live-dot{width:9px;height:9px;border-radius:50%;background:var(--sem-live);box-shadow:0 0 0 3px rgba(57,197,207,.18);animation:dnsInspectorPulse 1.4s ease-in-out infinite}
+.live-rate{font-size:2.4rem;font-weight:800;letter-spacing:-.02em;margin:8px 0 2px;font-variant-numeric:tabular-nums;position:relative}
+.live-rate small{font-size:.4em;color:#8b949e;font-weight:700;margin-left:6px}
+.live-sparkline-wrap{margin-top:8px;position:relative}
+.history-svg{width:100%;height:120px;display:block}
+.stat-tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.stat-tile{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:center}
+.stat-tile-label{font-size:.72rem;color:#8b949e;text-transform:uppercase;letter-spacing:.05em}
+.stat-tile-value{font-size:1.5rem;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums}
+.stat-tile.ok .stat-tile-value{color:var(--sem-ok)}
+.stat-tile.blocked .stat-tile-value{color:var(--sem-blocked)}
+.stat-tile.info .stat-tile-value{color:var(--sem-info)}
+.stat-tile.warn .stat-tile-value{color:var(--sem-warn)}
+.analytics-range-controls{display:flex;gap:6px;align-items:center;margin:14px 0;flex-wrap:wrap}
+.range-btn{padding:6px 12px;font-size:.8rem;border-radius:999px}
+.range-btn.active{background:#16395c;border-color:#58a6ff;color:#e6edf3}
+.analytics-timeline-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.status-bar{display:flex;height:16px;border-radius:999px;overflow:hidden;border:1px solid #30363d;background:#161b22}
+.status-seg{height:100%;min-width:0}
+.legend-row{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font-size:.8rem;color:#c9d1d9}
+.legend-item{display:inline-flex;align-items:center;gap:6px}
+.legend-dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px}
+.activity-feed-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.activity-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #21262d;font-size:.85rem}
+.activity-row:last-child{border-bottom:0}
+.activity-row .sub{color:#8b949e;font-size:.76rem;white-space:nowrap}
+.sem-dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;display:inline-block;margin-right:6px}
+.sem-ok{background:var(--sem-ok)}.sem-info{background:var(--sem-info)}.sem-blocked{background:var(--sem-blocked)}.sem-warn{background:var(--sem-warn)}.sem-crit{background:var(--sem-crit)}.sem-live{background:var(--sem-live)}
+@media(max-width:900px){.analytics-hero,.analytics-timeline-grid,.activity-feed-grid,.stat-tiles{grid-template-columns:1fr}}
 </style></head><body>
 {% if is_dev_environment %}<div class="dev-banner" role="alert">⚠️ DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</div>{% endif %}
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span>{% if is_dev_environment %} <span class="dev-badge">DEV</span>{% endif %}</h1>
@@ -195,6 +228,50 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
   <p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
 </section>
 <section id="tab-analytics" class="tab-panel" data-panel="analytics">
+  <div class="analytics-hero">
+    <div class="card live-card">
+      <div class="live-title"><span class="live-dot"></span>Live activity</div>
+      <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
+      <div class="live-sparkline-wrap" id="live-sparkline"></div>
+      <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
+    </div>
+    <div class="stat-tiles">
+      <div class="stat-tile ok"><div class="stat-tile-label">Allowed domains</div><div class="stat-tile-value" id="tile-allowed">&mdash;</div></div>
+      <div class="stat-tile blocked"><div class="stat-tile-label">Blocked domains</div><div class="stat-tile-value" id="tile-blocked">&mdash;</div></div>
+      <div class="stat-tile info"><div class="stat-tile-label">Active devices</div><div class="stat-tile-value" id="tile-devices">&mdash;</div></div>
+      <div class="stat-tile warn"><div class="stat-tile-label">New domains (24h)</div><div class="stat-tile-value" id="tile-new-domains">&mdash;</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>DNS activity over time</h2>
+    <div class="analytics-range-controls" role="group" aria-label="Historical time range">
+      <button type="button" class="range-btn active" data-analytics-range="1h">1H</button>
+      <button type="button" class="range-btn" data-analytics-range="6h">6H</button>
+      <button type="button" class="range-btn" data-analytics-range="24h">24H</button>
+      <button type="button" class="range-btn" data-analytics-range="7d">7D</button>
+    </div>
+    <div id="chart-query-volume"></div>
+  </div>
+
+  <div class="analytics-timeline-grid">
+    <div class="card"><h2>New domains discovered</h2><div id="chart-new-domains"></div></div>
+    <div class="card"><h2>New devices discovered</h2><div id="chart-new-devices"></div></div>
+  </div>
+
+  <div class="card">
+    <h2>Status breakdown</h2>
+    <div id="status-breakdown"></div>
+    <div class="stats-note">All known domains, grouped by their current AdGuard filtering outcome.</div>
+  </div>
+
+  <div class="analytics-feed-heading"><h2 style="margin:18px 4px 0">Recent activity</h2></div>
+  <div class="activity-feed-grid">
+    <div class="card"><h2>Recently active domains</h2><div id="activity-domains"></div></div>
+    <div class="card"><h2>Recently active devices</h2><div id="activity-devices"></div></div>
+  </div>
+
+  <div class="card"><h2>Top activity (all time)</h2><div class="stats-note" style="margin-top:0">Cumulative totals since the database was created.</div></div>
   <div class="chart-grid">
     <div class="card chart-card"><h2>Most requested domains</h2><div id="chart-domains" class="chart-list"></div><div class="stats-note">Based on recorded DNS requests.</div></div>
     <div class="card chart-card"><h2>Most active devices</h2><div id="chart-devices" class="chart-list"></div><div class="stats-note">Ranked by total recorded requests.</div></div>
@@ -271,6 +348,7 @@ function setActiveTab(name){
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
   try{ localStorage.setItem('dnsInspectorTab', name); }catch(e){}
+  if (typeof window.onAnalyticsTabChange === 'function') window.onAnalyticsTabChange(name);
 }
 function chartBars(elId, items){
   const el=document.getElementById(elId); if(!el) return;
@@ -318,7 +396,7 @@ async function refresh(force=false){
   showRefreshStatus();
   if(refreshInFlight){ refreshPending=true; return; }
   refreshInFlight=true;
-  try{const r=await fetch(buildStateUrl(),{cache:'no-store'});if(!r.ok)return;const data=await r.json();renderRecent(data.recent);updateNewDetection(data.recent);renderRecentControls(data.recent_meta,data.filter_options);if(initialDomainSnapshot&&data.recent_meta?.new_domains?.length)showNewBanner(data.recent_meta.new_domains);renderClients(data.clients);renderStats(data.stats);renderObservability(data.observability);if(data.inspect_html!==null)document.getElementById('inspect-root').innerHTML=data.inspect_html;const stamp=formatUpdated(data.updated);document.getElementById('last-update-time').textContent=stamp.time;document.getElementById('last-update-date').textContent=stamp.date}catch(e){console.debug('refresh failed',e)}finally{hideRefreshStatus();refreshInFlight=false;if(refreshPending){refreshPending=false;scheduleRefresh(0)}else{scheduleRefresh(refreshMs)}}}
+  try{const r=await fetch(buildStateUrl(),{cache:'no-store'});if(!r.ok)return;const data=await r.json();renderRecent(data.recent);updateNewDetection(data.recent);renderRecentControls(data.recent_meta,data.filter_options);if(initialDomainSnapshot&&data.recent_meta?.new_domains?.length)showNewBanner(data.recent_meta.new_domains);renderClients(data.clients);renderStats(data.stats);renderObservability(data.observability);if(data.live)pushLiveSample(data.live.queries_in_window,data.live.window_seconds);if(data.inspect_html!==null)document.getElementById('inspect-root').innerHTML=data.inspect_html;const stamp=formatUpdated(data.updated);document.getElementById('last-update-time').textContent=stamp.time;document.getElementById('last-update-date').textContent=stamp.date}catch(e){console.debug('refresh failed',e)}finally{hideRefreshStatus();refreshInFlight=false;if(refreshPending){refreshPending=false;scheduleRefresh(0)}else{scheduleRefresh(refreshMs)}}}
 document.querySelectorAll('[data-status-filter]').forEach(b=>b.addEventListener('click',()=>{recentFilters.status=b.dataset.statusFilter||'';applyRecentFilterChanges()}));document.getElementById('new-filter')?.addEventListener('click',()=>{recentFilters.newOnly=!recentFilters.newOnly;applyRecentFilterChanges()});for(const [id,key] of [['classification-filter','classification'],['severity-filter','severity'],['device-filter','device'],['vendor-filter','vendor']])document.getElementById(id)?.addEventListener('change',e=>{recentFilters[key]=e.target.value;applyRecentFilterChanges()});document.getElementById('page-size')?.addEventListener('change',e=>{recentFilters.page_size=Number(e.target.value)||50;applyRecentFilterChanges()});document.getElementById('page-prev')?.addEventListener('click',()=>{if(recentFilters.page>1){recentFilters.page--;requestRefresh()}});document.getElementById('page-next')?.addEventListener('click',()=>{if(recentFilters.page<recentMeta.pages){recentFilters.page++;requestRefresh()}});
 const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;loadDeviceLabels().then(()=>{renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();placeDeviceLabelsInColumn();});requestRefresh();
 </script>
@@ -326,6 +404,120 @@ const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('
 function observabilityDuration(seconds){let s=Math.max(0,Math.floor(Number(seconds)||0));const d=Math.floor(s/86400);s%=86400;const h=Math.floor(s/3600);s%=3600;const m=Math.floor(s/60);s%=60;if(d)return `${d}d ${h}h ${m}m`;if(h)return `${h}h ${m}m ${s}s`;if(m)return `${m}m ${s}s`;return `${s}s`}
 function observabilityRam(value){const mb=Number(value);return Number.isFinite(mb)?`${mb.toFixed(mb>=100?0:1)} MB`:'—'}
 function renderObservability(d){if(!d)return;const u=document.getElementById('obs-uptime');const m=document.getElementById('obs-memory');if(u)u.textContent=`Uptime ${observabilityDuration(d.uptime_seconds)}`;if(m)m.textContent=`RAM ${observabilityRam(d.ram_mb)}`}
+</script>
+<script>
+// The live queries-per-window sample rides the existing /api/state refresh
+// loop in the first <script> block (see pushLiveSample below) rather than a
+// second high-frequency timer. Only the historical/status view below gets
+// its own timer, and it ticks at the same cadence as that existing loop and
+// only while the Analytics tab is actually visible.
+const ANALYTICS_LIVE_MAX_SAMPLES = 100;
+let analyticsLiveSamples = [];
+let analyticsRange = '1h';
+let analyticsFullTimer = null;
+
+function svgSparkPath(points, w, h, pad){
+  pad = pad == null ? 4 : pad;
+  const vals = points.map(p=>p.count).filter(v=>v!=null && Number.isFinite(v));
+  const max = Math.max(1, ...vals);
+  const n = points.length;
+  const stepX = n > 1 ? (w - 2*pad) / (n - 1) : 0;
+  let d = ''; let started = false;
+  points.forEach((p, i) => {
+    const x = pad + i * stepX;
+    if (p.count == null || !Number.isFinite(p.count)) { started = false; return; }
+    const y = h - pad - (p.count / max) * (h - 2 * pad);
+    d += (started ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
+    started = true;
+  });
+  return d.trim();
+}
+function renderTimelineChart(elId, points, colorVar, unitLabel){
+  const el = document.getElementById(elId); if (!el) return;
+  const pts = points || [];
+  const hasData = pts.some(p => p.count != null);
+  if (!hasData){ el.innerHTML = '<div class="sub">No data yet.</div>'; return; }
+  const w = 600, h = 120;
+  const d = svgSparkPath(pts, w, h);
+  const vals = pts.map(p=>p.count).filter(v=>v!=null);
+  const peak = vals.length ? Math.max(...vals) : 0;
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="history-svg" preserveAspectRatio="none" role="img" aria-label="${esc(unitLabel||'activity over time')}"><path d="${esc(d)}" fill="none" stroke="var(${colorVar})" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="stats-note">${esc(unitLabel||'')} &middot; peak ${esc(peak)}</div>`;
+}
+const STATUS_COLOR_VAR = {Allowed:'--sem-ok', Blocked:'--sem-blocked', Mixed:'--sem-warn', Unknown:'--sem-info'};
+function renderStatusBreakdown(breakdown){
+  const el = document.getElementById('status-breakdown'); if (!el) return;
+  const b = breakdown || {};
+  const total = Math.max(1, Number(b.All)||0);
+  const keys = ['Allowed','Blocked','Mixed','Unknown'];
+  const bar = keys.map(k => { const v = Number(b[k])||0; const pct = (v/total*100).toFixed(2); return v ? `<div class="status-seg" style="width:${pct}%;background:var(${STATUS_COLOR_VAR[k]})" title="${esc(k)}: ${esc(v)}"></div>` : ''; }).join('');
+  const legend = keys.map(k => `<span class="legend-item"><span class="legend-dot" style="background:var(${STATUS_COLOR_VAR[k]})"></span>${esc(k)} <b>${esc(Number(b[k])||0)}</b></span>`).join('');
+  el.innerHTML = `<div class="status-bar">${bar}</div><div class="legend-row">${legend}</div>`;
+}
+function statusSemClass(status){
+  if (status === 'Blocked') return 'sem-blocked';
+  if (status === 'Allowed') return 'sem-ok';
+  if (status === 'Mixed') return 'sem-warn';
+  return 'sem-info';
+}
+function renderRecentActivity(domains, devices){
+  const dEl = document.getElementById('activity-domains');
+  if (dEl){
+    const rows = domains || [];
+    dEl.innerHTML = rows.length ? rows.map(r => `<div class="activity-row"><span><span class="sem-dot ${statusSemClass(r.status)}"></span><a href="/search?q=${encodeURIComponent(r.domain)}">${esc(r.domain)}</a></span><span class="sub">${esc(r.status)} &middot; ${esc(ageText(r.last_seen))} ago</span></div>`).join('') : '<div class="sub">No recent activity yet.</div>';
+  }
+  const vEl = document.getElementById('activity-devices');
+  if (vEl){
+    const rows = devices || [];
+    vEl.innerHTML = rows.length ? rows.map(d => `<div class="activity-row"><span><span class="sem-dot sem-live"></span><a href="/device?key=${encodeURIComponent(d.device_key)}">${esc(d.label)}</a></span><span class="sub">${esc(ageText(d.last_seen))} ago &middot; ${esc(d.requests)} total</span></div>`).join('') : '<div class="sub">No recent activity yet.</div>';
+  }
+}
+function renderLiveHero(windowSeconds){
+  const rateEl = document.getElementById('live-rate-value');
+  const latest = analyticsLiveSamples[analyticsLiveSamples.length - 1];
+  if (rateEl) rateEl.textContent = latest ? latest.count : '—';
+  renderTimelineChart('live-sparkline', analyticsLiveSamples, '--sem-live', `Queries in the last ${windowSeconds||60}s`);
+}
+function pushLiveSample(n, windowSeconds){
+  analyticsLiveSamples.push({count: Number(n)||0});
+  if (analyticsLiveSamples.length > ANALYTICS_LIVE_MAX_SAMPLES) analyticsLiveSamples.shift();
+  renderLiveHero(windowSeconds);
+}
+async function fetchAnalyticsFull(){
+  try{
+    const r = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`, {cache:'no-store'});
+    if (!r.ok) return;
+    const data = await r.json();
+    renderTimelineChart('chart-query-volume', data.series?.queries?.points, '--sem-info', 'DNS queries');
+    renderTimelineChart('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
+    renderTimelineChart('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
+    renderStatusBreakdown(data.status_breakdown);
+    renderRecentActivity(data.recent_domains, data.recent_devices);
+    const tAllowed=document.getElementById('tile-allowed'); if(tAllowed) tAllowed.textContent = data.status_breakdown?.Allowed ?? '—';
+    const tBlocked=document.getElementById('tile-blocked'); if(tBlocked) tBlocked.textContent = data.status_breakdown?.Blocked ?? '—';
+    const tDevices=document.getElementById('tile-devices'); if(tDevices) tDevices.textContent = data.active_devices ?? '—';
+    const tNewDomains=document.getElementById('tile-new-domains'); if(tNewDomains) tNewDomains.textContent = data.new_domains_24h ?? '—';
+    document.querySelectorAll('[data-analytics-range]').forEach(b => b.classList.toggle('active', b.dataset.analyticsRange === analyticsRange));
+  }catch(e){ console.debug('analytics refresh failed', e); }
+}
+function startAnalyticsPolling(){
+  if (analyticsFullTimer) return;
+  renderLiveHero();
+  fetchAnalyticsFull();
+  analyticsFullTimer = setInterval(fetchAnalyticsFull, refreshMs);
+}
+function stopAnalyticsPolling(){
+  if (analyticsFullTimer){ clearInterval(analyticsFullTimer); analyticsFullTimer = null; }
+}
+document.querySelectorAll('[data-analytics-range]').forEach(b => b.addEventListener('click', () => {
+  analyticsRange = b.dataset.analyticsRange;
+  document.querySelectorAll('[data-analytics-range]').forEach(x => x.classList.toggle('active', x === b));
+  fetchAnalyticsFull();
+}));
+function analyticsTabChanged(name){
+  if (name === 'analytics') startAnalyticsPolling(); else stopAnalyticsPolling();
+}
+window.onAnalyticsTabChange = analyticsTabChanged;
+analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'overview');
 </script></body></html>
 """
 
@@ -391,6 +583,10 @@ def init_db():
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_processed_seen ON processed_queries(seen_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_domains_last_seen ON domains(last_seen)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_domains_first_seen ON domains(first_seen)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_devices_last_seen ON devices(last_seen)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_devices_first_seen ON devices(first_seen)")
         c.execute("""CREATE TABLE IF NOT EXISTS ip_ping_status(
             ip TEXT PRIMARY KEY,
             last_checked REAL NOT NULL,
@@ -2385,11 +2581,152 @@ def get_stats(limit=10):
     }
 
 
+# --- Analytics: live activity and historical trends ---------------------
+#
+# These read from data the ingestion pipeline already persists (query
+# fingerprints with timestamps in `processed_queries`, `first_seen`/
+# `last_seen` on `domains` and `devices`). No new sampling pipeline or
+# time-series storage is introduced; history is only as deep as what is
+# already retained (`processed_queries` is capped at 100k rows, see
+# `ingest()`), and buckets older than the oldest retained row are reported
+# as `None` rather than a fabricated zero.
+
+ANALYTICS_RANGE_OPTIONS = ["1h", "6h", "24h", "7d"]
+ANALYTICS_LIVE_WINDOW_SECONDS = 60
+ANALYTICS_ACTIVE_DEVICE_WINDOW_SECONDS = 300
+
+_ANALYTICS_RANGES = {
+    "1h": (3600, 60, 60, "Last hour"),
+    "6h": (21600, 300, 72, "Last 6 hours"),
+    "24h": (86400, 900, 96, "Last 24 hours"),
+    "7d": (604800, 7200, 84, "Last 7 days"),
+}
+
+
+def _analytics_range(range_key):
+    return _ANALYTICS_RANGES.get(range_key, _ANALYTICS_RANGES["1h"])
+
+
+def _parse_iso(value):
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _bucket_timestamps(timestamps, range_seconds, bucket_seconds, bucket_count, now_dt):
+    buckets = [0] * bucket_count
+    start = now_dt - timedelta(seconds=range_seconds)
+    for raw in timestamps:
+        dt = _parse_iso(raw)
+        if dt is None:
+            continue
+        offset = (dt - start).total_seconds()
+        if offset < 0:
+            continue
+        idx = int(offset // bucket_seconds)
+        if 0 <= idx < bucket_count:
+            buckets[idx] += 1
+    return [{"t": (start + timedelta(seconds=i * bucket_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
+
+
+def get_query_volume_series(range_key):
+    range_seconds, bucket_seconds, bucket_count, label = _analytics_range(range_key)
+    now_dt = datetime.now(timezone.utc)
+    start = now_dt - timedelta(seconds=range_seconds)
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        min_seen_at = c.execute("SELECT MIN(seen_at) FROM processed_queries").fetchone()[0]
+        rows = c.execute("SELECT seen_at FROM processed_queries WHERE seen_at>=? ORDER BY seen_at ASC", (start.isoformat(),)).fetchall()
+    points = _bucket_timestamps([r[0] for r in rows], range_seconds, bucket_seconds, bucket_count, now_dt)
+    min_dt = _parse_iso(min_seen_at)
+    for point in points:
+        if min_dt is None or _parse_iso(point["t"]) < min_dt:
+            point["count"] = None
+    return {"range": range_key, "label": label, "bucket_seconds": bucket_seconds, "points": points}
+
+
+def _first_seen_series(table, range_key):
+    if table not in ("domains", "devices"):
+        raise ValueError("unsupported table for first-seen series")
+    range_seconds, bucket_seconds, bucket_count, label = _analytics_range(range_key)
+    now_dt = datetime.now(timezone.utc)
+    start = now_dt - timedelta(seconds=range_seconds)
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        rows = c.execute(f"SELECT first_seen FROM {table} WHERE first_seen>=? AND first_seen<>''", (start.isoformat(),)).fetchall()
+    points = _bucket_timestamps([r[0] for r in rows], range_seconds, bucket_seconds, bucket_count, now_dt)
+    return {"range": range_key, "label": label, "bucket_seconds": bucket_seconds, "points": points}
+
+
+def get_new_domains_series(range_key):
+    return _first_seen_series("domains", range_key)
+
+
+def get_new_devices_series(range_key):
+    return _first_seen_series("devices", range_key)
+
+
+def get_status_breakdown():
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        row = c.execute("SELECT SUM(CASE WHEN blocked_requests=0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests=0 AND allowed_requests>0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests>0 THEN 1 ELSE 0 END), COUNT(*) FROM domains").fetchone()
+    unknown, allowed, blocked, mixed, total = (int(v or 0) for v in row)
+    return {"Unknown": unknown, "Allowed": allowed, "Blocked": blocked, "Mixed": mixed, "All": total}
+
+
+def get_recent_activity(limit=12):
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        domain_rows = c.execute("SELECT domain,last_seen,current_status,requests FROM domains ORDER BY last_seen DESC LIMIT ?", (limit,)).fetchall()
+        device_rows = c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key),last_seen,request_count FROM devices ORDER BY last_seen DESC LIMIT ?", (limit,)).fetchall()
+    domains = [{"domain": d, "last_seen": ls, "status": st or "Unknown", "requests": int(r or 0)} for d, ls, st, r in domain_rows]
+    devices = [{"device_key": k, "label": label, "last_seen": ls, "requests": int(r or 0)} for k, label, ls, r in device_rows]
+    return {"domains": domains, "devices": devices}
+
+
+def _analytics_live_snapshot(window_seconds=ANALYTICS_LIVE_WINDOW_SECONDS):
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=window_seconds)).isoformat()
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        count = int(c.execute("SELECT COUNT(*) FROM processed_queries WHERE seen_at>=?", (cutoff,)).fetchone()[0] or 0)
+    return {"updated": utcnow(), "window_seconds": window_seconds, "queries_in_window": count}
+
+
+def _active_devices_count(window_seconds=ANALYTICS_ACTIVE_DEVICE_WINDOW_SECONDS):
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=window_seconds)).isoformat()
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        return int(c.execute("SELECT COUNT(*) FROM devices WHERE last_seen>=?", (cutoff,)).fetchone()[0] or 0)
+
+
+def analytics_payload(range_key="1h"):
+    if range_key not in ANALYTICS_RANGE_OPTIONS:
+        range_key = "1h"
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        new_domains_24h = int(c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=?", (cutoff_24h,)).fetchone()[0] or 0)
+    activity = get_recent_activity()
+    return {
+        "updated": utcnow(),
+        "range": range_key,
+        "range_options": ANALYTICS_RANGE_OPTIONS,
+        "series": {
+            "queries": get_query_volume_series(range_key),
+            "new_domains": get_new_domains_series(range_key),
+            "new_devices": get_new_devices_series(range_key),
+        },
+        "status_breakdown": get_status_breakdown(),
+        "recent_domains": activity["domains"],
+        "recent_devices": activity["devices"],
+        "active_devices": _active_devices_count(),
+        "new_domains_24h": new_domains_24h,
+        "live": _analytics_live_snapshot(),
+    }
+
+
 def state_payload(q="",status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter="",page=1,page_size=50):
     result=inspect_domain(q) if q else None
     recent=get_recent(page=page,page_size=page_size,status_filter=status_filter,new_only=new_only,classification_filter=classification_filter,severity_filter=severity_filter,device_filter=device_filter,vendor_filter=vendor_filter)
     uptime = _observability_uptime_seconds()
-    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":inspect_html(result) if result else None,"observability":{"uptime_seconds":round(uptime,1),"uptime_human":_observability_uptime_human(uptime),"ram_mb":_observability_rss_mb()}}
+    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":inspect_html(result) if result else None,"observability":{"uptime_seconds":round(uptime,1),"uptime_human":_observability_uptime_human(uptime),"ram_mb":_observability_rss_mb()},"live":_analytics_live_snapshot()}
 
 def client_display(c, device_key, count):
     row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
@@ -2519,7 +2856,27 @@ def api_state():
         return jsonify(state_payload(q=request.args.get("q","").strip(),status_filter=request.args.get("status","").strip(),new_only=request.args.get("new","0")=="1",classification_filter=request.args.get("classification","").strip(),severity_filter=request.args.get("severity","").strip(),device_filter=request.args.get("device","").strip(),vendor_filter=request.args.get("vendor","").strip(),page=int(request.args.get("page","1") or 1),page_size=int(request.args.get("page_size","50") or 50)))
     except Exception as e:
         print("state error:",repr(e),flush=True)
-        return jsonify({"updated":utcnow(),"recent":[],"recent_meta":{"page":1,"pages":1,"total":0,"page_size":50,"new_count":0,"new_domains":[],"status_counts":{}},"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":None,"error":str(e)}),200
+        return jsonify({"updated":utcnow(),"recent":[],"recent_meta":{"page":1,"pages":1,"total":0,"page_size":50,"new_count":0,"new_domains":[],"status_counts":{}},"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":None,"live":{"updated":utcnow(),"window_seconds":ANALYTICS_LIVE_WINDOW_SECONDS,"queries_in_window":0},"error":str(e)}),200
+
+
+# `/api/analytics` covers historical trends and the status/activity breakdown.
+# The live queries-per-window counter deliberately rides the existing
+# `/api/state` refresh loop above (see `state_payload`) instead of a second
+# polling loop, per the "Analytics Live Activity" note in ROADMAP.md.
+@app.route("/api/analytics")
+def api_analytics():
+    range_key = request.args.get("range", "1h").strip() or "1h"
+    try:
+        return jsonify(analytics_payload(range_key))
+    except Exception as e:
+        print("analytics error:", repr(e), flush=True)
+        empty_series = {"range": range_key, "label": "", "bucket_seconds": 0, "points": []}
+        return jsonify({"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS,
+                         "series": {"queries": empty_series, "new_domains": empty_series, "new_devices": empty_series},
+                         "status_breakdown": {}, "recent_domains": [], "recent_devices": [],
+                         "active_devices": 0, "new_domains_24h": 0,
+                         "live": {"updated": utcnow(), "window_seconds": ANALYTICS_LIVE_WINDOW_SECONDS, "queries_in_window": 0},
+                         "error": str(e)}), 200
 
 
 @app.route("/api/device/label", methods=["GET", "POST"])
