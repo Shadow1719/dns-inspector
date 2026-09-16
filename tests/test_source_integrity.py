@@ -70,17 +70,21 @@ def test_application_source_is_importable_without_preprocessing():
 
 
 def test_version_file_has_a_recognised_format():
-    """`MAJOR.MINOR.PATCH`, optionally with an explicit `-dev.N` suffix.
+    """`MAJOR.MINOR.PATCH`, optionally with one extra `.N` sub-release
+    component and/or an explicit `-dev.N` suffix.
 
     The 0.8.0 process document asks for plain release versions. This build was
     tagged `0.8.0-dev.1` on explicit instruction, so the pattern permits that
     form while still rejecting the free-form suffixes used before 0.8.0
-    (`-hotfix.2.4`, `-dev.16` style chains, arbitrary trailing text).
+    (`-hotfix.2.4`, `-dev.16` style chains, arbitrary trailing text). ROADMAP.md's
+    fixed `0.8.5 -> 0.8.5.1 -> 0.8.5.x -> 0.8.5.5 -> 0.8.6` release order
+    introduced a fourth `.N` sub-release component (0.8.5.1 was the first),
+    so the pattern permits exactly one of those too.
     """
     import re
 
     version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
-    assert re.fullmatch(r"\d+\.\d+\.\d+(-dev\.\d+)?", version), (
-        f"VERSION must be MAJOR.MINOR.PATCH with an optional -dev.N suffix, "
-        f"got {version!r}"
+    assert re.fullmatch(r"\d+\.\d+\.\d+(\.\d+)?(-dev\.\d+)?", version), (
+        f"VERSION must be MAJOR.MINOR.PATCH, optionally with one extra .N "
+        f"sub-release component and/or an optional -dev.N suffix, got {version!r}"
     )

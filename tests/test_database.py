@@ -11,6 +11,7 @@ EXPECTED_TABLES = {
     "device_ips",
     "devices",
     "dns_records_cache",
+    "domain_destination_ips",
     "domains",
     "enrichment_attempts",
     "hostname_cache",

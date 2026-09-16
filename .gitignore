@@ -7,6 +7,9 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
+# Operator-supplied local GeoIP database (see docs/GEOIP.md) -- never
+# committed; potentially large and license-restricted depending on source.
+/data/
 .DS_Store
 .vscode/
 .idea/
