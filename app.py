@@ -2992,8 +2992,6 @@ def _observability_payload():
     }
 
 
-@app.route('/api/observability')
-
 def _memory_diagnostics_container_summary(value):
     """Return cheap, shallow diagnostics for long-lived module globals."""
     try:
@@ -3095,6 +3093,7 @@ def _observability_payload():
     return payload
 
 
+@app.route('/api/observability')
 def api_observability():
     try:
         return jsonify(_observability_payload())

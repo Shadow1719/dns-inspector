@@ -60,3 +60,15 @@ def test_api_state_returns_json(client):
 
 def test_unknown_path_is_not_found(client):
     assert client.get("/no-such-page").status_code == 404
+
+
+def test_observability_returns_json(client):
+    """Regression test for D-1: the route decorator must bind api_observability."""
+    response = client.get("/api/observability")
+    assert response.status_code == 200
+
+    payload = json.loads(response.data)
+    assert set(payload) >= {"version", "uptime_seconds", "ram_mb"}
+
+    expected_version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert payload["version"] == expected_version

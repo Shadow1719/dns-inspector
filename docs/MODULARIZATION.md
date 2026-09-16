@@ -99,6 +99,10 @@ strict scope rule. Each is a candidate for a future version.
 
 ### D-1 — `/api/observability` is bound to the wrong function (broken in production)
 
+**Status: fixed in 0.8.1.** The decorator now directly precedes
+`def api_observability():`; regression tests assert both the response shape
+and the route-to-endpoint binding. Left below for history.
+
 **Severity: real defect, currently live.**
 
 A patch inserted code between the route decorator and the function it was meant

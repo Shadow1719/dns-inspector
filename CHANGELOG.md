@@ -2,6 +2,19 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.1]
+
+Fixes D-1: `/api/observability` returned HTTP 500 on every request because a
+blank line separated the `@app.route('/api/observability')` decorator from the
+function it was meant to decorate, binding the route to the
+`_memory_diagnostics_container_summary` helper instead of `api_observability`.
+
+- moved the decorator so it directly precedes `def api_observability():`
+- `_memory_diagnostics_container_summary` is no longer a registered route
+- added regression tests asserting `/api/observability` returns 200 with the
+  expected payload shape, and that the route maps to the `api_observability`
+  endpoint
+
 ## [0.8.0-dev.1]
 
 Foundation release. No new features, no intentional behaviour changes.
