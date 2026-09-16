@@ -2,6 +2,46 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.9.0-dev.1]
+
+First step of the Inspector BEMO v1 migration (issue #14). Establishes the
+BEMO Core boundary and migrates a small, already-tested DNS Inspector slice
+onto it. No intentional behaviour change for existing users.
+
+**BEMO Core** (`bemo_core/`)
+
+- `bemo_core.registry`: `InspectorInfo` + `InspectorRegistry`, the boundary
+  inspectors use to register themselves with the shell. Registration is
+  idempotent by slug.
+- `bemo_core.health`: `HealthLevel` (`ok` / `warning` / `error` / `unknown`)
+  and `InspectorHealth`, the generic health/status shape every inspector
+  reports through.
+- Observations, events, findings and evidence are deliberately not
+  introduced yet — there is only one inspector, so those primitives would be
+  speculative. They arrive with the next inspector or the correlation work.
+
+**First real module boundary** (`inspectors/dns/`)
+
+- Moved `query_status`, `status_summary`, `severity_for_classification` and
+  `_status_from_counts` out of `app.py`, unchanged, into
+  `inspectors/dns/status.py` — the Tier 1 "status" boundary that
+  `docs/MODULARIZATION.md` already identified as safe to extract first.
+  `app.py` imports them back in; existing tests keep passing unmodified.
+- `inspectors/dns/__init__.py` registers the DNS inspector with BEMO Core and
+  adds `health()`, a thin aggregate built from the existing status counts.
+
+**Shared BEMO UI shell**
+
+- The dashboard header now shows an "Inspector BEMO" nav strip above the
+  existing DNS Inspector view, driven by the live inspector registry. The
+  DNS Inspector UI itself is unchanged.
+- New `/api/inspectors` endpoint: the registered inspectors and their
+  current health, in the shape the shell nav consumes.
+
+**Not done in this slice** (tracked for follow-up, per the issue's delivery
+strategy): System/Storage/Services inspectors, observations/events/findings
+models, and cross-inspector correlation.
+
 ## [0.8.1]
 
 Fixes D-1: `/api/observability` returned HTTP 500 on every request because a

@@ -7,6 +7,7 @@
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
 - Foundation version: `0.8.0`
+- Current version: `0.9.0-dev.1` — first Inspector BEMO migration slice (issue #14)
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
 
@@ -15,6 +16,14 @@
 The 0.8.0 repository contains the complete application source; the historical generated Docker patch chain is no longer the runtime source of truth. The current architecture document records the concrete implementation map and the intended responsibility boundaries.
 
 The application is still structurally centered on `app.py`, with recognizable regions for configuration, UI, database helpers, AdGuard access, device/IP identity, ingestion, reachability, enrichment, presentation, analytics, workers/routes, diagnostics, and the entry point. Modularization is an active architectural direction, not a claim that those regions are already independent modules.
+
+As of `0.9.0-dev.1`, two real module boundaries exist alongside `app.py`:
+`bemo_core/` (shared inspector registry and health/status primitives) and
+`inspectors/dns/` (the first inspector boundary, currently holding the
+query-status/severity classification slice and DNS inspector registration).
+See "Inspector BEMO" in `docs/ARCHITECTURE.md` for the concrete map. The rest
+of DNS Inspector's behaviour has not moved yet — this is a first slice, not
+a completed migration.
 
 ## Important architectural principles
 
@@ -32,6 +41,8 @@ See `docs/ARCHITECTURE.md` for the detailed architecture and `docs/MODULARIZATIO
 ## Current development direction
 
 The project is evolving from a DNS dashboard toward the Inspector BEMO platform, with DNS Inspector as the first mature mini-inspector. The roadmap defines the broader product direction and should be treated as product intent rather than a statement that every planned feature already exists.
+
+Issue #14 is the accepted V1 product/architecture direction for this migration (see `docs/decisions/ADR-005-bemo-core-boundary.md`). `0.9.0-dev.1` is its first implementation slice: BEMO Core, a shared UI shell nav, and the first `inspectors/dns` boundary. System, Storage, Services and the other inspectors listed in issue #14 do not exist yet — only DNS is registered.
 
 ## Current collaboration state
 

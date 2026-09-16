@@ -48,3 +48,9 @@ Architecture and state documents describe intent and known state, but the actual
 **Status:** ACCEPTED
 
 A task contract defines its scope and constraints. An implementation agent must not expand a focused bug fix into an unrelated refactor merely because another improvement appears desirable. Broader architectural work should be a separate task/decision.
+
+## ADR-005 — BEMO Core boundary and the first inspector module
+
+**Status:** ACCEPTED
+
+Established `bemo_core/` (inspector registry, generic health/status) and `inspectors/dns/` (the first inspector boundary, currently the query-status/severity classification slice) as the first implementation step of the Inspector BEMO V1 direction (issue #14). Observations, events, findings and evidence primitives are deliberately deferred until a second inspector needs them. See `docs/decisions/ADR-005-bemo-core-boundary.md` for the full decision.

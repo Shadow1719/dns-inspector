@@ -6,14 +6,18 @@ DNS Inspector is a self-hosted, read-only network visibility and DNS intelligenc
 
 AdGuard Home remains the resolver/filter and query source. DNS Inspector imports query activity into local SQLite history, tracks devices, enriches domains with multiple evidence sources, and presents the result through a lightweight web UI.
 
-## Current build: v0.8.0-dev.1
+## Current build: v0.9.0-dev.1
 
-0.8.0 is a **foundation release**. It contains no new features and no intentional
+DNS Inspector is becoming the first inspector inside **Inspector BEMO**, a
+broader local infrastructure observability platform (see issue #14).
+`0.9.0-dev.1` is the first migration slice: a `bemo_core/` package for shared
+inspector registration/health primitives, and `inspectors/dns/` as the first
+real module boundary. No intentional behaviour change for existing users —
+see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#inspector-bemo-from-090-dev1)
+for what actually moved.
+
+0.8.0 was a **foundation release** with no new features and no intentional
 behaviour changes.
-
-This build is tagged `0.8.0-dev.1` and lives on the `dev` branch. The content is
-the 0.8.0 foundation exactly as described below; the suffix marks it as
-pre-integration. It becomes `0.8.0` when merged to `main`.
 
 Up to 0.7.14, the Docker image was not built from this repository. The Dockerfile
 copied sixteen `build_*.py` scripts into the image and ran them at build time,
@@ -126,6 +130,7 @@ outbound network. It runs in about two seconds.
 | `/device` | Device detail (`?key=`) |
 | `/ip` | IP detail (`?addr=`) |
 | `/health` | Health and runtime configuration |
+| `/api/inspectors` | BEMO Core inspector registry and health (currently DNS only) |
 | `/api/state` | Dashboard refresh payload |
 | `/api/device/label` | Read/write a manual device label |
 | `/api/ip/ping` | Trigger a reachability check |

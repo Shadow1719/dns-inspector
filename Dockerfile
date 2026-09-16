@@ -18,6 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # chain of sixteen `build_*.py` scripts here that rewrote app.py during the
 # build, which meant the image and the repository were never the same program.
 COPY app.py VERSION /app/
+COPY bemo_core /app/bemo_core
+COPY inspectors /app/inspectors
 COPY static /app/static
 
 RUN mkdir -p /data

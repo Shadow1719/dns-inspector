@@ -37,7 +37,7 @@ The ordering matters more than the names.
 | Boundary | Current location | Why it is safe |
 | --- | --- | --- |
 | `config` | lines 1–90 | Pure constant reads from the environment. Nothing imports back into it. |
-| `status` | `query_status`, `status_summary`, `_status_from_counts`, `severity_for_classification` | Pure functions, no I/O, already covered by tests. |
+| `status` | **Extracted in 0.9.0-dev.1.** Now `inspectors/dns/status.py`; `app.py` imports it back under the same names. | Pure functions, no I/O, already covered by tests — the first boundary moved, per the sequence below. |
 | `external_links` | `netify_url`, `dnschecker_url`, `mac_lookup_url`, `vendor_lookup_url`, `device_search_url` | String builders with no state. |
 
 ### Tier 2 — single clear owner, moderate coupling
@@ -77,10 +77,12 @@ Each of these is intended to be one version, in the sense the development proces
 uses — one focused change, independently testable.
 
 1. Fix `/api/observability` (see finding D-1). Small, isolated, adds an endpoint
-   test, and proves the new CI gate works on a real defect.
+   test, and proves the new CI gate works on a real defect. **Done in 0.8.1.**
 2. Extract `config` into a module. Lowest risk, and every later extraction
    depends on it.
-3. Extract the pure `status` helpers with their existing tests.
+3. Extract the pure `status` helpers with their existing tests. **Done in
+   0.9.0-dev.1**, as `inspectors/dns/status.py` rather than a bare `status`
+   module — see "Inspector BEMO" below.
 4. Establish a single database access helper so connection ownership is in one
    place, without changing the connection model itself.
 5. Extract `trackerdb` and `adguard`.
@@ -89,6 +91,25 @@ uses — one focused change, independently testable.
 
 Steps 1–5 do not require any behaviour change. Steps 6 and 7 do, and should be
 scoped accordingly.
+
+## Inspector BEMO: module boundaries become inspector boundaries
+
+Issue #14 reframes the modularization target: boundaries are no longer just
+`app.py` internals, they are inspectors registered with **BEMO Core**
+(`bemo_core/`) — a small, shared registry (`InspectorInfo`,
+`InspectorRegistry`) and generic health/status shape (`HealthLevel`,
+`InspectorHealth`).
+
+`inspectors/dns/` is the first inspector boundary, and today holds exactly the
+Tier 1 `status` slice above, plus registration and a thin `health()`
+aggregate. The rest of DNS Inspector's behaviour is still in `app.py`. Each
+later Tier 1/2/3 extraction should land inside `inspectors/dns/` going
+forward, following the same sequence, rather than as a bare top-level module.
+
+BEMO Core deliberately does not yet define observations, events, findings or
+evidence primitives (see the product direction in issue #14). Those are
+speculative with a single inspector and should be added once a second
+inspector (System, Storage, or Services) needs them, not before.
 
 ---
 

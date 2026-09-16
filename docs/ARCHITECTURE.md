@@ -79,6 +79,40 @@ SQLite writes and repeated reconciliation work should be avoided.
 
 ---
 
+## Inspector BEMO (from 0.9.0-dev.1)
+
+DNS Inspector is becoming the first inspector inside **Inspector BEMO**, a
+platform for observing more than DNS (see issue #14 for the full product
+direction). Two small packages now sit alongside `app.py`:
+
+```text
+bemo_core/            BEMO Core — shared primitives every inspector uses
+  registry.py            InspectorInfo, InspectorRegistry, get_registry()
+  health.py               HealthLevel, InspectorHealth
+
+inspectors/
+  dns/                 the first inspector boundary
+    status.py             query_status, status_summary, severity_for_classification,
+                           _status_from_counts — moved from app.py unchanged
+    __init__.py             register(version), health(blocked, allowed, unknown)
+```
+
+`app.py` imports these names back at module load and calls
+`dns_inspector.register(APP_VERSION)`, so existing behaviour and tests are
+unaffected — only the functions' location changed. The dashboard header
+renders a small BEMO shell nav (branding plus the live registry contents),
+and `/api/inspectors` exposes the registry as JSON.
+
+This is deliberately the *first* slice, not the whole migration: the bulk of
+DNS Inspector's logic (ingestion, identity, enrichment, analytics, the UI
+template) still lives in `app.py`. Further extractions land inside
+`inspectors/dns/` following the sequence in
+[MODULARIZATION.md](MODULARIZATION.md). BEMO Core gains observations,
+events, findings and evidence primitives only once a second inspector
+(System, Storage, or Services) actually needs them.
+
+---
+
 # Current implementation map (0.8.0)
 
 ## Build model

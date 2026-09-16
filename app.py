@@ -26,12 +26,28 @@ from flask import Flask, jsonify, render_template_string, request, send_file
 
 from pathlib import Path
 from contextlib import closing
+
+from bemo_core.health import HealthLevel, InspectorHealth
+from bemo_core.registry import get_registry
+import inspectors.dns as dns_inspector
+from inspectors.dns import (
+    ALLOWED_REASONS,
+    BLOCKED_REASONS,
+    UNKNOWN_REASONS,
+    _status_from_counts,
+    query_status,
+    severity_for_classification,
+    status_summary,
+)
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     with open(os.path.join(BASE_DIR, "VERSION"), "r", encoding="utf-8") as f:
         APP_VERSION = f.read().strip()
 except Exception:
     APP_VERSION = os.getenv("APP_VERSION", "dev")
+
+dns_inspector.register(APP_VERSION)
 
 
 def normalize_runtime_environment(value):
@@ -52,6 +68,8 @@ def _environment_render_context():
         "is_dev_environment": dev,
         "favicon_path": "/static/favicon-dev.svg" if dev else "/static/favicon.svg",
         "page_title": f"DNS Inspector DEV v{APP_VERSION}" if dev else "DNS Inspector",
+        "platform_name": "Inspector BEMO",
+        "registered_inspectors": [info.to_dict() for info in get_registry().list()],
     }
 
 
@@ -152,8 +170,18 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
 .dev-banner{position:sticky;top:0;z-index:1000;background:#db6d28;color:#0d1117;font-weight:800;text-align:center;padding:10px 16px;letter-spacing:.02em;border-radius:8px;margin-bottom:16px;border:2px solid #f0883e}
 .dev-badge{display:inline-block;background:#db6d28;color:#0d1117;font-weight:800;font-size:.5em;padding:2px 10px;border-radius:999px;vertical-align:middle;margin-left:10px;letter-spacing:.05em}
+.bemo-shell-nav{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+.bemo-brand{font-weight:800;letter-spacing:.02em;color:#8b949e;font-size:.82rem;text-transform:uppercase}
+.bemo-inspector-pill{display:inline-flex;align-items:center;padding:4px 10px;border-radius:999px;border:1px solid #30363d;background:#161b22;color:#8b949e;font-size:.78rem;font-weight:700}
+.bemo-inspector-pill.active{border-color:#58a6ff;color:#e6edf3;background:#11161d}
+.bemo-more-inspectors{color:#6e7681;font-size:.78rem}
 </style></head><body>
 {% if is_dev_environment %}<div class="dev-banner" role="alert">⚠️ DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</div>{% endif %}
+<nav class="bemo-shell-nav" aria-label="Inspector BEMO navigation">
+  <span class="bemo-brand">{{platform_name}}</span>
+  {% for inspector in registered_inspectors %}<span class="bemo-inspector-pill active">{{inspector.name}}</span>{% endfor %}
+  <span class="bemo-more-inspectors">System · Storage · Services — planned</span>
+</nav>
 <h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span>{% if is_dev_environment %} <span class="dev-badge">DEV</span>{% endif %}</h1>
 <div class="observability-strip" aria-label="Application runtime status">
   <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
@@ -886,59 +914,6 @@ def query_fingerprint(entry):
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-BLOCKED_REASONS = {
-    "FilteredBlackList",
-    "FilteredSafeBrowsing",
-    "FilteredParental",
-    "FilteredBlockedService",
-}
-ALLOWED_REASONS = {
-    "NotFilteredWhiteList",
-    "NotFilteredNotFound",
-    "Rewrite",
-    "RewriteEtcHosts",
-    "RewriteRule",
-    "FilteredSafeSearch",
-}
-UNKNOWN_REASONS = {
-    "NotFilteredError",
-    "FilteredInvalid",
-}
-
-def query_status(reason, original_response=None):
-    reason = str(reason or "")
-    if reason in BLOCKED_REASONS:
-        return "Blocked"
-    if reason in ALLOWED_REASONS:
-        return "Allowed"
-    if reason in UNKNOWN_REASONS:
-        return "Unknown"
-    # Do not infer "allowed" merely because an answer exists.  AdGuard's
-    # reason is the authoritative signal for query-log status.
-    return "Unknown"
-
-
-def status_summary(blocked, allowed, unknown):
-    if blocked and allowed:
-        return "Mixed", "mixed"
-    if blocked:
-        return "Blocked", "blocked"
-    if allowed:
-        return "Allowed", "allowed"
-    return "Unknown", "unknown"
-
-
-def severity_for_classification(classification):
-    mapping = {
-        "Known service": ("Info", "info"),
-        "Known ownership": ("Info", "info"),
-        "Telemetry / tracking": ("Low", "low"),
-        "Advertising": ("Medium", "medium"),
-        "Suspicious": ("High", "high"),
-    }
-    return mapping.get(classification, ("Unknown", "unknown"))
 
 
 def upsert_device(c, device_key, name, hostname, mac, ips, source, info, now, increment=True):
@@ -2126,18 +2101,6 @@ def get_filter_options():
     return {"classifications":["Known service","Telemetry / Tracking","Advertising","Suspicious","Unknown"],"severities":["Info","Low","Medium","High","Unknown"],"vendors":vendors,"devices":devices}
 
 
-def _status_from_counts(blocked, allowed):
-    blocked = int(blocked or 0)
-    allowed = int(allowed or 0)
-    if blocked and allowed:
-        return "Mixed", "mixed"
-    if blocked:
-        return "Blocked", "blocked"
-    if allowed:
-        return "Allowed", "allowed"
-    return "Unknown", "unknown"
-
-
 def get_recent(page=1,page_size=50,status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter=""):
     page=max(1,int(page or 1)); page_size=max(10,min(500,int(page_size or 50)))
     order_sql="first_seen DESC" if new_only else "requests DESC"
@@ -2564,6 +2527,23 @@ def ip_view():
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "version": APP_VERSION, "adguard": AGH_URL, "trackerdb": trackerdb_ready(), "poll_seconds": POLL_SECONDS, "ui_refresh_seconds": UI_REFRESH_SECONDS, "environment": RUNTIME_ENV})
+
+
+@app.route("/api/inspectors")
+def api_inspectors():
+    """BEMO Core inspector registry, as the shell navigation consumes it."""
+    status_counts = get_recent(page=1, page_size=10)["meta"]["status_counts"]
+    dns_health = dns_inspector.health(
+        blocked=status_counts.get("Blocked", 0),
+        allowed=status_counts.get("Allowed", 0),
+        unknown=status_counts.get("Unknown", 0),
+    )
+    inspectors = []
+    for info in get_registry().list():
+        payload = info.to_dict()
+        payload["health"] = dns_health.to_dict() if info.slug == dns_inspector.SLUG else InspectorHealth(HealthLevel.UNKNOWN).to_dict()
+        inspectors.append(payload)
+    return jsonify({"platform_name": "Inspector BEMO", "inspectors": inspectors})
 
 
 # === DEEP DEBUG BUNDLE PATCH 0.7.13-HF2 ===

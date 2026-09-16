@@ -48,6 +48,26 @@ def test_root_renders_the_dashboard(client):
     assert "DNS Inspector" in body
 
 
+def test_root_renders_the_bemo_shell_nav(client):
+    """The DNS view is now one inspector inside the shared BEMO shell."""
+    body = client.get("/").data.decode("utf-8")
+
+    assert "Inspector BEMO" in body
+    assert '<span class="bemo-inspector-pill active">DNS Inspector</span>' in body
+
+
+def test_api_inspectors_lists_the_registered_dns_inspector(client):
+    payload = json.loads(client.get("/api/inspectors").data)
+
+    assert payload["platform_name"] == "Inspector BEMO"
+    slugs = {inspector["slug"] for inspector in payload["inspectors"]}
+    assert slugs == {"dns"}
+
+    dns_entry = next(i for i in payload["inspectors"] if i["slug"] == "dns")
+    assert dns_entry["name"] == "DNS Inspector"
+    assert set(dns_entry["health"]) == {"level", "summary"}
+
+
 def test_api_state_returns_json(client):
     """The UI polls this endpoint; it must answer on an empty database."""
     response = client.get("/api/state")
