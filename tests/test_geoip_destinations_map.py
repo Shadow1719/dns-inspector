@@ -131,12 +131,12 @@ def test_normalize_public_ip_unwraps_ipv4_mapped_ipv6(app_module):
 def test_extract_observed_answer_ips_pulls_a_and_aaaa_values(app_module):
     entry = {
         "answer": [
-            {"type": "A", "value": "203.0.113.5"},
-            {"type": "AAAA", "value": "2001:db8::1"},
+            {"type": "A", "value": "8.8.8.8"},
+            {"type": "AAAA", "value": "2001:4860:4860::8888"},
             {"type": "CNAME", "value": "cdn.example.net."},
         ]
     }
-    assert app_module.extract_observed_answer_ips(entry) == ["203.0.113.5", "2001:db8::1"]
+    assert app_module.extract_observed_answer_ips(entry) == ["8.8.8.8", "2001:4860:4860::8888"]
 
 
 def test_extract_observed_answer_ips_drops_private_answers(app_module):
@@ -145,8 +145,8 @@ def test_extract_observed_answer_ips_drops_private_answers(app_module):
 
 
 def test_extract_observed_answer_ips_ignores_duplicate_values(app_module):
-    entry = {"answer": [{"type": "A", "value": "203.0.113.5"}, {"type": "A", "value": "203.0.113.5"}]}
-    assert app_module.extract_observed_answer_ips(entry) == ["203.0.113.5"]
+    entry = {"answer": [{"type": "A", "value": "8.8.8.8"}, {"type": "A", "value": "8.8.8.8"}]}
+    assert app_module.extract_observed_answer_ips(entry) == ["8.8.8.8"]
 
 
 def test_extract_observed_answer_ips_handles_missing_or_malformed_answer(app_module):
