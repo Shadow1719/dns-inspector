@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
 ARG APP_VERSION=dev
+ARG APP_ENV=production
 
 WORKDIR /app
 
@@ -23,9 +24,11 @@ RUN mkdir -p /data
 
 LABEL org.opencontainers.image.title="DNS Inspector" \
       org.opencontainers.image.description="Read-only local DNS visibility tool for AdGuard Home" \
-      org.opencontainers.image.version="$APP_VERSION"
+      org.opencontainers.image.version="$APP_VERSION" \
+      org.opencontainers.image.environment="$APP_ENV"
 
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONUNBUFFERED=1 \
+    DNS_INSPECTOR_ENV=$APP_ENV
 
 EXPOSE 8080
 
