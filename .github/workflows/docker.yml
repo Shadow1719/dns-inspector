@@ -2,10 +2,10 @@ name: Build and publish Docker image
 
 on:
   push:
-    branches: ["main", "dev-0.8"]
+    branches: ["main", "dev"]
     tags: ["v*.*.*"]
   pull_request:
-    branches: ["main", "dev-0.8"]
+    branches: ["main", "dev"]
   workflow_dispatch:
 
 permissions:
@@ -64,7 +64,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=stable,enable={{is_default_branch}}
-            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev-0.8' }}
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/dev' }}
             type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -73,6 +73,15 @@ jobs:
       - name: Read application version
         id: version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Select container environment
+        id: environment
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/dev" ]; then
+            echo "value=development" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=production" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Fetch official vendor favicons
         shell: bash
@@ -119,13 +128,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
+            APP_ENV=${{ steps.environment.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Verify the published image starts and answers /health
         run: |
           set -e
-          docker build -t dns-inspector:ci --build-arg APP_VERSION=${{ steps.version.outputs.version }} .
+          docker build -t dns-inspector:ci \
+            --build-arg APP_VERSION=${{ steps.version.outputs.version }} \
+            --build-arg APP_ENV=${{ steps.environment.outputs.value }} .
           docker run -d --name dns-inspector-ci -p 8080:8080 \
             -e DB_PATH=/data/inspector.db \
             -e TRACKERDB_URL=http://127.0.0.1:9/trackerdb.sql \
