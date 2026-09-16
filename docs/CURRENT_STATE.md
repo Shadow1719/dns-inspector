@@ -5,7 +5,7 @@
 ## Baseline
 
 - Repository: `Shadow1719/dns-inspector`
-- Working branch: `dev-0.8`
+- Working branch: `dev`
 - Foundation version: `0.8.0`
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
@@ -42,6 +42,15 @@ The canonical hand-off is:
 `decision -> task/ADR -> implementation -> tests -> Git commit -> current-state update`
 
 Do not rely on either model's memory to preserve project-specific decisions.
+
+## Branching model
+
+- `main` is the production/release branch.
+- `dev` is the active development/integration branch.
+- Feature/fix branches are created from `dev` and target `dev`.
+- Development work must not be committed directly to `main`.
+
+The previous `dev-0.8` branch name is retired as the active development branch.
 
 ## Recent implementation note
 
