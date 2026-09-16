@@ -9,8 +9,12 @@ on:
 jobs:
   claude:
     if: >-
-      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
-      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude'))
+      (github.event_name == 'issue_comment' &&
+        startsWith(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' &&
+        startsWith(github.event.comment.body, '@claude') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,11 +24,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: dev-0.8
+          ref: dev
           fetch-depth: 0
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          base_branch: dev-0.8
-          show_full_output: true
+          base_branch: dev
