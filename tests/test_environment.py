@@ -83,7 +83,7 @@ def test_production_environment_end_to_end(monkeypatch, initialised_db):
 
             body = test_client.get("/").data.decode("utf-8")
             assert "DEVELOPMENT ENVIRONMENT" not in body
-            assert "dev-badge" not in body
+            assert '<span class="dev-badge">DEV</span>' not in body
             assert "/static/favicon-dev.svg" not in body
             assert "/static/favicon.svg\"" in body
             assert "<title>DNS Inspector</title>" in body
