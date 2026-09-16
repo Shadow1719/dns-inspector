@@ -1,4 +1,3 @@
-# === SQLITE CLOSE PATCH 0.7.13-HF2.3 ===
 import hashlib
 import ipaddress
 import json
@@ -223,19 +222,17 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .analytics-range-controls{display:flex;gap:6px;align-items:center;margin:14px 0;flex-wrap:wrap}
 .range-btn{padding:6px 12px;font-size:.8rem;border-radius:999px}
 .range-btn.active{background:#16395c;border-color:#58a6ff;color:#e6edf3}
-.analytics-timeline-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .status-bar{display:flex;height:16px;border-radius:999px;overflow:hidden;border:1px solid #30363d;background:#161b22}
 .status-seg{height:100%;min-width:0}
 .legend-row{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font-size:.8rem;color:#c9d1d9}
 .legend-item{display:inline-flex;align-items:center;gap:6px}
 .legend-dot{width:9px;height:9px;border-radius:50%;flex:0 0 9px}
-.activity-feed-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 .activity-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid #21262d;font-size:.85rem}
 .activity-row:last-child{border-bottom:0}
 .activity-row .sub{color:#8b949e;font-size:.76rem;white-space:nowrap}
 .sem-dot{width:8px;height:8px;border-radius:50%;flex:0 0 8px;display:inline-block;margin-right:6px}
 .sem-ok{background:var(--sem-ok)}.sem-info{background:var(--sem-info)}.sem-blocked{background:var(--sem-blocked)}.sem-warn{background:var(--sem-warn)}.sem-crit{background:var(--sem-crit)}.sem-live{background:var(--sem-live)}
-@media(max-width:900px){.analytics-hero,.analytics-timeline-grid,.activity-feed-grid,.stat-tiles{grid-template-columns:1fr}}
+@media(max-width:900px){.analytics-hero,.stat-tiles{grid-template-columns:1fr}}
 
 /* ============================================================
    Inspector BEMO design system
@@ -362,8 +359,6 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px}
 
 /* ---- analytics: the live panel is a first-class component ---- */
-.analytics-feed-heading{margin:20px 4px 0}
-.analytics-feed-heading h2{margin:0;padding:0;border:none}
 .live-card{background:linear-gradient(165deg,rgba(45,212,200,.09),var(--surface-1) 55%);border-color:rgba(45,212,200,.35)}
 .live-card::before{background:radial-gradient(620px 220px at 0% 0%,rgba(45,212,200,.16),transparent 62%)}
 .live-title{color:var(--text-primary);font-size:.86rem;text-transform:uppercase;letter-spacing:.06em}
@@ -415,15 +410,80 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
 .settings-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--border)}
 @media(max-width:640px){.settings-body{flex-direction:column;max-height:70vh}.settings-nav{flex-direction:row;flex-wrap:wrap;flex:0 0 auto;border-right:0;border-bottom:1px solid var(--border)}.settings-row{flex-direction:column;align-items:flex-start}.settings-control{justify-content:flex-start}}
 
-/* ---- Analytics visual styles: same metric, three presentations ---- */
-.metric-visual svg{width:100%;height:120px;display:block}
+/* ---- Analytics Visual 2.0 (0.8.5): same metric, three distinct presentations ---- */
+.metric-visual{position:relative}
+.metric-visual svg{width:100%;height:var(--metric-h,120px);display:block;transition:height var(--transition)}
+.metric-visual .metric-marker-dot{r:3.6;stroke:var(--surface-0);stroke-width:1.4}
+.metric-visual .metric-marker-dot title{pointer-events:none}
+.metric-readout{display:flex;gap:16px;margin-top:8px;flex-wrap:wrap}
+.metric-readout-item{font-size:.7rem;color:var(--text-tertiary);display:flex;flex-direction:column;gap:1px;text-transform:uppercase;letter-spacing:.04em}
+.metric-readout-item b{font-size:.94rem;color:var(--text-primary);font-variant-numeric:tabular-nums;font-family:var(--font-mono);text-transform:none;letter-spacing:normal}
+
+/* Digital: numeric-first hierarchy, hard-edged bars + line, radial ring readout */
+.visual-digital .metric-grid line{stroke:var(--border);stroke-width:1;opacity:.6}
+.visual-digital .metric-bars rect{fill:var(--accent-soft)}
+.visual-digital .metric-line{stroke-linecap:butt;stroke-linejoin:miter}
 .live-card.visual-digital .live-rate{font-family:var(--font-mono);letter-spacing:.02em}
+.digital-ring{display:flex;justify-content:center;margin:2px 0 4px}
+.digital-ring svg{width:84px;height:84px}
+.digital-ring text{font-family:var(--font-mono);fill:var(--text-primary);font-weight:800}
+
+/* Analog: restrained instrument-cluster gauge with real tick marks and a needle */
+.live-card.visual-analog .live-rate{display:none}
+.analog-gauge{display:flex;justify-content:center;margin:2px 0 6px}
+.analog-gauge svg{width:196px;height:114px}
+.analog-gauge .gauge-tick{stroke:var(--border-strong);stroke-width:1.4}
+.analog-gauge .gauge-tick-major{stroke:var(--text-tertiary);stroke-width:2}
+.analog-gauge .gauge-arc-bg{stroke:var(--border)}
+.analog-gauge .gauge-needle{stroke:var(--text-primary);stroke-width:2.5;stroke-linecap:round}
+.analog-gauge .gauge-hub{fill:var(--text-primary)}
+.analog-gauge .gauge-value{font-family:var(--font-mono);fill:var(--text-primary);font-weight:800}
+.analog-gauge .gauge-label{fill:var(--text-tertiary);letter-spacing:.06em}
+.visual-analog .metric-line{stroke-linecap:round;stroke-linejoin:round}
+.visual-analog .metric-grid line{stroke:var(--border);stroke-width:1;stroke-dasharray:2 3;opacity:.7}
+
+/* Specter: oscilloscope / radar activity trace with glow, sweep and a live pulse */
 .live-card.visual-specter .live-rate{text-shadow:0 0 16px var(--accent-soft),0 0 2px var(--accent)}
 .live-card.visual-specter .live-title{color:var(--accent)}
 .visual-specter .metric-line{filter:drop-shadow(0 0 5px var(--accent-soft))}
-.visual-analog .metric-line{stroke-linecap:round}
-.live-gauge{display:flex;justify-content:center;margin:2px 0 4px}
-.live-gauge svg{width:130px;height:70px}
+.visual-specter .metric-grid line{stroke:var(--accent-soft);stroke-width:1;opacity:.4}
+.visual-specter .metric-pulse{fill:var(--accent);filter:drop-shadow(0 0 4px var(--accent))}
+.visual-specter .metric-sweep{stroke:var(--accent);stroke-width:1;opacity:.55}
+.specter-radar{display:flex;justify-content:center;margin:2px 0 4px}
+.specter-radar svg{width:120px;height:120px}
+.specter-radar .radar-ring{stroke:var(--accent-soft);fill:none}
+.specter-radar .radar-sweep{stroke:var(--accent);filter:drop-shadow(0 0 4px var(--accent))}
+.specter-radar .radar-value{fill:var(--text-primary);font-family:var(--font-mono);font-weight:800}
+@keyframes dnsInspectorSweepX{from{transform:translateX(-4px)}to{transform:translateX(604px)}}
+@keyframes dnsInspectorRadarSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+html:not([data-motion="reduced"]) .visual-specter .metric-sweep{animation:dnsInspectorSweepX 3.4s linear infinite}
+html:not([data-motion="reduced"]) .visual-specter .metric-pulse{animation:dnsInspectorPulse 1.6s ease-in-out infinite}
+html:not([data-motion="reduced"]) .specter-radar .radar-sweep-group{animation:dnsInspectorRadarSpin 3.6s linear infinite;transform-origin:60px 60px}
+html[data-motion="reduced"] .metric-sweep,html[data-motion="reduced"] .radar-sweep-group{display:none}
+
+/* ---- Dashboard Builder (0.8.5): customizable Analytics widget grid ---- */
+.dash-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0}
+.dash-toolbar .settings-select{padding:7px 10px;font-size:.8rem}
+.dash-customize-btn{border-radius:var(--radius-pill)}
+.dash-customize-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
+.dash-hint{color:var(--text-tertiary);font-size:.78rem}
+.dash-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;align-items:start}
+.dash-widget{grid-column:span 2;min-width:0}
+.dash-widget[data-w="half"]{grid-column:span 1}
+.dash-widget[data-hidden="1"]{display:none}
+.dash-grid.dash-customizing .dash-widget[data-hidden="1"]{display:block;opacity:.5}
+.dash-grid.dash-customizing .dash-widget{outline:1px dashed var(--border-strong);outline-offset:3px;border-radius:var(--radius-lg)}
+.dash-grid.dash-customizing .dash-widget[data-dragging="1"]{opacity:.4}
+.dash-widget-head{display:none;align-items:center;gap:6px;margin:0 0 12px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm)}
+.dash-grid.dash-customizing .dash-widget-head{display:flex}
+.dash-widget-head .dash-drag-handle{color:var(--text-tertiary);flex:0 0 auto;display:flex;cursor:grab;padding:2px 4px}
+.dash-widget-head .dash-widget-title{flex:1;font-size:.74rem;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dash-widget-head button{padding:4px 8px;font-size:.72rem;border-radius:var(--radius-sm);line-height:1.2}
+.dash-widget[data-h="compact"] .metric-visual{--metric-h:78px}
+.dash-widget[data-h="tall"] .metric-visual{--metric-h:196px}
+.dash-widget[data-h="compact"] .dash-scroll,.dash-widget[data-h="compact"] .chart-list{max-height:120px;overflow:auto}
+.dash-widget[data-h="tall"] .dash-scroll,.dash-widget[data-h="tall"] .chart-list{max-height:440px;overflow:auto}
+@media(max-width:900px){.dash-grid{grid-template-columns:1fr}.dash-widget{grid-column:1/-1!important}}
 </style></head><body>
 {% if is_dev_environment %}<div class="dev-banner" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4"/><circle cx="12" cy="17.5" r=".1" fill="currentColor" stroke="currentColor" stroke-width="2"/></svg><span>DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</span></div>{% endif %}
 <header class="app-shell">
@@ -492,6 +552,9 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
             <button type="button" class="settings-choice" data-style-choice="analog">Analog</button>
             <button type="button" class="settings-choice" data-style-choice="specter">Specter</button>
           </div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Dashboard layout</b><small>Reorder, resize, show/hide and choose presets for the Analytics widgets, in the Analytics tab</small></div>
+          <div class="settings-control"><button type="button" onclick="document.getElementById('settings-close-btn')?.click();document.querySelector('.tab-btn[data-tab=analytics]')?.click();document.getElementById('dash-customize-btn')?.click();">Customize dashboard</button></div>
         </div>
       </section>
       <section class="settings-section" data-settings-panel="monitoring">
@@ -598,6 +661,25 @@ function metricSmoothRun(pts){
   return d + `L${last.x.toFixed(1)} ${last.y.toFixed(1)}`;
 }
 function metricSmoothPath(xy){ return metricSplitRuns(xy).map(metricSmoothRun).join(' '); }
+/* A "spike" is a bucket whose count is a real statistical outlier against the
+   other buckets in the same series (mean + 2 standard deviations, with a
+   floor so a handful of near-identical low counts don't all qualify). No
+   severity or cause is inferred -- only that the observed count stands out. */
+function metricSpikeIndices(pts){
+  const vals = pts.map(p=>p.count).filter(v=>v!=null && Number.isFinite(v));
+  const idx = new Set();
+  if (vals.length < 6) return idx;
+  const mean = vals.reduce((a,b)=>a+b,0)/vals.length;
+  const variance = vals.reduce((a,b)=>a+(b-mean)*(b-mean),0)/vals.length;
+  const threshold = mean + Math.max(2*Math.sqrt(variance), mean*0.75, 1);
+  pts.forEach((p,i) => { if (p.count!=null && p.count > threshold) idx.add(i); });
+  return idx;
+}
+function metricPointLabel(p){
+  let when = '';
+  try{ if (p.t) when = ' at ' + new Date(p.t).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); }catch(e){}
+  return `Spike: ${p.count}${when}`;
+}
 function renderMetricVisual(elId, points, colorVar, unitLabel){
   const el = document.getElementById(elId); if (!el) return;
   const style = prefs.analyticsStyle || 'digital';
@@ -610,8 +692,18 @@ function renderMetricVisual(elId, points, colorVar, unitLabel){
   const xy = metricXY(pts, w, h, pad);
   const vals = pts.map(p=>p.count).filter(v=>v!=null);
   const peak = vals.length ? Math.max(...vals) : 0;
-  let defs='', fill='';
+  const avg = vals.length ? Math.round((vals.reduce((a,b)=>a+b,0)/vals.length)*10)/10 : 0;
+  let current = 0;
+  for (let i=pts.length-1;i>=0;i--){ if (pts[i].count!=null){ current = pts[i].count; break; } }
+  const spikes = metricSpikeIndices(pts);
+  const grid = `<g class="metric-grid">${[0.25,0.5,0.75].map(f => { const y=(pad+(h-2*pad)*f).toFixed(1); return `<line x1="${pad}" x2="${w-pad}" y1="${y}" y2="${y}"/>`; }).join('')}</g>`;
+  let defs='', fill='', bars='';
   const linePath = style === 'digital' ? metricStraightPath(xy) : metricSmoothPath(xy);
+  if (style === 'digital'){
+    const stepX = xy.length > 1 ? (w-2*pad)/(xy.length-1) : (w-2*pad);
+    const barW = Math.max(1.5, stepX*0.45);
+    bars = `<g class="metric-bars">${xy.map(p => p ? `<rect x="${(p.x-barW/2).toFixed(1)}" y="${p.y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(0,h-pad-p.y).toFixed(1)}"/>` : '').join('')}</g>`;
+  }
   if (style === 'specter'){
     const gradId = 'grad-'+elId;
     const areaPath = metricSplitRuns(xy).map(run => `${metricSmoothRun(run)} L${run[run.length-1].x.toFixed(1)} ${h-pad} L${run[0].x.toFixed(1)} ${h-pad} Z`).join(' ');
@@ -619,13 +711,39 @@ function renderMetricVisual(elId, points, colorVar, unitLabel){
     fill = `<path d="${esc(areaPath)}" fill="url(#${gradId})" stroke="none"/>`;
   }
   const strokeWidth = style === 'digital' ? 2 : 2.6;
-  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="history-svg" preserveAspectRatio="none" role="img" aria-label="${esc(unitLabel||'activity over time')}">${defs}${fill}<path class="metric-line" d="${esc(linePath)}" fill="none" stroke="var(${colorVar})" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="stats-note">${esc(unitLabel||'')} &middot; peak ${esc(peak)}</div>`;
+  const lastPt = [...xy].reverse().find(p => p);
+  const pulse = (style === 'specter' && lastPt) ? `<circle class="metric-pulse" cx="${lastPt.x.toFixed(1)}" cy="${lastPt.y.toFixed(1)}" r="3.6"/>` : '';
+  const sweep = style === 'specter' ? `<line class="metric-sweep" x1="0" x2="0" y1="${pad}" y2="${h-pad}"/>` : '';
+  const markers = [...spikes].map(i => xy[i] ? `<circle class="metric-marker-dot" cx="${xy[i].x.toFixed(1)}" cy="${xy[i].y.toFixed(1)}" fill="var(${colorVar})"><title>${esc(metricPointLabel(pts[i]))}</title></circle>` : '').join('');
+  const readout = `<div class="metric-readout"><div class="metric-readout-item">Current<b>${esc(current)}</b></div><div class="metric-readout-item">Average<b>${esc(avg)}</b></div><div class="metric-readout-item">Peak<b>${esc(peak)}</b></div>${spikes.size ? `<div class="metric-readout-item">Spikes<b>${spikes.size}</b></div>` : ''}</div>`;
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="history-svg" preserveAspectRatio="none" role="img" aria-label="${esc(unitLabel||'activity over time')}">${grid}${defs}${fill}${bars}<path class="metric-line" d="${esc(linePath)}" fill="none" stroke="var(${colorVar})" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>${sweep}${pulse}${markers}</svg>${readout}<div class="stats-note">${esc(unitLabel||'')}</div>`;
 }
-function liveGaugeSvg(pct){
-  const cx=60, cy=60, r=44, circumference = Math.PI*r;
-  const angleDeg = 180 - pct*180, rad = angleDeg*Math.PI/180;
-  const nx = (cx + (r-8)*Math.cos(rad)).toFixed(1), ny = (cy - (r-8)*Math.sin(rad)).toFixed(1);
-  return `<svg viewBox="0 0 120 68" aria-hidden="true"><path d="M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}" fill="none" stroke="var(--border)" stroke-width="6" stroke-linecap="round"/><path d="M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}" fill="none" stroke="var(--sem-live)" stroke-width="6" stroke-linecap="round" stroke-dasharray="${circumference.toFixed(1)}" stroke-dashoffset="${(circumference*(1-pct)).toFixed(1)}"/><line x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}" stroke="var(--text-primary)" stroke-width="2.5" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="4" fill="var(--text-primary)"/></svg>`;
+/* Digital: a radial "capacity" ring -- current sample against the peak
+   observed in the current rolling window -- plus the numeric value at its
+   center, echoing the donut/numeric-hierarchy language of the reference. */
+function digitalRingSvg(pct, current){
+  const r=32, c=2*Math.PI*r, p=Math.max(0,Math.min(1,pct));
+  return `<div class="digital-ring"><svg viewBox="0 0 84 84" aria-hidden="true"><circle cx="42" cy="42" r="${r}" fill="none" stroke="var(--border)" stroke-width="7"/><circle cx="42" cy="42" r="${r}" fill="none" stroke="var(--sem-live)" stroke-width="7" stroke-linecap="round" stroke-dasharray="${c.toFixed(1)}" stroke-dashoffset="${(c*(1-p)).toFixed(1)}" transform="rotate(-90 42 42)"/><text x="42" y="47" text-anchor="middle" font-size="17">${esc(current)}</text></svg></div>`;
+}
+/* Analog: a restrained instrument-cluster gauge -- tick marks, a needle and a
+   numeric center readout -- rather than a bare semicircle. */
+function analogGaugeSvg(pct, current, peak){
+  const cx=98, cy=98, r=78, p=Math.max(0,Math.min(1,pct));
+  const angleDeg = 180 - p*180, rad = angleDeg*Math.PI/180;
+  const nx=(cx+(r-16)*Math.cos(rad)).toFixed(1), ny=(cy-(r-16)*Math.sin(rad)).toFixed(1);
+  let ticks = '';
+  for (let i=0;i<=10;i++){
+    const a = 180 - (i/10)*180, ar = a*Math.PI/180, major = i%5===0;
+    const rOuter=r+2, rInner=major?r-11:r-5;
+    ticks += `<line class="gauge-tick${major?' gauge-tick-major':''}" x1="${(cx+rOuter*Math.cos(ar)).toFixed(1)}" y1="${(cy-rOuter*Math.sin(ar)).toFixed(1)}" x2="${(cx+rInner*Math.cos(ar)).toFixed(1)}" y2="${(cy-rInner*Math.sin(ar)).toFixed(1)}"/>`;
+  }
+  return `<div class="analog-gauge"><svg viewBox="0 0 196 114" aria-hidden="true"><path class="gauge-arc-bg" d="M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}" fill="none" stroke-width="3"/>${ticks}<line class="gauge-needle" x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}"/><circle class="gauge-hub" cx="${cx}" cy="${cy}" r="5"/><text class="gauge-value" x="${cx}" y="${cy-22}" text-anchor="middle" font-size="20">${esc(current)}</text><text class="gauge-label" x="${cx}" y="${cy-6}" text-anchor="middle" font-size="9">of ${esc(peak)} peak/60s</text></svg></div>`;
+}
+/* Specter: a radar-style sweep -- same live count, a distinctly different,
+   experimental presentation. */
+function specterRadarSvg(pct, current){
+  const p=Math.max(0,Math.min(1,pct));
+  return `<div class="specter-radar"><svg viewBox="0 0 120 120" aria-hidden="true">${[18,34,50].map(r=>`<circle class="radar-ring" cx="60" cy="60" r="${r}"/>`).join('')}<line class="radar-ring" x1="60" y1="10" x2="60" y2="110"/><line class="radar-ring" x1="10" y1="60" x2="110" y2="60"/><g class="radar-sweep-group"><line class="radar-sweep" x1="60" y1="60" x2="60" y2="10"/></g><circle cx="60" cy="60" r="${(4+p*10).toFixed(1)}" fill="var(--accent)" opacity=".85"/><text class="radar-value" x="60" y="65" text-anchor="middle" font-size="16">${esc(current)}</text></svg></div>`;
 }
 </script>
 <section id="tab-overview" class="tab-panel active" data-panel="overview">
@@ -656,56 +774,76 @@ function liveGaugeSvg(pct){
   <p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
 </section>
 <section id="tab-analytics" class="tab-panel" data-panel="analytics">
-  <div class="analytics-hero">
-    <div class="card live-card" id="live-card">
-      <div class="live-title"><span class="live-dot"></span>Live activity</div>
-      <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
-      <div id="live-gauge-slot"></div>
-      <div class="live-sparkline-wrap" id="live-sparkline"></div>
-      <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
+  <div class="dash-toolbar">
+    <button type="button" class="dash-customize-btn" id="dash-customize-btn" aria-pressed="false">Customize</button>
+    <select class="settings-select" id="dash-preset-select" aria-label="Dashboard preset">
+      <option value="default">Default layout</option>
+      <option value="monitoring">Monitoring</option>
+      <option value="compact">Compact</option>
+      <option value="investigation">Investigation</option>
+      <option value="custom">Custom</option>
+    </select>
+    <button type="button" id="dash-reset-btn" title="Reset to the default layout">Reset layout</button>
+    <span class="dash-hint" id="dash-hint" hidden>Use the handle to drag, or the arrow/size/hide buttons &mdash; changes save to this browser.</span>
+  </div>
+  <div class="dash-grid" id="analytics-dash-grid">
+    <div class="dash-widget" data-widget-id="live-overview" data-title="Live activity" data-w="full" data-h="normal">
+      <div class="analytics-hero">
+        <div class="card live-card" id="live-card">
+          <div class="live-title"><span class="live-dot"></span>Live activity</div>
+          <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
+          <div id="live-gauge-slot"></div>
+          <div class="live-sparkline-wrap" id="live-sparkline"></div>
+          <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
+        </div>
+        <div class="stat-tiles">
+          <div class="stat-tile ok"><div class="stat-tile-label">Allowed domains</div><div class="stat-tile-value" id="tile-allowed">&mdash;</div></div>
+          <div class="stat-tile blocked"><div class="stat-tile-label">Blocked domains</div><div class="stat-tile-value" id="tile-blocked">&mdash;</div></div>
+          <div class="stat-tile info"><div class="stat-tile-label">Active devices</div><div class="stat-tile-value" id="tile-devices">&mdash;</div></div>
+          <div class="stat-tile warn"><div class="stat-tile-label">New domains (24h)</div><div class="stat-tile-value" id="tile-new-domains">&mdash;</div></div>
+        </div>
+      </div>
     </div>
-    <div class="stat-tiles">
-      <div class="stat-tile ok"><div class="stat-tile-label">Allowed domains</div><div class="stat-tile-value" id="tile-allowed">&mdash;</div></div>
-      <div class="stat-tile blocked"><div class="stat-tile-label">Blocked domains</div><div class="stat-tile-value" id="tile-blocked">&mdash;</div></div>
-      <div class="stat-tile info"><div class="stat-tile-label">Active devices</div><div class="stat-tile-value" id="tile-devices">&mdash;</div></div>
-      <div class="stat-tile warn"><div class="stat-tile-label">New domains (24h)</div><div class="stat-tile-value" id="tile-new-domains">&mdash;</div></div>
+    <div class="dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" data-w="full" data-h="normal">
+      <div class="card">
+        <h2>DNS activity over time</h2>
+        <div class="analytics-range-controls" role="group" aria-label="Historical time range">
+          <button type="button" class="range-btn active" data-analytics-range="1h">1H</button>
+          <button type="button" class="range-btn" data-analytics-range="6h">6H</button>
+          <button type="button" class="range-btn" data-analytics-range="24h">24H</button>
+          <button type="button" class="range-btn" data-analytics-range="7d">7D</button>
+        </div>
+        <div id="chart-query-volume"></div>
+      </div>
     </div>
-  </div>
-
-  <div class="card">
-    <h2>DNS activity over time</h2>
-    <div class="analytics-range-controls" role="group" aria-label="Historical time range">
-      <button type="button" class="range-btn active" data-analytics-range="1h">1H</button>
-      <button type="button" class="range-btn" data-analytics-range="6h">6H</button>
-      <button type="button" class="range-btn" data-analytics-range="24h">24H</button>
-      <button type="button" class="range-btn" data-analytics-range="7d">7D</button>
+    <div class="dash-widget" data-widget-id="new-domains" data-title="New domains discovered" data-w="half" data-h="normal">
+      <div class="card"><h2>New domains discovered</h2><div id="chart-new-domains"></div></div>
     </div>
-    <div id="chart-query-volume"></div>
-  </div>
-
-  <div class="analytics-timeline-grid">
-    <div class="card"><h2>New domains discovered</h2><div id="chart-new-domains"></div></div>
-    <div class="card"><h2>New devices discovered</h2><div id="chart-new-devices"></div></div>
-  </div>
-
-  <div class="card">
-    <h2>Status breakdown</h2>
-    <div id="status-breakdown"></div>
-    <div class="stats-note">All known domains, grouped by their current AdGuard filtering outcome.</div>
-  </div>
-
-  <div class="analytics-feed-heading"><h2>Recent activity</h2></div>
-  <div class="activity-feed-grid">
-    <div class="card"><h2>Recently active domains</h2><div id="activity-domains"></div></div>
-    <div class="card"><h2>Recently active devices</h2><div id="activity-devices"></div></div>
-  </div>
-
-  <div class="card"><h2>Top activity (all time)</h2><div class="stats-note" style="margin-top:0">Cumulative totals since the database was created.</div></div>
-  <div class="chart-grid">
-    <div class="card chart-card"><h2>Most requested domains</h2><div id="chart-domains" class="chart-list"></div><div class="stats-note">Based on recorded DNS requests.</div></div>
-    <div class="card chart-card"><h2>Most active devices</h2><div id="chart-devices" class="chart-list"></div><div class="stats-note">Ranked by total recorded requests.</div></div>
-    <div class="card chart-card"><h2>Most active vendors</h2><div id="chart-vendors" class="chart-list"></div><div class="stats-note">Aggregated from identified devices.</div></div>
-    <div class="card chart-card"><h2>Most active IPs</h2><div id="chart-ips" class="chart-list"></div><div class="stats-note">Aggregated from device IP observations.</div></div>
+    <div class="dash-widget" data-widget-id="new-devices" data-title="New devices discovered" data-w="half" data-h="normal">
+      <div class="card"><h2>New devices discovered</h2><div id="chart-new-devices"></div></div>
+    </div>
+    <div class="dash-widget" data-widget-id="status-breakdown" data-title="Status breakdown" data-w="full" data-h="normal">
+      <div class="card">
+        <h2>Status breakdown</h2>
+        <div id="status-breakdown" class="dash-scroll"></div>
+        <div class="stats-note">All known domains, grouped by their current AdGuard filtering outcome.</div>
+      </div>
+    </div>
+    <div class="dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" data-w="half" data-h="normal">
+      <div class="card"><h2>Recently active domains</h2><div id="activity-domains" class="dash-scroll"></div></div>
+    </div>
+    <div class="dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" data-w="half" data-h="normal">
+      <div class="card"><h2>Recently active devices</h2><div id="activity-devices" class="dash-scroll"></div></div>
+    </div>
+    <div class="dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" data-w="full" data-h="normal">
+      <div class="card"><h2>Top activity (all time)</h2><div class="stats-note" style="margin-top:0">Cumulative totals since the database was created.</div></div>
+      <div class="chart-grid">
+        <div class="card chart-card"><h2>Most requested domains</h2><div id="chart-domains" class="chart-list"></div><div class="stats-note">Based on recorded DNS requests.</div></div>
+        <div class="card chart-card"><h2>Most active devices</h2><div id="chart-devices" class="chart-list"></div><div class="stats-note">Ranked by total recorded requests.</div></div>
+        <div class="card chart-card"><h2>Most active vendors</h2><div id="chart-vendors" class="chart-list"></div><div class="stats-note">Aggregated from identified devices.</div></div>
+        <div class="card chart-card"><h2>Most active IPs</h2><div id="chart-ips" class="chart-list"></div><div class="stats-note">Aggregated from device IP observations.</div></div>
+      </div>
+    </div>
   </div>
 </section>
 <script>
@@ -744,7 +882,7 @@ function deviceRow(c){
 let recentMeta={page:1,pages:1,total:0,page_size:50,new_count:0,status_counts:{All:0,Allowed:0,Blocked:0,Unknown:0}};let recentFilters={status:'',newOnly:false,classification:'',severity:'',device:'',vendor:'',page:1,page_size:50};let knownDomains=new Set();let initialDomainSnapshot=false;
 function ageText(iso){const t=new Date(iso).getTime();if(!Number.isFinite(t))return '';const m=Math.max(0,Math.floor((Date.now()-t)/60000));if(m<1)return 'now';if(m<60)return `${m}m`;const h=Math.floor(m/60);if(h<24)return `${h}h`;return `${Math.floor(h/24)}d`}
 function isNewRow(r){const t=new Date(r.first_seen||'').getTime();return Number.isFinite(t)&&(Date.now()-t)<86400000}
-function renderRecent(rows){window.__lastRecent=rows||[];document.getElementById('recent-body').innerHTML=(rows||[]).map(r=>{const devices=(r.devices||[]).map(d=>{const label=deviceLabelFor(d);return `<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo?`<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">`:deviceTypeSvg(d.type,d.icon,false)}${esc(label||d.name)}</a>`;}).join('');const n=isNewRow(r);const badge=n?`<span class="new-badge" title="First seen ${esc(r.first_seen||'')}"><span class="new-badge-dot"></span>NEW · ${esc(ageText(r.first_seen))}</span>`:'';return `<tr class="${n?'row-new':''}" data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a>${badge}<div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices||'<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`}).join('');reapplyTableSorts()}
+function renderRecent(rows,force){window.__lastRecent=rows||[];if(!force&&!document.getElementById('tab-overview')?.classList.contains('active'))return;document.getElementById('recent-body').innerHTML=(rows||[]).map(r=>{const devices=(r.devices||[]).map(d=>{const label=deviceLabelFor(d);return `<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo?`<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">`:deviceTypeSvg(d.type,d.icon,false)}${esc(label||d.name)}</a>`;}).join('');const n=isNewRow(r);const badge=n?`<span class="new-badge" title="First seen ${esc(r.first_seen||'')}"><span class="new-badge-dot"></span>NEW · ${esc(ageText(r.first_seen))}</span>`:'';return `<tr class="${n?'row-new':''}" data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a>${badge}<div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices||'<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`}).join('');reapplyTableSorts()}
 function setSelectOptions(id,values,selected){const e=document.getElementById(id);if(!e)return;e.innerHTML='<option value="">All</option>'+(values||[]).map(v=>{const value=typeof v==='string'?v:v.value;const label=typeof v==='string'?v:v.label;return `<option value="${esc(value)}">${esc(label)}</option>`}).join('');e.value=selected||''}
 function renderRecentControls(meta,opts){recentMeta=meta||recentMeta;const c=recentMeta.status_counts||{};[['count-all','All'],['count-allowed','Allowed'],['count-blocked','Blocked'],['count-mixed','Mixed'],['count-unknown','Unknown']].forEach(([i,k])=>{const e=document.getElementById(i);if(e)e.textContent=c[k]!=null?` ${c[k]}`:''});const n=document.getElementById('count-new');if(n)n.textContent=recentMeta.new_count!=null?` ${recentMeta.new_count}`:'';document.querySelectorAll('[data-status-filter]').forEach(b=>b.classList.toggle('active',(b.dataset.statusFilter||'')===recentFilters.status));document.getElementById('new-filter')?.classList.toggle('active',recentFilters.newOnly);const sum=document.getElementById('results-summary');if(sum)sum.innerHTML=`<b>${recentMeta.total||0}</b> matching domain${(recentMeta.total||0)===1?'':'s'} · <b>${recentMeta.new_count||0}</b> new in the last 24h`;setSelectOptions('classification-filter',opts?.classifications,recentFilters.classification);setSelectOptions('severity-filter',opts?.severities,recentFilters.severity);setSelectOptions('device-filter',opts?.devices,recentFilters.device);setSelectOptions('vendor-filter',opts?.vendors,recentFilters.vendor);const ps=document.getElementById('page-size');if(ps)ps.value=String(recentFilters.page_size);const label=document.getElementById('page-label');if(label){const a=recentMeta.total?((recentMeta.page-1)*recentMeta.page_size)+1:0;const b=recentMeta.total?Math.min(recentMeta.page*recentMeta.page_size,recentMeta.total):0;label.textContent=`Showing ${a}–${b} of ${recentMeta.total||0}`}const prev=document.getElementById('page-prev'),next=document.getElementById('page-next');if(prev)prev.disabled=recentMeta.page<=1;if(next)next.disabled=recentMeta.page>=recentMeta.pages}
 function showNewBanner(entries){const b=document.getElementById('new-banner'),t=document.getElementById('new-banner-text');if(!b||!t||!entries.length)return;const items=entries.slice(0,3).map(r=>{const status=r.status||'Unknown';const statusClass=r.status_class||'unknown';const href=`/search?q=${encodeURIComponent(r.domain)}`;return `<span class="new-domain-item"><a class="new-domain-link" href="${href}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a><span class="status-pill status-${esc(statusClass)}">${esc(status)}</span></span>`}).join('');t.innerHTML=`<b>${entries.length}</b> new domain${entries.length===1?'':'s'} detected · <span class="new-domain-items">${items}</span>`;b.classList.add('show')}
@@ -767,7 +905,7 @@ function placeDeviceLabelsInColumn(){const body=document.getElementById('clients
 async function loadDeviceLabels(){try{const r=await fetch('/api/device/label',{cache:'no-store'});if(!r.ok)return;const data=await r.json();window.deviceLabels=data.labels||{};}catch(e){console.debug('device labels load failed',e)}}
 async function editDeviceLabel(button){const key=button?.dataset?.deviceKey||'';if(!key)return;const current=button.dataset.deviceLabel||'';const value=window.prompt('Device label',current);if(value===null)return;const label=value.trim().slice(0,80);try{const r=await fetch('/api/device/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_key:key,label})});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'Save failed');window.deviceLabels[key]=label;renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();}catch(e){alert('Could not save device label: '+e.message)}}
 function bindDeviceLabelButtons(){document.querySelectorAll('.device-label-btn').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>editDeviceLabel(b));})}
-function renderClients(rows){ window.__lastClients=rows||[]; document.getElementById('clients-body').innerHTML = rows.map(deviceRow).join(''); bindDeviceLabelButtons(); placeDeviceLabelsInColumn(); injectIpPingControls(); reapplyTableSorts(); }
+function renderClients(rows,force){ window.__lastClients=rows||[]; if(!force&&!document.getElementById('tab-devices')?.classList.contains('active'))return; document.getElementById('clients-body').innerHTML = (rows||[]).map(deviceRow).join(''); bindDeviceLabelButtons(); placeDeviceLabelsInColumn(); injectIpPingControls(); reapplyTableSorts(); }
 let tableSortState = {recent:{key:null,dir:1}, clients:{key:null,dir:1}};
 function rowSortValue(row,key,type){ const raw=row.dataset['sort'+key.charAt(0).toUpperCase()+key.slice(1)] ?? ''; return type==='number' ? (Number(raw)||0) : String(raw).toLowerCase(); }
 function applySort(table,key,dir){ const th=[...table.querySelectorAll('th.sortable')].find(x=>x.dataset.sortKey===key); if(!th)return; table.querySelectorAll('th.sortable').forEach(x=>x.classList.remove('sort-asc','sort-desc')); th.classList.add(dir===1?'sort-asc':'sort-desc'); const type=th.dataset.sortType||'text'; const body=table.tBodies[0]; [...body.rows].sort((a,b)=>{const av=rowSortValue(a,key,type),bv=rowSortValue(b,key,type); if(av<bv)return -1*dir; if(av>bv)return 1*dir; return 0;}).forEach(r=>body.appendChild(r)); }
@@ -777,6 +915,11 @@ function setActiveTab(name){
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
   try{ localStorage.setItem('dnsInspectorTab', name); }catch(e){}
+  // The background /api/state poll skips re-rendering a tab's table while
+  // it isn't visible (see renderRecent/renderClients); catch it up here
+  // from the cached last-fetched rows instead of re-fetching.
+  if (name === 'overview' && Array.isArray(window.__lastRecent)) renderRecent(window.__lastRecent, true);
+  if (name === 'devices' && Array.isArray(window.__lastClients)) renderClients(window.__lastClients, true);
   if (typeof window.onAnalyticsTabChange === 'function') window.onAnalyticsTabChange(name);
 }
 function chartBars(elId, items){
@@ -885,16 +1028,14 @@ function renderLiveHero(windowSeconds){
   if (card){ card.classList.remove('visual-analog','visual-digital','visual-specter'); card.classList.add('visual-'+(prefs.analyticsStyle||'digital')); }
   const gaugeSlot = document.getElementById('live-gauge-slot');
   if (gaugeSlot){
-    if ((prefs.analyticsStyle||'digital') === 'analog'){
-      const vals = analyticsLiveSamples.map(s=>s.count).filter(v=>v!=null);
-      const max = Math.max(1, ...vals);
-      const pct = Math.max(0, Math.min(1, (latest ? latest.count : 0) / max));
-      gaugeSlot.innerHTML = liveGaugeSvg(pct);
-      gaugeSlot.classList.add('live-gauge');
-    } else {
-      gaugeSlot.innerHTML = '';
-      gaugeSlot.classList.remove('live-gauge');
-    }
+    const vals = analyticsLiveSamples.map(s=>s.count).filter(v=>v!=null);
+    const peak = Math.max(1, ...vals);
+    const current = latest ? latest.count : 0;
+    const pct = Math.max(0, Math.min(1, current / peak));
+    const style = prefs.analyticsStyle || 'digital';
+    if (style === 'analog') gaugeSlot.innerHTML = analogGaugeSvg(pct, current, peak);
+    else if (style === 'specter') gaugeSlot.innerHTML = specterRadarSvg(pct, current);
+    else gaugeSlot.innerHTML = digitalRingSvg(pct, current);
   }
 }
 function pushLiveSample(n, windowSeconds){
@@ -938,6 +1079,165 @@ function analyticsTabChanged(name){
 }
 window.onAnalyticsTabChange = analyticsTabChanged;
 analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'overview');
+</script>
+<script>
+/* ---- Dashboard Builder (0.8.5) ----
+   Customize mode for the Analytics widget grid: drag/move, bounded resize
+   (half/full width x compact/normal/tall height), show/hide and named
+   presets, persisted per-browser. This only reorders/resizes/hides the
+   widgets already in the page -- no widget's underlying data or route
+   changes. Drag-and-drop via the handle is a pointer/mouse enhancement;
+   the move-up/move-down buttons are the touch- and keyboard-accessible
+   path, since HTML5 drag-and-drop is unreliable on touch devices. */
+(function(){
+  const grid = document.getElementById('analytics-dash-grid');
+  if (!grid) return;
+  const WIDGET_IDS = Array.from(grid.querySelectorAll('.dash-widget')).map(w => w.dataset.widgetId);
+  const LAYOUT_KEY = 'dnsInspectorDashboardLayout';
+
+  function defaultLayout(){
+    const widgets = {};
+    WIDGET_IDS.forEach(id => {
+      const el = grid.querySelector(`[data-widget-id="${id}"]`);
+      widgets[id] = { w: el.dataset.w || 'full', h: el.dataset.h || 'normal', hidden: false };
+    });
+    return { preset: 'default', order: WIDGET_IDS.slice(), widgets };
+  }
+  const DEFAULT_LAYOUT = defaultLayout();
+  const clone = (obj) => JSON.parse(JSON.stringify(obj));
+
+  function presetLayout(name){
+    const base = clone(DEFAULT_LAYOUT);
+    base.preset = name;
+    const set = (id, patch) => { if (base.widgets[id]) Object.assign(base.widgets[id], patch); };
+    if (name === 'monitoring'){
+      base.order = ['live-overview','status-breakdown','query-volume','new-domains','new-devices','activity-domains','activity-devices','top-activity'];
+      set('live-overview', {h:'tall'});
+      set('activity-domains', {h:'compact'});
+      set('activity-devices', {h:'compact'});
+      set('top-activity', {hidden:true});
+    } else if (name === 'compact'){
+      WIDGET_IDS.forEach(id => set(id, {h:'compact'}));
+      set('top-activity', {hidden:true});
+    } else if (name === 'investigation'){
+      base.order = ['query-volume','status-breakdown','top-activity','activity-domains','activity-devices','new-domains','new-devices','live-overview'];
+      set('top-activity', {h:'tall'});
+      set('activity-domains', {h:'tall'});
+      set('activity-devices', {h:'tall'});
+      set('live-overview', {w:'half', h:'compact'});
+    }
+    return base;
+  }
+
+  function loadLayout(){
+    try{
+      const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
+      if (!raw || !raw.widgets || !raw.order) return clone(DEFAULT_LAYOUT);
+      const widgets = {};
+      WIDGET_IDS.forEach(id => { widgets[id] = Object.assign({w:'full',h:'normal',hidden:false}, raw.widgets[id] || {}); });
+      const order = raw.order.filter(id => WIDGET_IDS.includes(id));
+      WIDGET_IDS.forEach(id => { if (!order.includes(id)) order.push(id); });
+      return { preset: raw.preset || 'custom', order, widgets };
+    }catch(e){ return clone(DEFAULT_LAYOUT); }
+  }
+  function saveLayout(){ try{ localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); }catch(e){} }
+
+  let layout = loadLayout();
+  let customizing = false;
+
+  function widgetHeadHtml(title){
+    return `<div class="dash-widget-head"><span class="dash-drag-handle" draggable="true" title="Drag to reorder">⠿</span><span class="dash-widget-title">${esc(title)}</span><button type="button" data-dash-action="move-up" title="Move up" aria-label="Move ${esc(title)} up">&uarr;</button><button type="button" data-dash-action="move-down" title="Move down" aria-label="Move ${esc(title)} down">&darr;</button><button type="button" data-dash-action="width" title="Toggle width (half/full)">&hArr;</button><button type="button" data-dash-action="height" title="Toggle height (compact/normal/tall)">&vArr;</button><button type="button" data-dash-action="hide" title="Hide widget" aria-label="Hide ${esc(title)}">&times;</button></div>`;
+  }
+  WIDGET_IDS.forEach(id => {
+    const el = grid.querySelector(`[data-widget-id="${id}"]`);
+    el.insertAdjacentHTML('afterbegin', widgetHeadHtml(el.dataset.title || id));
+  });
+
+  function applyLayout(){
+    layout.order.forEach((id, i) => {
+      const el = grid.querySelector(`[data-widget-id="${id}"]`);
+      if (!el) return;
+      el.style.order = String(i);
+      const w = layout.widgets[id] || {w:'full',h:'normal',hidden:false};
+      el.dataset.w = w.w || 'full';
+      el.dataset.h = w.h || 'normal';
+      el.dataset.hidden = w.hidden ? '1' : '0';
+      const hideBtn = el.querySelector('[data-dash-action="hide"]');
+      if (hideBtn){ hideBtn.innerHTML = w.hidden ? '&#43;' : '&times;'; hideBtn.title = w.hidden ? 'Show widget' : 'Hide widget'; }
+    });
+    const presetSelect = document.getElementById('dash-preset-select');
+    if (presetSelect) presetSelect.value = layout.preset || 'custom';
+    if (document.getElementById('tab-analytics')?.classList.contains('active') && typeof fetchAnalyticsFull === 'function') fetchAnalyticsFull();
+    if (typeof renderLiveHero === 'function') renderLiveHero();
+  }
+
+  function markCustom(){ layout.preset = 'custom'; saveLayout(); applyLayout(); }
+
+  grid.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-dash-action]'); if (!btn) return;
+    const widget = btn.closest('.dash-widget'); const id = widget.dataset.widgetId;
+    const action = btn.dataset.dashAction;
+    const idx = layout.order.indexOf(id);
+    const cur = layout.widgets[id];
+    if (action === 'move-up' && idx > 0){ [layout.order[idx-1], layout.order[idx]] = [layout.order[idx], layout.order[idx-1]]; }
+    else if (action === 'move-down' && idx < layout.order.length-1){ [layout.order[idx+1], layout.order[idx]] = [layout.order[idx], layout.order[idx+1]]; }
+    else if (action === 'width'){ cur.w = cur.w === 'full' ? 'half' : 'full'; }
+    else if (action === 'height'){ cur.h = cur.h === 'compact' ? 'normal' : (cur.h === 'normal' ? 'tall' : 'compact'); }
+    else if (action === 'hide'){ cur.hidden = !cur.hidden; }
+    markCustom();
+  });
+
+  let dragId = null;
+  grid.addEventListener('dragstart', (e) => {
+    const handle = e.target.closest('.dash-drag-handle'); if (!handle || !customizing) return;
+    const widget = handle.closest('.dash-widget'); dragId = widget.dataset.widgetId;
+    widget.dataset.dragging = '1';
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+  });
+  grid.addEventListener('dragend', (e) => {
+    const widget = e.target.closest('.dash-widget'); if (widget) widget.removeAttribute('data-dragging');
+    dragId = null;
+  });
+  grid.addEventListener('dragover', (e) => { if (dragId) e.preventDefault(); });
+  grid.addEventListener('drop', (e) => {
+    if (!dragId) return;
+    e.preventDefault();
+    const target = e.target.closest('.dash-widget');
+    if (!target || target.dataset.widgetId === dragId) return;
+    const from = layout.order.indexOf(dragId), to = layout.order.indexOf(target.dataset.widgetId);
+    if (from === -1 || to === -1) return;
+    layout.order.splice(from, 1);
+    layout.order.splice(to, 0, dragId);
+    markCustom();
+  });
+
+  const customizeBtn = document.getElementById('dash-customize-btn');
+  const hint = document.getElementById('dash-hint');
+  customizeBtn?.addEventListener('click', () => {
+    customizing = !customizing;
+    grid.classList.toggle('dash-customizing', customizing);
+    customizeBtn.classList.toggle('active', customizing);
+    customizeBtn.setAttribute('aria-pressed', String(customizing));
+    customizeBtn.textContent = customizing ? 'Done customizing' : 'Customize';
+    if (hint) hint.hidden = !customizing;
+  });
+
+  document.getElementById('dash-preset-select')?.addEventListener('change', (e) => {
+    const name = e.target.value;
+    if (name === 'custom') return;
+    layout = presetLayout(name);
+    saveLayout();
+    applyLayout();
+  });
+
+  document.getElementById('dash-reset-btn')?.addEventListener('click', () => {
+    layout = clone(DEFAULT_LAYOUT);
+    saveLayout();
+    applyLayout();
+  });
+
+  applyLayout();
+})();
 </script>
 <script>
 /* ---- Settings dialog wiring ----
@@ -3451,9 +3751,6 @@ def health():
     return jsonify({"ok": True, "version": APP_VERSION, "adguard": AGH_URL, "trackerdb": trackerdb_ready(), "poll_seconds": POLL_SECONDS, "ui_refresh_seconds": UI_REFRESH_SECONDS, "environment": RUNTIME_ENV})
 
 
-# === DEEP DEBUG BUNDLE PATCH 0.7.13-HF2 ===
-# === DEEP DEBUG BUNDLE FIX PATCH 0.7.13-HF2.2 ===
-
 def _deep_debug_read_text(path):
     try:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
@@ -3775,8 +4072,6 @@ def _deep_debug_limits():
     except Exception as e:
         return {'error': f'{type(e).__name__}: {e}'}
 
-
-# === DEBUG BUNDLE RESILIENCE PATCH 0.7.13-HF2.1 ===
 
 def _deep_debug_safe_call(name, fn):
     try:
