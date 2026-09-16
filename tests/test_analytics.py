@@ -13,6 +13,7 @@ import json
 import sqlite3
 import uuid
 from contextlib import closing
+from datetime import timedelta
 
 
 def _unique(prefix):
@@ -93,6 +94,36 @@ def test_query_volume_series_counts_a_query_seen_right_now(app_module, initialis
     # no-data gap once a query has actually been recorded inside it.
     assert after["points"][-1]["count"] is not None
     assert after["points"][-1]["count"] >= 1
+
+
+def test_query_volume_series_keeps_the_bucket_containing_the_oldest_retained_query(app_module, initialised_db):
+    """0.8.2 regression: `_bucket_timestamps()` emits each point at the
+    bucket *start*, so gating on `bucket_start < oldest_retained` nulls the
+    bucket that actually holds the oldest retained row whenever that row
+    lands after the bucket's start (the common case). A bucket must only be
+    treated as no-data when it ends before the oldest retained row.
+    """
+    with closing(sqlite3.connect(initialised_db)) as conn:
+        conn.execute("DELETE FROM processed_queries")
+        conn.commit()
+
+    range_seconds, bucket_seconds, bucket_count, _ = app_module._analytics_range("6h")
+    now_dt = app_module._parse_iso(app_module.utcnow())
+    range_start = now_dt - timedelta(seconds=range_seconds)
+
+    # Land the sole retained row mid-bucket, several buckets back from "now",
+    # so its bucket start is before the row's timestamp while its bucket end
+    # is after it -- the exact straddling case that broke.
+    target_index = bucket_count - 10
+    bucket_start = range_start + timedelta(seconds=target_index * bucket_seconds)
+    oldest_seen_at = (bucket_start + timedelta(seconds=bucket_seconds / 2)).isoformat()
+    _insert_processed_query(initialised_db, _unique("qfp-oldest"), oldest_seen_at)
+
+    points = app_module.get_query_volume_series("6h")["points"]
+
+    assert points[target_index]["count"] == 1
+    assert all(p["count"] is None for p in points[:target_index])
+    assert all(p["count"] == 0 for p in points[target_index + 1:])
 
 
 def test_query_volume_series_has_one_point_per_bucket(app_module, initialised_db):

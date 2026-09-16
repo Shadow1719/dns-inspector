@@ -2643,7 +2643,8 @@ def get_query_volume_series(range_key):
     points = _bucket_timestamps([r[0] for r in rows], range_seconds, bucket_seconds, bucket_count, now_dt)
     min_dt = _parse_iso(min_seen_at)
     for point in points:
-        if min_dt is None or _parse_iso(point["t"]) < min_dt:
+        bucket_end = _parse_iso(point["t"]) + timedelta(seconds=bucket_seconds)
+        if min_dt is None or bucket_end <= min_dt:
             point["count"] = None
     return {"range": range_key, "label": label, "bucket_seconds": bucket_seconds, "points": points}
 
