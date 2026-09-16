@@ -33,6 +33,28 @@ try:
 except Exception:
     APP_VERSION = os.getenv("APP_VERSION", "dev")
 
+
+def normalize_runtime_environment(value):
+    """Normalize DNS_INSPECTOR_ENV, defaulting to production when unset/unknown."""
+    return "development" if (value or "").strip().lower() == "development" else "production"
+
+
+RUNTIME_ENV = normalize_runtime_environment(os.getenv("DNS_INSPECTOR_ENV"))
+
+
+def is_development_environment():
+    return RUNTIME_ENV == "development"
+
+
+def _environment_render_context():
+    dev = is_development_environment()
+    return {
+        "is_dev_environment": dev,
+        "favicon_path": "/static/favicon-dev.svg" if dev else "/static/favicon.svg",
+        "page_title": f"DNS Inspector DEV v{APP_VERSION}" if dev else "DNS Inspector",
+    }
+
+
 OBSERVABILITY_START_MONOTONIC = time.monotonic()
 OBSERVABILITY_START_AT = datetime.now(timezone.utc).isoformat()
 
@@ -91,7 +113,7 @@ MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
 
 HTML = """
-<!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="/static/favicon.svg"><title>DNS Inspector</title>
+<!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
@@ -128,8 +150,11 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .tab-panel{display:none}.tab-panel.active{display:block}
 .chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.chart-card{min-height:260px}.chart-list{display:flex;flex-direction:column;gap:9px;margin-top:10px}.bar-row{display:grid;grid-template-columns:minmax(120px,1fr) 3fr auto;gap:10px;align-items:center;font-size:.84rem}.bar-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.bar-track{height:12px;background:#161b22;border:1px solid #30363d;border-radius:999px;overflow:hidden}.bar-fill{height:100%;background:#58a6ff;border-radius:999px;min-width:2px}.bar-value{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#c9d1d9;min-width:70px;text-align:right}.stats-note{color:#8b949e;font-size:.8rem;margin-top:10px}
 @media(max-width:900px){body{padding:16px}.grid{grid-template-columns:1fr}.toolbar{flex-wrap:wrap}.toolbar input{flex-basis:100%}td,th{padding:9px 6px}.hide-mobile{display:none}}
+.dev-banner{position:sticky;top:0;z-index:1000;background:#db6d28;color:#0d1117;font-weight:800;text-align:center;padding:10px 16px;letter-spacing:.02em;border-radius:8px;margin-bottom:16px;border:2px solid #f0883e}
+.dev-badge{display:inline-block;background:#db6d28;color:#0d1117;font-weight:800;font-size:.5em;padding:2px 10px;border-radius:999px;vertical-align:middle;margin-left:10px;letter-spacing:.05em}
 </style></head><body>
-<h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span></h1>
+{% if is_dev_environment %}<div class="dev-banner" role="alert">⚠️ DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</div>{% endif %}
+<h1>DNS Inspector <span class="muted" style="font-size:.55em">v{{version}}</span>{% if is_dev_environment %} <span class="dev-badge">DEV</span>{% endif %}</h1>
 <div class="observability-strip" aria-label="Application runtime status">
   <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
   <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
@@ -2480,7 +2505,7 @@ def index():
     result=inspect_domain(q) if q else None
     recent=get_recent(page=page,page_size=page_size,status_filter=status_filter,new_only=new_only,classification_filter=classification_filter,severity_filter=severity_filter,device_filter=device_filter,vendor_filter=vendor_filter)
     clients=get_clients()
-    return render_template_string(HTML,q=q,result=result,inspect_html=inspect_html(result) if result else "",recent_html=recent_html(recent["rows"]),clients_html=clients_html(clients),version=APP_VERSION,refresh_seconds=UI_REFRESH_SECONDS,refresh_seconds_ms=UI_REFRESH_SECONDS*1000,updated=utcnow(),stats=get_stats(),error=None)
+    return render_template_string(HTML,q=q,result=result,inspect_html=inspect_html(result) if result else "",recent_html=recent_html(recent["rows"]),clients_html=clients_html(clients),version=APP_VERSION,refresh_seconds=UI_REFRESH_SECONDS,refresh_seconds_ms=UI_REFRESH_SECONDS*1000,updated=utcnow(),stats=get_stats(),error=None,**_environment_render_context())
 
 
 @app.route("/search")
@@ -2523,8 +2548,8 @@ def device_view():
     key = request.args.get("key", "").strip()
     d = device_detail(key)
     if not d:
-        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>Device not found</h2><p class='error'>No device exists for this identity.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
-    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_device(d), recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>Device not found</h2><p class='error'>No device exists for this identity.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None, **_environment_render_context()), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_device(d), recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None, **_environment_render_context())
 
 
 @app.route("/ip")
@@ -2532,13 +2557,13 @@ def ip_view():
     addr = request.args.get("addr", "").strip()
     d = ip_detail(addr)
     if not d:
-        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>IP not found</h2><p class='error'>No valid IP observation exists for this address.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None), 404
-    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_ip(d), recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None)
+        return render_template_string(HTML, q="", result=None, inspect_html=f"<div class='card'><h2>IP not found</h2><p class='error'>No valid IP observation exists for this address.</p><p><a href='/'>Back to dashboard</a></p></div>", recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None, **_environment_render_context()), 404
+    return render_template_string(HTML, q="", result=None, inspect_html=detail_html_ip(d), recent_html=recent_html(get_recent()["rows"]), clients_html=clients_html(get_clients()), version=APP_VERSION, refresh_seconds=UI_REFRESH_SECONDS, refresh_seconds_ms=UI_REFRESH_SECONDS * 1000, updated=utcnow(), stats=get_stats(), error=None, **_environment_render_context())
 
 
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "version": APP_VERSION, "adguard": AGH_URL, "trackerdb": trackerdb_ready(), "poll_seconds": POLL_SECONDS, "ui_refresh_seconds": UI_REFRESH_SECONDS})
+    return jsonify({"ok": True, "version": APP_VERSION, "adguard": AGH_URL, "trackerdb": trackerdb_ready(), "poll_seconds": POLL_SECONDS, "ui_refresh_seconds": UI_REFRESH_SECONDS, "environment": RUNTIME_ENV})
 
 
 # === DEEP DEBUG BUNDLE PATCH 0.7.13-HF2 ===
@@ -2979,6 +3004,7 @@ def _observability_payload():
         db_size = None
     return {
         'version': APP_VERSION,
+        'environment': RUNTIME_ENV,
         'started_at': OBSERVABILITY_START_AT,
         'uptime_seconds': round(uptime, 1),
         'uptime_human': _observability_uptime_human(uptime),
@@ -3101,6 +3127,7 @@ def api_observability():
         print('observability endpoint error:', repr(e), flush=True)
         return jsonify({
             'version': APP_VERSION,
+            'environment': RUNTIME_ENV,
             'uptime_seconds': _observability_uptime_seconds(),
             'ram_mb': None,
         }), 200
