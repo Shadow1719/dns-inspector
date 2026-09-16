@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.3`
+- Foundation version: `0.8.0`, current release: `0.8.4`
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
 
@@ -57,6 +57,8 @@ The previous `dev-0.8` branch name is retired as the active development branch.
 The repository recently underwent a modularization/observability refactor. Focused fixes must be based on the actual code at the requested commit/branch, not on older ZIP archives or remembered pre-0.8 structure.
 
 0.8.3 (Issue #20) is a front-end-only UI overhaul: a single token-driven "Inspector BEMO" visual design system (colors, spacing, radii, shadows, typography) now spans Overview, DNS Inspector, device/IP views, the shared shell/navigation and Analytics. It restyles the existing `HTML` template string and its CSS in place — same IDs, classes, routes and JSON payload shapes — so no Python data/route logic changed. Treat the `HTML` string in `app.py` as carrying real product design intent now, not placeholder styling.
+
+0.8.4 (Issue #22) is also front-end-only, layered on top of the same `HTML` template: a Settings dialog (Appearance/Dashboard/Monitoring/Diagnostics/System/About) reachable from the shared shell without adding a fourth primary tab; four themes (BEMO Dark/Light/Aurora/Natural, plus System) implemented as `html[data-theme]` overrides of the existing design tokens; accent-color and density preferences that never touch the semantic `--sem-*` status variables; a client-side-only `dnsInspectorPrefs` localStorage preference object (no database migration); a bounded client-side refresh-interval preference and a default-view preference; and a reusable `renderMetricVisual` JS abstraction so every Analytics chart (live sparkline + the three historical timelines) can render the same underlying data through a Digital, Analog or Specter presentation. No Python route, data model or JSON payload shape changed — Diagnostics and System reuse the existing `/api/observability` and `/health` routes instead of adding new ones.
 
 ## How to update this file
 

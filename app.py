@@ -114,16 +114,59 @@ IP_RE = re.compile(r"^[0-9a-f:.]+$")
 
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
+<script>
+/* Applied before first paint so a saved theme/density/accent never flashes
+   the default look first. Kept intentionally tiny and self-contained (the
+   full preferences module below re-applies the same values once loaded). */
+(function(){try{var p=JSON.parse(localStorage.getItem('dnsInspectorPrefs')||'{}');var root=document.documentElement;var theme=p.theme||'bemo-dark';if(theme==='system'){theme=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: light)').matches)?'bemo-light':'bemo-dark';}root.setAttribute('data-theme',theme);root.setAttribute('data-density',p.density||'comfortable');root.setAttribute('data-motion',p.reducedMotion?'reduced':'');var accents={teal:'#2dd4c8',blue:'#58a6ff',violet:'#a371f7',amber:'#e3b341',pink:'#ec4899',slate:'#94a3b8'};if(p.accent&&accents[p.accent])root.style.setProperty('--accent',accents[p.accent]);}catch(e){}})();
+</script>
 <style>
 :root{color-scheme:dark;--sem-ok:#3fb950;--sem-info:#58a6ff;--sem-blocked:#f85149;--sem-warn:#d29922;--sem-crit:#da3633;--sem-live:#39c5cf;
 --font-sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;--font-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
 --bg:#090c11;--surface-0:#0d1117;--surface-1:#11161d;--surface-2:#161b22;--surface-3:#1c232e;
 --border:#242b35;--border-strong:#333c49;--text-primary:#e6edf3;--text-secondary:#8b949e;--text-tertiary:#5c6773;
---accent:#2dd4c8;--accent-strong:#1fb9ae;--accent-soft:rgba(45,212,200,.14);--accent-contrast:#04211d;
+--accent:#2dd4c8;--accent-strong:color-mix(in srgb, var(--accent) 82%, black);--accent-soft:color-mix(in srgb, var(--accent) 15%, transparent);--accent-contrast:color-mix(in srgb, var(--accent) 92%, black);
 --radius-xs:6px;--radius-sm:9px;--radius-md:13px;--radius-lg:18px;--radius-pill:999px;
 --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:20px;--space-6:28px;--space-7:36px;--space-8:48px;
 --shadow-sm:0 1px 2px rgba(0,0,0,.3);--shadow-md:0 10px 26px rgba(0,0,0,.32);--shadow-lg:0 22px 52px rgba(0,0,0,.4);
 --transition:150ms ease}
+
+/* ---- Inspector BEMO themes (0.8.4) ----
+   Each theme only redeclares surface/border/text/semantic tokens; the
+   derived --accent-strong/--accent-soft/--accent-contrast above stay in
+   effect (they resolve against whatever --accent is cascaded on <html> at
+   used-value time), so a user accent override keeps working in every
+   theme without repeating the color-mix() formula per theme. Semantic
+   status colors (--sem-*) are re-tuned per theme for contrast but keep
+   their meaning: ok=allowed, blocked=blocked, warn/crit unchanged. */
+html[data-theme="bemo-light"]{color-scheme:light;
+--bg:#f4f6f8;--surface-0:#ffffff;--surface-1:#ffffff;--surface-2:#f1f4f7;--surface-3:#e7ecf1;
+--border:#dde3e9;--border-strong:#c3ccd4;--text-primary:#0f172a;--text-secondary:#4b5768;--text-tertiary:#6b7688;
+--accent:#0e8f83;--sem-ok:#1a7f37;--sem-info:#0969da;--sem-blocked:#cf222e;--sem-warn:#9a6700;--sem-crit:#a40e26;--sem-live:#0f8b96;
+--shadow-sm:0 1px 2px rgba(15,23,42,.08);--shadow-md:0 10px 26px rgba(15,23,42,.10);--shadow-lg:0 22px 52px rgba(15,23,42,.14)}
+html[data-theme="bemo-aurora"]{color-scheme:dark;
+--bg:#070912;--surface-0:#0b0f1c;--surface-1:#0f1426;--surface-2:#151b33;--surface-3:#1b2340;
+--border:#262e4d;--border-strong:#34406b;--text-primary:#e7ecff;--text-secondary:#9aa4d1;--text-tertiary:#6b76a3;
+--accent:#7c8cff;--sem-ok:#3ddc97;--sem-info:#5eb1ff;--sem-blocked:#ff6b81;--sem-warn:#ffcb66;--sem-crit:#ff4d6d;--sem-live:#8ee9ff}
+html[data-theme="bemo-natural"]{color-scheme:dark;
+--bg:#0e120f;--surface-0:#111611;--surface-1:#141a15;--surface-2:#1a2119;--surface-3:#212a1f;
+--border:#2b342a;--border-strong:#3b4739;--text-primary:#e8efe6;--text-secondary:#a3b09e;--text-tertiary:#79876f;
+--accent:#8fbf7f;--sem-ok:#7cc576;--sem-info:#7fb3a3;--sem-blocked:#e2735a;--sem-warn:#d9a441;--sem-crit:#c9503a;--sem-live:#5fae95}
+
+/* ---- density: spacing/typography scale only, colors are never touched ---- */
+html[data-density="compact"]{--space-3:9px;--space-4:12px;--space-5:16px;--space-6:20px}
+html[data-density="compact"] .card{padding:14px 16px}
+html[data-density="compact"] td,html[data-density="compact"] th{padding:8px 8px}
+html[data-density="compact"] .toolbar,html[data-density="compact"] .recent-controls{padding:8px}
+html[data-density="dense"]{--space-3:7px;--space-4:9px;--space-5:12px;--space-6:16px}
+html[data-density="dense"] .card{padding:11px 13px}
+html[data-density="dense"] td,html[data-density="dense"] th{padding:5px 7px;font-size:.86rem}
+html[data-density="dense"] .toolbar,html[data-density="dense"] .recent-controls{padding:6px}
+html[data-density="dense"] h2{font-size:.96rem}
+
+/* ---- explicit reduced-motion preference, in addition to the OS setting ---- */
+html[data-motion="reduced"] *,html[data-motion="reduced"] *::before,html[data-motion="reduced"] *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 *{box-sizing:border-box}
 body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#0d1117;color:#e6edf3;margin:0;padding:28px;max-width:1450px;margin-inline:auto}
 h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949e}.live{color:#7ee787;font-weight:700}.updated-time{color:#58a6ff;font-weight:700}.updated-date{color:#8b949e}.signal{border-left:3px solid #30363d;padding:10px 12px;background:#0d1117;border-radius:8px}.signal-green{border-color:#3fb950}.signal-blue{border-color:#58a6ff}.signal-yellow{border-color:#d29922}.signal-orange{border-color:#db6d28}.signal-red{border-color:#f85149}.signal-gray{border-color:#8b949e}.signal-title{font-weight:750;margin-bottom:5px}.evidence{margin:6px 0 0;padding-left:18px;color:#c9d1d9}.evidence li{margin:3px 0}.confidence-high{color:#3fb950;font-weight:700}.confidence-medium{color:#d29922;font-weight:700}.confidence-low{color:#8b949e;font-weight:700}.dns-list{display:flex;flex-wrap:wrap;gap:6px}.dns-ip{display:inline-block;padding:4px 8px;border:1px solid #30363d;border-radius:7px;background:#161b22;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.82rem}.vendor-logo{width:20px;height:20px;object-fit:contain;vertical-align:middle;margin-right:6px;border-radius:4px}.vendor-logo-lg{width:30px;height:30px;object-fit:contain;flex:0 0 30px}.vendor-mark{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;margin-right:6px;border-radius:5px;background:#30363d;font-size:.7rem}.vendor-mark-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;font-size:.75rem;font-weight:800}.device-type-icon{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;flex:0 0 20px;margin-right:6px;border-radius:5px;background:#30363d;color:#8b949e}.device-type-icon-lg{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;flex:0 0 30px;border-radius:8px;background:#30363d;color:#8b949e}.device-type-icon svg,.device-type-icon-lg svg{width:70%;height:70%;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
@@ -338,6 +381,49 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
 .bar-fill{background:var(--accent);background-image:linear-gradient(90deg,var(--accent-strong),var(--accent))}
 
 @media(max-width:900px){.card{padding:16px}.tabs{overflow-x:auto}.tab-btn{flex:0 0 auto}}
+
+/* ---- Settings ---- */
+.settings-dialog{border:1px solid var(--border);border-radius:var(--radius-lg);padding:0;background:var(--surface-1);color:var(--text-primary);box-shadow:var(--shadow-lg);width:min(720px,92vw);max-height:min(640px,86vh)}
+.settings-dialog::backdrop{background:rgba(4,6,10,.6)}
+.settings-head{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.settings-head h2{margin:0;border:none;padding:0}
+.settings-close{padding:6px 9px;border-radius:var(--radius-sm)}
+.settings-body{display:flex;gap:0;max-height:calc(min(640px,86vh) - 116px);overflow:hidden}
+.settings-nav{display:flex;flex-direction:column;gap:2px;flex:0 0 160px;padding:12px;border-right:1px solid var(--border);overflow-y:auto}
+.settings-nav-btn{display:flex;align-items:center;justify-content:flex-start;text-align:left;background:transparent;border-color:transparent;color:var(--text-secondary);border-radius:var(--radius-sm);padding:8px 10px;font-size:.85rem}
+.settings-nav-btn:hover{background:var(--surface-2);color:var(--text-primary)}
+.settings-nav-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
+.settings-panels{flex:1;padding:18px 20px;overflow-y:auto}
+.settings-section{display:none}
+.settings-section.active{display:block}
+.settings-section h3{margin-top:0}
+.settings-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:10px 0;border-bottom:1px solid var(--border)}
+.settings-row:last-child{border-bottom:0}
+.settings-row-label{min-width:0}
+.settings-row-label b{display:block;font-size:.86rem}
+.settings-row-label small{color:var(--text-tertiary)}
+.settings-control{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.settings-choice-group{display:inline-flex;gap:4px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-pill);padding:3px}
+.settings-choice{padding:6px 12px;border-radius:var(--radius-pill);border-color:transparent;background:transparent;color:var(--text-secondary);font-size:.8rem}
+.settings-choice.active{background:var(--accent-soft);color:var(--text-primary);border-color:var(--accent)}
+.settings-swatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--border);padding:0;background:var(--swatch-color,var(--accent))}
+.settings-swatch.active{border-color:var(--text-primary);box-shadow:0 0 0 2px var(--swatch-color,var(--accent))}
+.settings-select{border-radius:var(--radius-sm)}
+.settings-kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:.84rem}
+.settings-kv b{color:var(--text-secondary);font-weight:600}
+.settings-kv span{font-family:var(--font-mono)}
+.settings-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--border)}
+@media(max-width:640px){.settings-body{flex-direction:column;max-height:70vh}.settings-nav{flex-direction:row;flex-wrap:wrap;flex:0 0 auto;border-right:0;border-bottom:1px solid var(--border)}.settings-row{flex-direction:column;align-items:flex-start}.settings-control{justify-content:flex-start}}
+
+/* ---- Analytics visual styles: same metric, three presentations ---- */
+.metric-visual svg{width:100%;height:120px;display:block}
+.live-card.visual-digital .live-rate{font-family:var(--font-mono);letter-spacing:.02em}
+.live-card.visual-specter .live-rate{text-shadow:0 0 16px var(--accent-soft),0 0 2px var(--accent)}
+.live-card.visual-specter .live-title{color:var(--accent)}
+.visual-specter .metric-line{filter:drop-shadow(0 0 5px var(--accent-soft))}
+.visual-analog .metric-line{stroke-linecap:round}
+.live-gauge{display:flex;justify-content:center;margin:2px 0 4px}
+.live-gauge svg{width:130px;height:70px}
 </style></head><body>
 {% if is_dev_environment %}<div class="dev-banner" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4"/><circle cx="12" cy="17.5" r=".1" fill="currentColor" stroke="currentColor" stroke-width="2"/></svg><span>DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</span></div>{% endif %}
 <header class="app-shell">
@@ -352,17 +438,196 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
     <div class="observability-strip" aria-label="Application runtime status">
       <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
       <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
+      <button type="button" class="debug-button" id="settings-open-btn" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button>
       <button type="button" class="debug-button" onclick="window.location='/debug/bundle'">Generate Debug Bundle</button>
     </div>
     <p class="muted shell-meta">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
   </div>
 </header>
+<dialog id="settings-dialog" class="settings-dialog" aria-label="Inspector BEMO settings">
+  <div class="settings-head"><h2>Settings</h2><button type="button" class="settings-close" id="settings-close-btn" aria-label="Close settings">✕</button></div>
+  <div class="settings-body">
+    <nav class="settings-nav" role="tablist" aria-label="Settings sections">
+      <button type="button" class="settings-nav-btn active" data-settings-tab="appearance" role="tab">Appearance</button>
+      <button type="button" class="settings-nav-btn" data-settings-tab="dashboard" role="tab">Dashboard</button>
+      <button type="button" class="settings-nav-btn" data-settings-tab="monitoring" role="tab">Monitoring</button>
+      <button type="button" class="settings-nav-btn" data-settings-tab="diagnostics" role="tab">Diagnostics</button>
+      <button type="button" class="settings-nav-btn" data-settings-tab="system" role="tab">System</button>
+      <button type="button" class="settings-nav-btn" data-settings-tab="about" role="tab">About</button>
+    </nav>
+    <div class="settings-panels">
+      <section class="settings-section active" data-settings-panel="appearance">
+        <h3>Theme</h3>
+        <div class="settings-row"><div class="settings-row-label"><b>Color theme</b><small>Applies across Overview, Devices, DNS views and Analytics</small></div>
+          <div class="settings-control settings-choice-group" role="group" aria-label="Theme">
+            <button type="button" class="settings-choice" data-theme-choice="bemo-dark">Dark</button>
+            <button type="button" class="settings-choice" data-theme-choice="bemo-light">Light</button>
+            <button type="button" class="settings-choice" data-theme-choice="bemo-aurora">Aurora</button>
+            <button type="button" class="settings-choice" data-theme-choice="bemo-natural">Natural</button>
+            <button type="button" class="settings-choice" data-theme-choice="system">System</button>
+          </div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Accent color</b><small>Status colors (Allowed/Blocked/Warning/Critical) stay semantic and are never overridden</small></div>
+          <div class="settings-control" id="accent-choice-group" role="group" aria-label="Accent color"></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Density</b><small>Table and card spacing</small></div>
+          <div class="settings-control settings-choice-group" role="group" aria-label="Density">
+            <button type="button" class="settings-choice" data-density-choice="comfortable">Comfortable</button>
+            <button type="button" class="settings-choice" data-density-choice="compact">Compact</button>
+            <button type="button" class="settings-choice" data-density-choice="dense">Dense</button>
+          </div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Reduce motion</b><small>Turns off pulse/spin/fade animations</small></div>
+          <div class="settings-control"><input type="checkbox" id="reduced-motion-toggle"></div>
+        </div>
+      </section>
+      <section class="settings-section" data-settings-panel="dashboard">
+        <h3>Dashboard</h3>
+        <div class="settings-row"><div class="settings-row-label"><b>Default view</b><small>Which section opens when you load DNS Inspector</small></div>
+          <div class="settings-control"><select class="settings-select" id="default-view-select"><option value="last">Last viewed</option><option value="overview">Overview</option><option value="devices">Devices</option><option value="analytics">Analytics</option></select></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Analytics visual style</b><small>Same live metrics, different presentation</small></div>
+          <div class="settings-control settings-choice-group" role="group" aria-label="Analytics visual style">
+            <button type="button" class="settings-choice" data-style-choice="digital">Digital</button>
+            <button type="button" class="settings-choice" data-style-choice="analog">Analog</button>
+            <button type="button" class="settings-choice" data-style-choice="specter">Specter</button>
+          </div>
+        </div>
+      </section>
+      <section class="settings-section" data-settings-panel="monitoring">
+        <h3>Monitoring</h3>
+        <div class="settings-row"><div class="settings-row-label"><b>Refresh interval</b><small>How often the dashboard polls for new activity (server default: {{refresh_seconds}}s)</small></div>
+          <div class="settings-control"><select class="settings-select" id="refresh-interval-select"><option value="0">Server default ({{refresh_seconds}}s)</option></select></div>
+        </div>
+      </section>
+      <section class="settings-section" data-settings-panel="diagnostics">
+        <h3>Diagnostics</h3>
+        <div class="settings-kv" id="diagnostics-kv"><b>Loading…</b><span></span></div>
+        <div class="settings-row" style="border-bottom:0;padding-top:14px"><div class="settings-row-label"><b>Debug bundle</b><small>A safe diagnostic snapshot for troubleshooting</small></div>
+          <div class="settings-control"><button type="button" onclick="window.location='/debug/bundle'">Generate Debug Bundle</button></div>
+        </div>
+      </section>
+      <section class="settings-section" data-settings-panel="system">
+        <h3>System</h3>
+        <div class="settings-kv" id="system-kv"><b>Loading…</b><span></span></div>
+      </section>
+      <section class="settings-section" data-settings-panel="about">
+        <h3>About</h3>
+        <div class="settings-kv">
+          <b>Platform</b><span>Inspector BEMO</span>
+          <b>Module</b><span>DNS Inspector</span>
+          <b>Version</b><span>v{{version}}</span>
+          <b>Environment</b><span>{% if is_dev_environment %}Development{% else %}Production{% endif %}</span>
+          <b>Uptime</b><span id="about-uptime">—</span>
+        </div>
+      </section>
+    </div>
+  </div>
+  <div class="settings-foot"><button type="button" id="settings-reset-btn">Reset to defaults</button><button type="button" id="settings-done-btn">Done</button></div>
+</dialog>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <nav class="tabs" role="tablist" aria-label="DNS Inspector sections">
   <button class="tab-btn active" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
   <button class="tab-btn" data-tab="devices" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Devices</button>
   <button class="tab-btn" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
 </nav>
+<script>
+/* ---- Inspector BEMO preferences (0.8.4) ----
+   Theme, accent, density, motion, monitoring cadence and the Analytics
+   visual-style abstraction. Stored as one localStorage preference object --
+   no new backend route, no change to the existing DNS data model. Declared
+   in its own script block, first, so every later block (recent table,
+   analytics, settings dialog) can read/call into it immediately; a function
+   body is only evaluated when it *runs*, so it is safe for these functions
+   to reference names (like `refreshMs`, `renderLiveHero`) that later
+   blocks define, as long as nothing here calls them before those blocks
+   have executed. */
+const PREF_KEY = 'dnsInspectorPrefs';
+const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
+const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital'};
+function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
+function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
+let prefs = loadPrefs();
+function resolvedTheme(theme){ if(theme !== 'system') return theme; return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'bemo-light' : 'bemo-dark'; }
+function applyAppearance(){
+  const root = document.documentElement;
+  root.setAttribute('data-theme', resolvedTheme(prefs.theme));
+  root.setAttribute('data-density', prefs.density || 'comfortable');
+  root.setAttribute('data-motion', prefs.reducedMotion ? 'reduced' : '');
+  if (prefs.accent && ACCENT_PRESETS[prefs.accent]) root.style.setProperty('--accent', ACCENT_PRESETS[prefs.accent]);
+  else root.style.removeProperty('--accent');
+}
+applyAppearance();
+function effectiveRefreshMs(){ return Math.max(5000, (Number(prefs.refreshSeconds)||{{refresh_seconds}}) * 1000); }
+function applyMonitoring(){
+  refreshMs = effectiveRefreshMs();
+  if (document.querySelector('.tab-btn.active')?.dataset.tab === 'analytics' && typeof startAnalyticsPolling === 'function'){ stopAnalyticsPolling(); startAnalyticsPolling(); }
+}
+function applyAnalyticsStyle(){
+  if (typeof renderLiveHero === 'function') renderLiveHero();
+  if (document.getElementById('tab-analytics')?.classList.contains('active') && typeof fetchAnalyticsFull === 'function') fetchAnalyticsFull();
+}
+
+/* Reusable metric-visual abstraction: one metric, three presentation
+   styles (Analog / Digital / Specter). Every caller passes the same shape
+   of points ({count}) the historical/live analytics data already has --
+   the underlying data semantics never change, only the rendering. */
+function metricSplitRuns(xy){
+  const runs = []; let cur = [];
+  xy.forEach(pt => { if (pt){ cur.push(pt); } else if (cur.length){ runs.push(cur); cur = []; } });
+  if (cur.length) runs.push(cur);
+  return runs;
+}
+function metricXY(points, w, h, pad){
+  const vals = points.map(p=>p.count).filter(v=>v!=null && Number.isFinite(v));
+  const max = Math.max(1, ...vals);
+  const n = points.length;
+  const stepX = n > 1 ? (w - 2*pad) / (n - 1) : 0;
+  return points.map((p, i) => (p.count == null || !Number.isFinite(p.count)) ? null : {x: pad + i*stepX, y: h - pad - (p.count/max)*(h-2*pad)});
+}
+function metricStraightPath(xy){ return metricSplitRuns(xy).map(run => 'M' + run.map(p => p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' L')).join(' '); }
+function metricSmoothRun(pts){
+  if (pts.length < 3) return 'M' + pts.map(p => p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' L');
+  let d = `M${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} `;
+  for (let i=1;i<pts.length-1;i++){
+    const mx=(pts[i].x+pts[i+1].x)/2, my=(pts[i].y+pts[i+1].y)/2;
+    d += `Q${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)} ${mx.toFixed(1)} ${my.toFixed(1)} `;
+  }
+  const last = pts[pts.length-1];
+  return d + `L${last.x.toFixed(1)} ${last.y.toFixed(1)}`;
+}
+function metricSmoothPath(xy){ return metricSplitRuns(xy).map(metricSmoothRun).join(' '); }
+function renderMetricVisual(elId, points, colorVar, unitLabel){
+  const el = document.getElementById(elId); if (!el) return;
+  const style = prefs.analyticsStyle || 'digital';
+  el.classList.add('metric-visual');
+  el.classList.remove('visual-analog','visual-digital','visual-specter');
+  el.classList.add('visual-'+style);
+  const pts = points || [];
+  if (!pts.some(p => p.count != null)){ el.innerHTML = '<div class="empty-state">No data yet.</div>'; return; }
+  const w=600, h=120, pad=4;
+  const xy = metricXY(pts, w, h, pad);
+  const vals = pts.map(p=>p.count).filter(v=>v!=null);
+  const peak = vals.length ? Math.max(...vals) : 0;
+  let defs='', fill='';
+  const linePath = style === 'digital' ? metricStraightPath(xy) : metricSmoothPath(xy);
+  if (style === 'specter'){
+    const gradId = 'grad-'+elId;
+    const areaPath = metricSplitRuns(xy).map(run => `${metricSmoothRun(run)} L${run[run.length-1].x.toFixed(1)} ${h-pad} L${run[0].x.toFixed(1)} ${h-pad} Z`).join(' ');
+    defs = `<defs><linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="var(${colorVar})" stop-opacity=".35"/><stop offset="100%" stop-color="var(${colorVar})" stop-opacity="0"/></linearGradient></defs>`;
+    fill = `<path d="${esc(areaPath)}" fill="url(#${gradId})" stroke="none"/>`;
+  }
+  const strokeWidth = style === 'digital' ? 2 : 2.6;
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="history-svg" preserveAspectRatio="none" role="img" aria-label="${esc(unitLabel||'activity over time')}">${defs}${fill}<path class="metric-line" d="${esc(linePath)}" fill="none" stroke="var(${colorVar})" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="stats-note">${esc(unitLabel||'')} &middot; peak ${esc(peak)}</div>`;
+}
+function liveGaugeSvg(pct){
+  const cx=60, cy=60, r=44, circumference = Math.PI*r;
+  const angleDeg = 180 - pct*180, rad = angleDeg*Math.PI/180;
+  const nx = (cx + (r-8)*Math.cos(rad)).toFixed(1), ny = (cy - (r-8)*Math.sin(rad)).toFixed(1);
+  return `<svg viewBox="0 0 120 68" aria-hidden="true"><path d="M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}" fill="none" stroke="var(--border)" stroke-width="6" stroke-linecap="round"/><path d="M${cx-r} ${cy} A${r} ${r} 0 0 1 ${cx+r} ${cy}" fill="none" stroke="var(--sem-live)" stroke-width="6" stroke-linecap="round" stroke-dasharray="${circumference.toFixed(1)}" stroke-dashoffset="${(circumference*(1-pct)).toFixed(1)}"/><line x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}" stroke="var(--text-primary)" stroke-width="2.5" stroke-linecap="round"/><circle cx="${cx}" cy="${cy}" r="4" fill="var(--text-primary)"/></svg>`;
+}
+</script>
 <section id="tab-overview" class="tab-panel active" data-panel="overview">
   <div id="inspect-root">
   {% if inspect_html %}{{ inspect_html|safe }}{% endif %}
@@ -392,9 +657,10 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
 </section>
 <section id="tab-analytics" class="tab-panel" data-panel="analytics">
   <div class="analytics-hero">
-    <div class="card live-card">
+    <div class="card live-card" id="live-card">
       <div class="live-title"><span class="live-dot"></span>Live activity</div>
       <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
+      <div id="live-gauge-slot"></div>
       <div class="live-sparkline-wrap" id="live-sparkline"></div>
       <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
     </div>
@@ -443,7 +709,7 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
   </div>
 </section>
 <script>
-const refreshMs = {{refresh_seconds_ms}};
+let refreshMs = effectiveRefreshMs();
 const currentQuery = {{ q|tojson }};
 
 function esc(v){
@@ -536,9 +802,12 @@ document.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', (
 bindSortableTables();
 const hasInspectContent = !!document.getElementById('inspect-root')?.textContent.trim();
 try{
-  const saved=localStorage.getItem('dnsInspectorTab');
-  if(!currentQuery && !hasInspectContent && saved && ['overview','devices','analytics'].includes(saved)) setActiveTab(saved);
-  else if(currentQuery || hasInspectContent) setActiveTab('overview');
+  if(currentQuery || hasInspectContent){ setActiveTab('overview'); }
+  else if(prefs.defaultView && prefs.defaultView !== 'last' && ['overview','devices','analytics'].includes(prefs.defaultView)){ setActiveTab(prefs.defaultView); }
+  else{
+    const saved=localStorage.getItem('dnsInspectorTab');
+    if(saved && ['overview','devices','analytics'].includes(saved)) setActiveTab(saved);
+  }
 }catch(e){}
 renderStats({{ stats|tojson }});
 function buildStateUrl(){const p=new URLSearchParams();if(currentQuery)p.set('q',currentQuery);if(recentFilters.status)p.set('status',recentFilters.status);if(recentFilters.newOnly)p.set('new','1');if(recentFilters.classification)p.set('classification',recentFilters.classification);if(recentFilters.severity)p.set('severity',recentFilters.severity);if(recentFilters.device)p.set('device',recentFilters.device);if(recentFilters.vendor)p.set('vendor',recentFilters.vendor);p.set('page',String(recentFilters.page));p.set('page_size',String(recentFilters.page_size));return '/api/state?'+p.toString()}
@@ -579,33 +848,6 @@ let analyticsLiveSamples = [];
 let analyticsRange = '1h';
 let analyticsFullTimer = null;
 
-function svgSparkPath(points, w, h, pad){
-  pad = pad == null ? 4 : pad;
-  const vals = points.map(p=>p.count).filter(v=>v!=null && Number.isFinite(v));
-  const max = Math.max(1, ...vals);
-  const n = points.length;
-  const stepX = n > 1 ? (w - 2*pad) / (n - 1) : 0;
-  let d = ''; let started = false;
-  points.forEach((p, i) => {
-    const x = pad + i * stepX;
-    if (p.count == null || !Number.isFinite(p.count)) { started = false; return; }
-    const y = h - pad - (p.count / max) * (h - 2 * pad);
-    d += (started ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1) + ' ';
-    started = true;
-  });
-  return d.trim();
-}
-function renderTimelineChart(elId, points, colorVar, unitLabel){
-  const el = document.getElementById(elId); if (!el) return;
-  const pts = points || [];
-  const hasData = pts.some(p => p.count != null);
-  if (!hasData){ el.innerHTML = '<div class="empty-state">No data yet.</div>'; return; }
-  const w = 600, h = 120;
-  const d = svgSparkPath(pts, w, h);
-  const vals = pts.map(p=>p.count).filter(v=>v!=null);
-  const peak = vals.length ? Math.max(...vals) : 0;
-  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="history-svg" preserveAspectRatio="none" role="img" aria-label="${esc(unitLabel||'activity over time')}"><path d="${esc(d)}" fill="none" stroke="var(${colorVar})" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg><div class="stats-note">${esc(unitLabel||'')} &middot; peak ${esc(peak)}</div>`;
-}
 const STATUS_COLOR_VAR = {Allowed:'--sem-ok', Blocked:'--sem-blocked', Mixed:'--sem-warn', Unknown:'--sem-info'};
 function renderStatusBreakdown(breakdown){
   const el = document.getElementById('status-breakdown'); if (!el) return;
@@ -638,7 +880,22 @@ function renderLiveHero(windowSeconds){
   const rateEl = document.getElementById('live-rate-value');
   const latest = analyticsLiveSamples[analyticsLiveSamples.length - 1];
   if (rateEl) rateEl.textContent = latest ? latest.count : '—';
-  renderTimelineChart('live-sparkline', analyticsLiveSamples, '--sem-live', `Queries in the last ${windowSeconds||60}s`);
+  renderMetricVisual('live-sparkline', analyticsLiveSamples, '--sem-live', `Queries in the last ${windowSeconds||60}s`);
+  const card = document.getElementById('live-card');
+  if (card){ card.classList.remove('visual-analog','visual-digital','visual-specter'); card.classList.add('visual-'+(prefs.analyticsStyle||'digital')); }
+  const gaugeSlot = document.getElementById('live-gauge-slot');
+  if (gaugeSlot){
+    if ((prefs.analyticsStyle||'digital') === 'analog'){
+      const vals = analyticsLiveSamples.map(s=>s.count).filter(v=>v!=null);
+      const max = Math.max(1, ...vals);
+      const pct = Math.max(0, Math.min(1, (latest ? latest.count : 0) / max));
+      gaugeSlot.innerHTML = liveGaugeSvg(pct);
+      gaugeSlot.classList.add('live-gauge');
+    } else {
+      gaugeSlot.innerHTML = '';
+      gaugeSlot.classList.remove('live-gauge');
+    }
+  }
 }
 function pushLiveSample(n, windowSeconds){
   analyticsLiveSamples.push({count: Number(n)||0});
@@ -650,9 +907,9 @@ async function fetchAnalyticsFull(){
     const r = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`, {cache:'no-store'});
     if (!r.ok) return;
     const data = await r.json();
-    renderTimelineChart('chart-query-volume', data.series?.queries?.points, '--sem-info', 'DNS queries');
-    renderTimelineChart('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
-    renderTimelineChart('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
+    renderMetricVisual('chart-query-volume', data.series?.queries?.points, '--sem-info', 'DNS queries');
+    renderMetricVisual('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
+    renderMetricVisual('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
     renderStatusBreakdown(data.status_breakdown);
     renderRecentActivity(data.recent_domains, data.recent_devices);
     const tAllowed=document.getElementById('tile-allowed'); if(tAllowed) tAllowed.textContent = data.status_breakdown?.Allowed ?? '—';
@@ -681,6 +938,113 @@ function analyticsTabChanged(name){
 }
 window.onAnalyticsTabChange = analyticsTabChanged;
 analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'overview');
+</script>
+<script>
+/* ---- Settings dialog wiring ----
+   Preferences state, theming and the Analytics visual-style abstraction
+   all live earlier so they're ready before first paint / first Analytics
+   render; this block only wires up the dialog UI and persists choices. */
+(function(){
+  const dialog = document.getElementById('settings-dialog');
+  const openBtn = document.getElementById('settings-open-btn');
+  const closeBtn = document.getElementById('settings-close-btn');
+  const doneBtn = document.getElementById('settings-done-btn');
+  const resetBtn = document.getElementById('settings-reset-btn');
+  if (!dialog || !openBtn) return;
+
+  function openDialog(){
+    if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open','');
+    refreshDiagnosticsPanel();
+    refreshSystemPanel();
+    refreshAboutUptime();
+  }
+  function closeDialog(){ if (typeof dialog.close === 'function') dialog.close(); else dialog.removeAttribute('open'); }
+  openBtn.addEventListener('click', openDialog);
+  closeBtn?.addEventListener('click', closeDialog);
+  doneBtn?.addEventListener('click', closeDialog);
+  dialog.addEventListener('click', (e) => { if (e.target === dialog) closeDialog(); });
+
+  dialog.querySelectorAll('.settings-nav-btn').forEach(btn => btn.addEventListener('click', () => {
+    dialog.querySelectorAll('.settings-nav-btn').forEach(b => b.classList.toggle('active', b === btn));
+    dialog.querySelectorAll('.settings-section').forEach(s => s.classList.toggle('active', s.dataset.settingsPanel === btn.dataset.settingsTab));
+  }));
+
+  const accentGroup = document.getElementById('accent-choice-group');
+  Object.keys(ACCENT_PRESETS).forEach(key => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'settings-swatch'; b.dataset.accentChoice = key;
+    b.style.setProperty('--swatch-color', ACCENT_PRESETS[key]);
+    const label = key.charAt(0).toUpperCase() + key.slice(1);
+    b.title = label; b.setAttribute('aria-label', 'Accent: ' + label);
+    accentGroup.appendChild(b);
+  });
+
+  const refreshSelect = document.getElementById('refresh-interval-select');
+  REFRESH_OPTIONS.forEach(s => { const o = document.createElement('option'); o.value = String(s); o.textContent = s + 's'; refreshSelect.appendChild(o); });
+
+  function syncControls(){
+    dialog.querySelectorAll('[data-theme-choice]').forEach(b => b.classList.toggle('active', b.dataset.themeChoice === prefs.theme));
+    dialog.querySelectorAll('[data-accent-choice]').forEach(b => b.classList.toggle('active', b.dataset.accentChoice === prefs.accent));
+    dialog.querySelectorAll('[data-density-choice]').forEach(b => b.classList.toggle('active', b.dataset.densityChoice === (prefs.density||'comfortable')));
+    dialog.querySelectorAll('[data-style-choice]').forEach(b => b.classList.toggle('active', b.dataset.styleChoice === (prefs.analyticsStyle||'digital')));
+    const rm = document.getElementById('reduced-motion-toggle'); if (rm) rm.checked = !!prefs.reducedMotion;
+    const dv = document.getElementById('default-view-select'); if (dv) dv.value = prefs.defaultView || 'last';
+    if (refreshSelect) refreshSelect.value = String(prefs.refreshSeconds || 0);
+  }
+
+  function update(partial){ Object.assign(prefs, partial); savePrefs(); syncControls(); }
+
+  dialog.querySelectorAll('[data-theme-choice]').forEach(b => b.addEventListener('click', () => { update({theme: b.dataset.themeChoice}); applyAppearance(); }));
+  dialog.querySelectorAll('[data-accent-choice]').forEach(b => b.addEventListener('click', () => { update({accent: b.dataset.accentChoice}); applyAppearance(); }));
+  dialog.querySelectorAll('[data-density-choice]').forEach(b => b.addEventListener('click', () => { update({density: b.dataset.densityChoice}); applyAppearance(); }));
+  dialog.querySelectorAll('[data-style-choice]').forEach(b => b.addEventListener('click', () => { update({analyticsStyle: b.dataset.styleChoice}); applyAnalyticsStyle(); }));
+  document.getElementById('reduced-motion-toggle')?.addEventListener('change', (e) => { update({reducedMotion: e.target.checked}); applyAppearance(); });
+  document.getElementById('default-view-select')?.addEventListener('change', (e) => { update({defaultView: e.target.value}); });
+  refreshSelect?.addEventListener('change', (e) => { update({refreshSeconds: Number(e.target.value)||0}); applyMonitoring(); });
+
+  resetBtn?.addEventListener('click', () => {
+    prefs = Object.assign({}, DEFAULT_PREFS);
+    savePrefs();
+    syncControls();
+    applyAppearance(); applyMonitoring(); applyAnalyticsStyle();
+  });
+
+  function kvRows(entries){ return entries.map(([k,v]) => `<b>${esc(k)}</b><span>${esc(v)}</span>`).join(''); }
+
+  async function refreshDiagnosticsPanel(){
+    const el = document.getElementById('diagnostics-kv'); if (!el) return;
+    try{
+      const r = await fetch('/api/observability', {cache:'no-store'});
+      const d = await r.json();
+      const rows = [['Uptime', d.uptime_human || '—'], ['Memory (RSS)', d.ram_mb != null ? d.ram_mb + ' MB' : '—'], ['Process ID', d.pid ?? '—'], ['Threads', d.thread_count ?? '—'], ['Database size', d.db_size_bytes != null ? (Math.round(d.db_size_bytes/1024/1024*10)/10) + ' MB' : '—']];
+      const counts = d.db_counts || {};
+      ['domains','devices','processed_queries'].forEach(t => { if (counts[t] != null) rows.push(['Rows: ' + t, counts[t]]); });
+      el.innerHTML = kvRows(rows);
+    }catch(e){ el.innerHTML = '<b>Diagnostics unavailable</b><span>—</span>'; }
+  }
+
+  async function refreshSystemPanel(){
+    const el = document.getElementById('system-kv'); if (!el) return;
+    try{
+      const r = await fetch('/health', {cache:'no-store'});
+      const d = await r.json();
+      el.innerHTML = kvRows([
+        ['Environment', d.environment || '—'],
+        ['AdGuard source', d.adguard ? 'Configured' : 'Not configured'],
+        ['Poll interval', (d.poll_seconds ?? '—') + 's'],
+        ['UI refresh (server default)', (d.ui_refresh_seconds ?? '—') + 's'],
+        ['Version', d.version || '—'],
+      ]);
+    }catch(e){ el.innerHTML = '<b>System info unavailable</b><span>—</span>'; }
+  }
+
+  async function refreshAboutUptime(){
+    const el = document.getElementById('about-uptime'); if (!el) return;
+    try{ const r = await fetch('/api/observability', {cache:'no-store'}); const d = await r.json(); el.textContent = d.uptime_human || '—'; }catch(e){ el.textContent = '—'; }
+  }
+
+  syncControls();
+})();
 </script></body></html>
 """
 
