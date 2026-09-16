@@ -2,6 +2,66 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.4]
+
+Settings, themes and configurable Analytics visual styles (Issue #22): the
+first of three sequential UI releases before BEMO 0.9, turning the 0.8.3
+visual overhaul into a configurable product without touching the DNS data
+model or starting BEMO Core work. Front-end-only -- no new backend route, no
+database migration, no change to the existing DNS data/API behaviour.
+
+**Settings**
+
+- a gear button in the shared shell opens a Settings dialog (a native
+  `<dialog>`, not a fourth primary tab, so the Overview/Devices/Analytics
+  navigation stays uncluttered) with six sections: Appearance, Dashboard,
+  Monitoring, Diagnostics, System and About
+- Diagnostics and System read the existing `/api/observability` and
+  `/health` routes; About reuses the existing `version`/`is_dev_environment`
+  template context -- no section was invented without real data behind it
+- preferences persist as a single `dnsInspectorPrefs` localStorage object
+  (client-side only, per the 0.8.x constraint against a database migration
+  for UI preferences) and survive page reloads
+
+**Themes**
+
+- four coherent themes on top of the existing token-driven design system --
+  BEMO Dark (the current/default look), BEMO Light, BEMO Aurora (a dark
+  observability theme with cyan/blue/violet accents) and BEMO Natural
+  (dark/warm/sage/teal) -- plus a System option that follows the OS
+  `prefers-color-scheme`
+- each theme only redeclares surface/border/text/semantic tokens; applied
+  via `html[data-theme]` before first paint to avoid a flash of the wrong
+  theme, and consistent across Overview, Devices, DNS views and Analytics
+  because they all render through the one shared `HTML` template
+- a curated accent-color preset (6 choices) recolors links/active states
+  via `--accent`, with `--accent-strong`/`--accent-soft`/`--accent-contrast`
+  now derived from it through `color-mix()`; the semantic status variables
+  (`--sem-ok`/`--sem-blocked`/`--sem-warn`/`--sem-crit`/`--sem-live`) are
+  never touched by an accent choice, so Allowed/Blocked/Warning/Critical
+  keep their meaning regardless of theme or accent
+- Comfortable/Compact/Dense density (spacing/typography tokens only) and an
+  explicit reduce-motion toggle (in addition to the OS setting)
+
+**Monitoring**
+
+- the existing client-side refresh/poll cadence is now a bounded preference
+  (5/10/15/30/60s, or the server's configured default) instead of a fixed
+  value baked into the page; no new polling loop or backend work was added
+- a "default view" preference (Last viewed / Overview / Devices / Analytics)
+  sits alongside the existing last-viewed-tab memory
+
+**Analytics visual styles**
+
+- a reusable `renderMetricVisual` abstraction now backs every Analytics
+  chart (the live-activity sparkline and the three historical timelines),
+  with three selectable presentation styles -- Digital (the 0.8.3 default:
+  a straight line, monospace live readout), Analog (a smoothed trace plus a
+  semicircular gauge on the live card) and Specter (a smoothed, glowing
+  gradient-filled trail using the current accent) -- switching styles only
+  changes how the same underlying `{count}` points are drawn, never what
+  they mean; no metric was invented and no new data source was added
+
 ## [0.8.3]
 
 UI overhaul (Issue #20): a single "Inspector BEMO" visual design system
