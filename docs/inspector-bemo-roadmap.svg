@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024" viewBox="0 0 1536 1024">
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#07121f"/><stop offset="1" stop-color="#101722"/></linearGradient>
+  <linearGradient id="hero" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#172d46"/><stop offset=".55" stop-color="#10263a"/><stop offset="1" stop-color="#07121f"/></linearGradient>
+  <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <style>
+    .title{font:700 42px Arial,sans-serif;letter-spacing:2px;fill:#f4f7fb}.blue{fill:#55a9ff}.h2{font:700 25px Arial,sans-serif;letter-spacing:2px;fill:#dbeeff}.sub{font:500 16px Arial,sans-serif;letter-spacing:1px;fill:#a8c6df}.body{font:15px Arial,sans-serif;fill:#dce7f1}.small{font:13px Arial,sans-serif;fill:#9db2c6}.phase{font:700 22px Arial,sans-serif;fill:#fff}.phaseSub{font:700 13px Arial,sans-serif;letter-spacing:1px;fill:#d8e7f5}.card{fill:#0d1825;stroke:#27435c;stroke-width:1.2}.cyan{stroke:#24d7ff}.green{stroke:#42e88a}.purple{stroke:#c18cff}.orange{stroke:#ffbd55}.red{stroke:#ff7474}.dot{fill:#fff}.check{fill:#39e77d;font:700 15px Arial,sans-serif}.footer{font:700 14px Arial,sans-serif;fill:#b9d9f4}
+  </style>
+</defs>
+<rect width="1536" height="1024" fill="url(#bg)"/>
+<rect x="0" y="0" width="1536" height="178" fill="url(#hero)"/>
+<!-- mountain silhouette -->
+<path d="M1000 178 L1110 55 1155 108 1215 30 1300 128 1360 65 1450 178Z" fill="#102b43" opacity=".9"/>
+<path d="M1080 178 L1160 92 1192 126 1235 68 1295 178Z" fill="#1a3b56" opacity=".8"/>
+<!-- brand -->
+<text x="58" y="70" class="title">BEMO</text><text x="96" y="102" class="small" letter-spacing="5">INSPECTOR</text>
+<line x1="290" y1="28" x2="290" y2="148" stroke="#77bfff" opacity=".7"/>
+<text x="342" y="64" class="title">INSPECTOR <tspan class="blue">BEMO</tspan></text>
+<text x="344" y="94" class="sub">YOUR HOME SERVER. FULLY INSPECTED.</text>
+<text x="342" y="139" class="small">◉ OBSERVE    ◫ ANALYZE    ◇ DETECT    ⚙ UNDERSTAND    ♡ KEEP IT HEALTHY</text>
+<text x="1300" y="62" class="small">A SMARTER</text><text x="1300" y="84" class="small">HOME SERVER.</text><text x="1300" y="106" class="small">FOR A CALMER YOU.</text>
+
+<text x="38" y="218" class="h2">PROJECT ROADMAP</text><text x="38" y="244" class="sub">FROM DNS INSPECTOR TO A COMPLETE OBSERVABILITY PLATFORM</text>
+<text x="1010" y="218" class="sub" font-style="italic">“Not just monitoring.”</text><text x="1055" y="243" class="sub" font-style="italic">“Real understanding.”</text>
+
+<!-- phase headers -->
+<g>
+ <rect x="42" y="278" width="215" height="58" rx="8" fill="#17222d" stroke="#6f879c"/><circle cx="57" cy="307" r="13" fill="none" stroke="#bcd8ef" stroke-width="4"/><text x="82" y="302" class="phase">0.8.x</text><text x="82" y="322" class="phaseSub">STABILIZE</text>
+ <rect x="273" y="278" width="246" height="58" rx="8" fill="#102c42" stroke="#24d7ff"/><circle cx="288" cy="307" r="13" fill="none" stroke="#24d7ff" stroke-width="4"/><text x="313" y="302" class="phase">0.9</text><text x="313" y="322" class="phaseSub">BEMO FOUNDATION</text>
+ <rect x="535" y="278" width="225" height="58" rx="8" fill="#251b3b" stroke="#c18cff"/><circle cx="550" cy="307" r="13" fill="none" stroke="#c18cff" stroke-width="4"/><text x="575" y="302" class="phase">1.0</text><text x="575" y="322" class="phaseSub">INSPECTOR BEMO</text>
+ <rect x="776" y="278" width="235" height="58" rx="8" fill="#112c27" stroke="#42e88a"/><circle cx="791" cy="307" r="13" fill="none" stroke="#42e88a" stroke-width="4"/><text x="816" y="302" class="phase">1.1</text><text x="816" y="322" class="phaseSub">INFRASTRUCTURE</text>
+ <rect x="1027" y="278" width="225" height="58" rx="8" fill="#302317" stroke="#ffbd55"/><circle cx="1042" cy="307" r="13" fill="none" stroke="#ffbd55" stroke-width="4"/><text x="1067" y="302" class="phase">1.2</text><text x="1067" y="322" class="phaseSub">MEDIA &amp; SECURITY</text>
+ <rect x="1268" y="278" width="220" height="58" rx="8" fill="#351c22" stroke="#ff7474"/><circle cx="1283" cy="307" r="13" fill="none" stroke="#ff7474" stroke-width="4"/><text x="1308" y="302" class="phase">1.3+</text><text x="1308" y="322" class="phaseSub">INTELLIGENCE</text>
+</g>
+
+<!-- columns -->
+<g class="body">
+ <text x="44" y="370" class="phase">Current</text>
+ <text x="44" y="398" class="check">✓</text><text x="64" y="398">DNS Inspector stable</text>
+ <text x="44" y="422" class="check">✓</text><text x="64" y="422">Bug fixes &amp; improvements</text>
+ <text x="44" y="446" class="check">✓</text><text x="64" y="446">UI/UX refinements</text>
+ <text x="44" y="470" class="check">✓</text><text x="64" y="470">Performance &amp; reliability</text>
+ <text x="44" y="494" class="check">✓</text><text x="64" y="494">Docker build pipeline</text>
+ <text x="44" y="518" class="check">✓</text><text x="64" y="518">Documentation</text>
+ <rect x="40" y="545" width="166" height="38" rx="19" fill="none" stroke="#39e77d"/><text x="60" y="570" class="phaseSub">v0.8.1  DONE</text>
+
+ <text x="275" y="370" class="phase">Next</text>
+ <text x="275" y="398">• BEMO Core (modular architecture)</text><text x="275" y="422">• New project structure</text><text x="275" y="446">• Inspector registry</text><text x="275" y="470">• Event &amp; finding model</text><text x="275" y="494">• Shared database layer</text><text x="275" y="518">• New UI shell and navigation</text><text x="275" y="542">• Migrate DNS to module</text><text x="275" y="566">• Backward compatibility</text>
+ <rect x="275" y="585" width="180" height="38" rx="19" fill="none" stroke="#24d7ff"/><text x="295" y="610" class="phaseSub">v0.9.0  IN PROGRESS</text>
+
+ <text x="537" y="370" class="phase">Core Platform</text>
+ <text x="537" y="398">• Full modular platform</text><text x="537" y="422">• DNS Inspector (migrated)</text><text x="537" y="446">• System Inspector</text><text x="537" y="470">• Storage Inspector</text><text x="537" y="494">• Services Inspector</text><text x="537" y="518">• Unified dashboard</text><text x="537" y="542">• Findings &amp; health status</text><text x="537" y="566">• Notifications (basic)</text>
+ <rect x="537" y="585" width="150" height="38" rx="19" fill="none" stroke="#c18cff"/><text x="557" y="610" class="phaseSub">v1.0.0  CORE</text>
+
+ <text x="778" y="370" class="phase">Expand Visibility</text>
+ <text x="778" y="398">• Backup Inspector</text><text x="778" y="422">• Network Inspector</text><text x="778" y="446">• UPS Inspector</text><text x="778" y="470">• Improved alerts &amp; notifications</text><text x="778" y="494">• History &amp; trend analysis</text><text x="778" y="518">• Service dependency mapping</text><text x="778" y="542">• Container health monitoring</text><text x="778" y="566">• Image update detection</text>
+ <rect x="778" y="585" width="150" height="38" rx="19" fill="none" stroke="#42e88a"/><text x="798" y="610" class="phaseSub">v1.1.0  INFRA</text>
+
+ <text x="1029" y="370" class="phase">Deeper Insights</text>
+ <text x="1029" y="398">• Media Inspector (Jellyfin, etc.)</text><text x="1029" y="422">• Security Inspector</text><text x="1029" y="446">• Log &amp; Event Inspector</text><text x="1029" y="470">• Certificate monitoring</text><text x="1029" y="494">• Exposed services check</text><text x="1029" y="518">• Anomaly detection (basic)</text><text x="1029" y="542">• User activity overview</text><text x="1029" y="566">• Advanced visualizations</text>
+ <rect x="1029" y="585" width="150" height="38" rx="19" fill="none" stroke="#ffbd55"/><text x="1049" y="610" class="phaseSub">v1.2.0  INSIGHTS</text>
+
+ <text x="1270" y="370" class="phase">Smarter, Together</text>
+ <text x="1270" y="398">• Correlation engine</text><text x="1270" y="422">• Incident detection</text><text x="1270" y="446">• Root cause analysis</text><text x="1270" y="470">• Predictive trends</text><text x="1270" y="494">• Automated recommendations</text><text x="1270" y="518">• Optional remediation actions</text><text x="1270" y="542">• Plugin system for custom checks</text><text x="1270" y="566">• Mobile-friendly UI</text>
+ <rect x="1270" y="585" width="150" height="38" rx="19" fill="none" stroke="#ff7474"/><text x="1290" y="610" class="phaseSub">v1.3+  INTELLIGENCE</text>
+</g>
+
+<line x1="32" y1="650" x2="1504" y2="650" stroke="#20384e"/>
+<text x="38" y="684" class="h2">INSPECTORS</text><text x="185" y="684" class="sub">A COMPLETE VIEW OF YOUR HOME SERVER</text>
+<text x="1180" y="684" class="small">DIFFERENT PERSPECTIVES. A CLEARER PICTURE.</text>
+
+<!-- inspector cards -->
+<g>
+ <rect class="card" x="22" y="706" width="130" height="142" rx="10"/><text x="42" y="742" font-size="27" fill="#55d7ff">◎</text><text x="42" y="766" class="phaseSub">DNS</text><text x="42" y="790" class="small">Domains, queries,</text><text x="42" y="808" class="small">devices, enrichment.</text><text x="42" y="832" class="small">v0.8 ✓</text>
+ <rect class="card" x="160" y="706" width="130" height="142" rx="10"/><text x="180" y="742" font-size="27" fill="#55d7ff">▣</text><text x="180" y="766" class="phaseSub">DEVICES</text><text x="180" y="790" class="small">Network devices,</text><text x="180" y="808" class="small">vendors, identity.</text><text x="180" y="832" class="small">v1.0</text>
+ <rect class="card" x="298" y="706" width="130" height="142" rx="10"/><text x="318" y="742" font-size="27" fill="#c18cff">▦</text><text x="318" y="766" class="phaseSub">SYSTEM</text><text x="318" y="790" class="small">CPU, RAM, load,</text><text x="318" y="808" class="small">temperature, uptime.</text><text x="318" y="832" class="small">v1.0</text>
+ <rect class="card" x="436" y="706" width="130" height="142" rx="10"/><text x="456" y="742" font-size="27" fill="#42e88a">◉</text><text x="456" y="766" class="phaseSub">STORAGE</text><text x="456" y="790" class="small">Disks, ZFS pools,</text><text x="456" y="808" class="small">SMART, snapshots.</text><text x="456" y="832" class="small">v1.0</text>
+ <rect class="card" x="574" y="706" width="130" height="142" rx="10"/><text x="594" y="742" font-size="27" fill="#ffbd55">◇</text><text x="594" y="766" class="phaseSub">SERVICES</text><text x="594" y="790" class="small">Docker, apps,</text><text x="594" y="808" class="small">health, restarts.</text><text x="594" y="832" class="small">v1.0</text>
+ <rect class="card" x="712" y="706" width="130" height="142" rx="10"/><text x="732" y="742" font-size="27" fill="#55a9ff">☁</text><text x="732" y="766" class="phaseSub">BACKUPS</text><text x="732" y="790" class="small">Status, last run,</text><text x="732" y="808" class="small">integrity, recovery.</text><text x="732" y="832" class="small">v1.1</text>
+ <rect class="card" x="850" y="706" width="130" height="142" rx="10"/><text x="870" y="742" font-size="27" fill="#ff7474">⌘</text><text x="870" y="766" class="phaseSub">NETWORK</text><text x="870" y="790" class="small">Interfaces, latency,</text><text x="870" y="808" class="small">VPN, exposure.</text><text x="870" y="832" class="small">v1.1</text>
+ <rect class="card" x="988" y="706" width="130" height="142" rx="10"/><text x="1008" y="742" font-size="27" fill="#42e88a">ϟ</text><text x="1008" y="766" class="phaseSub">UPS</text><text x="1008" y="790" class="small">Power, battery,</text><text x="1008" y="808" class="small">runtime, events.</text><text x="1008" y="832" class="small">v1.1</text>
+ <rect class="card" x="1126" y="706" width="130" height="142" rx="10"/><text x="1146" y="742" font-size="27" fill="#c18cff">▶</text><text x="1146" y="766" class="phaseSub">MEDIA</text><text x="1146" y="790" class="small">Jellyfin, metadata,</text><text x="1146" y="808" class="small">playback health.</text><text x="1146" y="832" class="small">v1.2</text>
+ <rect class="card" x="1264" y="706" width="130" height="142" rx="10"/><text x="1284" y="742" font-size="27" fill="#ff7474">⬟</text><text x="1284" y="766" class="phaseSub">SECURITY</text><text x="1284" y="790" class="small">Certificates, exposed</text><text x="1284" y="808" class="small">ports, anomalies.</text><text x="1284" y="832" class="small">v1.2</text>
+</g>
+
+<line x1="32" y1="872" x2="1504" y2="872" stroke="#20384e"/>
+<rect x="32" y="892" width="430" height="104" rx="12" fill="#0c1723" stroke="#25425b"/><text x="52" y="920" class="phaseSub">CORE PRINCIPLES</text><text x="52" y="947" class="small">◈ PRIVACY FIRST     ⚙ OPEN ARCHITECTURE</text><text x="52" y="969" class="small">◉ EVIDENCE BASED   ◴ PRACTICAL INSIGHTS</text>
+<text x="610" y="936" class="title" font-size="30" font-style="italic">Let there BE Insights</text><text x="710" y="966" class="small">BEMO.RO</text>
+<rect x="1060" y="892" width="444" height="104" rx="12" fill="#0c1723" stroke="#25425b"/><text x="1080" y="920" class="phaseSub">THE BIGGER PICTURE</text><text x="1080" y="947" class="small">A more secure, stable and informed home server.</text><text x="1080" y="969" class="small">Spend less time worrying. More time enjoying what matters.</text>
+</svg>
