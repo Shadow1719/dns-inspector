@@ -73,3 +73,11 @@ def test_all_routes_are_registered(app_module):
 def test_static_files_are_served(app_module):
     rules = {rule.rule for rule in app_module.app.url_map.iter_rules()}
     assert "/static/<path:filename>" in rules
+
+
+def test_observability_route_binds_to_the_right_endpoint(app_module):
+    """Regression test for D-1: a stray blank line bound this route to a helper."""
+    endpoints = {
+        rule.rule: rule.endpoint for rule in app_module.app.url_map.iter_rules()
+    }
+    assert endpoints["/api/observability"] == "api_observability"
