@@ -591,7 +591,7 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
       <section class="settings-section" data-settings-panel="dashboard">
         <h3>Dashboard</h3>
         <div class="settings-row"><div class="settings-row-label"><b>Default view</b><small>Which section opens when you load DNS Inspector</small></div>
-          <div class="settings-control"><select class="settings-select" id="default-view-select"><option value="last">Last viewed</option><option value="overview">Overview</option><option value="devices">Devices</option><option value="analytics">Analytics</option></select></div>
+          <div class="settings-control"><select class="settings-select" id="default-view-select"><option value="last">Last viewed</option><option value="analytics">Home</option><option value="overview">Overview</option><option value="devices">Devices</option></select></div>
         </div>
         <div class="settings-row"><div class="settings-row-label"><b>Analytics visual style</b><small>Same live metrics, different presentation</small></div>
           <div class="settings-control settings-choice-group" role="group" aria-label="Analytics visual style">
@@ -600,7 +600,7 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
             <button type="button" class="settings-choice" data-style-choice="specter">Specter</button>
           </div>
         </div>
-        <div class="settings-row"><div class="settings-row-label"><b>Dashboard layout</b><small>Reorder, resize, show/hide and choose presets for the Analytics widgets, in the Analytics tab</small></div>
+        <div class="settings-row"><div class="settings-row-label"><b>Dashboard layout</b><small>Reorder, resize, show/hide and choose presets for the Analytics widgets, on Home</small></div>
           <div class="settings-control"><button type="button" onclick="document.getElementById('settings-close-btn')?.click();document.querySelector('.tab-btn[data-tab=analytics]')?.click();document.getElementById('dash-customize-btn')?.click();">Customize dashboard</button></div>
         </div>
       </section>
@@ -637,9 +637,9 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 </dialog>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <nav class="tabs" role="tablist" aria-label="DNS Inspector sections">
-  <button class="tab-btn active" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+  <button class="tab-btn active" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9"/></svg>Home</button>
+  <button class="tab-btn" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
   <button class="tab-btn" data-tab="devices" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Devices</button>
-  <button class="tab-btn" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
 </nav>
 <script>
 /* ---- Inspector BEMO preferences (0.8.4) ----
@@ -850,7 +850,7 @@ function renderInstrumentGauges(data){
   }
 }
 </script>
-<section id="tab-overview" class="tab-panel active" data-panel="overview">
+<section id="tab-overview" class="tab-panel" data-panel="overview">
   <div id="inspect-root">
   {% if inspect_html %}{{ inspect_html|safe }}{% endif %}
   </div>
@@ -877,7 +877,7 @@ function renderInstrumentGauges(data){
   <tbody id="clients-body">{{ clients_html|safe }}</tbody></table>
   <p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
 </section>
-<section id="tab-analytics" class="tab-panel" data-panel="analytics">
+<section id="tab-analytics" class="tab-panel active" data-panel="analytics">
   <div class="dash-toolbar">
     <button type="button" class="dash-customize-btn" id="dash-customize-btn" aria-pressed="false">Customize</button>
     <select class="settings-select" id="dash-preset-select" aria-label="Dashboard preset">

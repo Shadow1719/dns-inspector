@@ -2,6 +2,22 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.2]
+
+Small UI polish: the existing Analytics dashboard (Visual 2.0 + Dashboard
+Builder, live activity, gauges, history, GeoIP map) is now the first primary
+tab and the default landing view, presented as **Home** in the navigation.
+
+- the nav bar and the "Default view" settings dropdown now show a first
+  "Home" entry in place of "Analytics"; this is a visible-label change only
+  -- the tab's `data-tab`/panel id, its `/api/analytics*` routes and every
+  other internal `analytics` identifier are unchanged
+- the app now lands on Home by default (first visit, no saved tab, no
+  explicit "Default view" preference); an active search or domain lookup
+  still opens on Overview, and an explicit "Default view"/last-viewed-tab
+  preference is still honored exactly as before
+- Domains/Devices remain available as their own tabs for drill-down, unchanged
+
 ## [0.8.5.1]
 
 Functional DNS Destinations / GeoIP map and instrument gauges (Issue #27):
