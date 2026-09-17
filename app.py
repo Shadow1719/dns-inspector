@@ -101,7 +101,19 @@ NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/
 # is configurable so a deployment can point at its own converted database;
 # when no file exists there, the destination map honestly reports 0% geolocated
 # instead of inventing locations (see `NullGeoIPProvider`).
-GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", os.path.join(BASE_DIR, "data", "geoip_country_ranges.csv"))
+#
+# 0.8.5.4 (Issue #39): the default used to be `BASE_DIR/data/...` (i.e.
+# `/app/data/...` inside the container image), which is NOT the directory the
+# rest of the app treats as the persistent volume -- `DB_PATH`, `NEIGHBORS_PATH`
+# and `TRACKERDB_PATH` all default under `/data`, and that's the single mount
+# point the README documents (`-v /path/to/data:/data`). The Dockerfile never
+# even creates `/app/data`. An operator who followed the documented volume
+# setup and dropped the converted CSV into their mounted `/data` directory
+# therefore had it silently ignored: `os.path.exists()` on the old default
+# was always False, so the provider silently fell back to `NullGeoIPProvider`
+# with no error. The default now matches every other persistent path.
+GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "/data/geoip_country_ranges.csv")
+GEOIP_DB_PATH_EXPLICIT = "GEOIP_DB_PATH" in os.environ
 GEOIP_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CACHE_MAX_ENTRIES", "8192")))
 GEOIP_MAP_CACHE_SECONDS = max(5, int(os.getenv("GEOIP_MAP_CACHE_SECONDS", "30")))
 GEOIP_MAP_DOMAIN_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DOMAIN_LIMIT", "1500")))
@@ -116,7 +128,10 @@ GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT = max(4, int(os.getenv("GEOIP_DESTINATION
 # instead of inventing a city/IP location from a country centroid. See
 # docs/GEOIP.md for the supported schema (DB-IP City Lite, converted) and its
 # CC BY 4.0 attribution requirement.
-GEOIP_CITY_DB_PATH = os.getenv("GEOIP_CITY_DB_PATH", os.path.join(BASE_DIR, "data", "geoip_city_ranges.csv"))
+#
+# 0.8.5.4 (Issue #39): same `/data` default-path fix as `GEOIP_DB_PATH` above.
+GEOIP_CITY_DB_PATH = os.getenv("GEOIP_CITY_DB_PATH", "/data/geoip_city_ranges.csv")
+GEOIP_CITY_DB_PATH_EXPLICIT = "GEOIP_CITY_DB_PATH" in os.environ
 GEOIP_CITY_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CITY_CACHE_MAX_ENTRIES", "8192")))
 # Upper bound on individual coordinate points returned to the browser per map
 # payload -- a rendering/payload-size bound only; country aggregation and the
@@ -521,36 +536,64 @@ html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:tra
   position:relative;
   --map-bg:var(--surface-2); --map-land:var(--surface-3); --map-land-stroke:var(--border-strong);
   --map-border:var(--border); --map-grid:var(--border); --map-grid-strong:var(--border-strong);
+  --map-grid-dash:0; --map-coast-width:.75; --map-land-glow:none; --map-vignette:none;
   --map-point:var(--accent); --map-point-2:var(--accent); --map-point-opacity:.45; --map-point-glow:none;
+  --map-banner-bg:var(--surface-1); --map-banner-border:var(--border); --map-banner-color:var(--text-secondary);
 }
+/* 0.8.5.4 (Issue #39): each style below now varies background *treatment*
+   (a radial gradient standing in for ocean depth, not a flat fill),
+   coastline glow/weight, graticule dash pattern and the status-banner
+   colors -- not just the accent/point color -- so switching styles changes
+   the map's whole visual character rather than only its marker tint. */
 .destination-map-wrap[data-map-style="bemo-dark"]{
-  --map-bg:#060b14; --map-land:#0f1b2d; --map-land-stroke:#1c3350;
-  --map-border:#132338; --map-grid:#132338; --map-grid-strong:#1c3350;
+  --map-bg:radial-gradient(ellipse 120% 100% at 32% 22%,#0c1728 0%,#070d18 55%,#03060b 100%);
+  --map-land:#0f1b2d; --map-land-stroke:#24486e; --map-coast-width:.9;
+  --map-land-glow:drop-shadow(0 0 2px rgba(45,212,200,.25));
+  --map-border:#132338; --map-grid:#16283f; --map-grid-strong:#1c3350; --map-grid-dash:0;
   --map-point:#2dd4c8; --map-point-2:#5eead4; --map-point-opacity:.55;
   --map-point-glow:drop-shadow(0 0 4px rgba(45,212,200,.85));
+  --map-vignette:inset 0 0 70px rgba(0,0,0,.55);
+  --map-banner-bg:rgba(6,11,20,.92); --map-banner-border:#1c3350; --map-banner-color:#9fb4c9;
 }
 .destination-map-wrap[data-map-style="aurora"]{
-  --map-bg:#0a0620; --map-land:#161034; --map-land-stroke:#2c2160;
-  --map-border:#1c1440; --map-grid:#1c1440; --map-grid-strong:#2c2160;
+  --map-bg:radial-gradient(ellipse 130% 110% at 68% 12%,#1d1552 0%,#150c3c 45%,#0a0620 100%);
+  --map-land:#1c1442; --map-land-stroke:#4a3a90; --map-coast-width:.9;
+  --map-land-glow:drop-shadow(0 0 5px rgba(94,234,212,.3));
+  --map-border:#1c1440; --map-grid:#2a2058; --map-grid-strong:#3c2c78; --map-grid-dash:1,4;
   --map-point:#a78bfa; --map-point-2:#22d3ee; --map-point-opacity:.6;
-  --map-point-glow:drop-shadow(0 0 5px rgba(167,139,250,.85));
+  --map-point-glow:drop-shadow(0 0 6px rgba(167,139,250,.95));
+  --map-vignette:inset 0 0 90px rgba(20,10,50,.6);
+  --map-banner-bg:rgba(18,10,56,.92); --map-banner-border:#3c2c78; --map-banner-color:#c9bdf5;
 }
 .destination-map-wrap[data-map-style="white"]{
-  --map-bg:#f4f6f9; --map-land:#e2e8f0; --map-land-stroke:#cbd5e1;
-  --map-border:#dbe2ea; --map-grid:#e9edf2; --map-grid-strong:#cbd5e1;
-  --map-point:#2563eb; --map-point-2:#0891b2; --map-point-opacity:.5; --map-point-glow:none;
+  --map-bg:radial-gradient(ellipse 120% 100% at 40% 12%,#ffffff 0%,#eef2f7 55%,#dfe6ee 100%);
+  --map-land:#dbe3ee; --map-land-stroke:#8fa1b8; --map-coast-width:1;
+  --map-land-glow:none;
+  --map-border:#dbe2ea; --map-grid:#e6ebf1; --map-grid-strong:#c7d0dc; --map-grid-dash:0;
+  --map-point:#2563eb; --map-point-2:#0891b2; --map-point-opacity:.55; --map-point-glow:none;
+  --map-vignette:inset 0 0 40px rgba(148,163,184,.3);
+  --map-banner-bg:#ffffff; --map-banner-border:#cbd5e1; --map-banner-color:#334155;
 }
 .destination-map-wrap[data-map-style="minimal"]{
-  --map-bg:#111318; --map-land:#181b22; --map-land-stroke:#20242c;
-  --map-border:#1a1d24; --map-grid:transparent; --map-grid-strong:#20242c;
-  --map-point:#e2e8f0; --map-point-2:#e2e8f0; --map-point-opacity:.5; --map-point-glow:none;
+  --map-bg:#101216;
+  --map-land:#181b21; --map-land-stroke:#181b21; --map-coast-width:.5;
+  --map-land-glow:none;
+  --map-border:#1a1d24; --map-grid:transparent; --map-grid-strong:transparent; --map-grid-dash:0;
+  --map-point:#e2e8f0; --map-point-2:#94a3b8; --map-point-opacity:.5; --map-point-glow:none;
+  --map-vignette:none;
+  --map-banner-bg:rgba(16,18,22,.85); --map-banner-border:#1f232b; --map-banner-color:#8791a0;
 }
-.destination-map-svg{width:100%;height:auto;aspect-ratio:2/1;background:var(--map-bg);border:1px solid var(--map-border);border-radius:var(--radius-md)}
+.destination-map-svg{
+  width:100%;height:auto;aspect-ratio:2/1;background:var(--map-bg);border:1px solid var(--map-border);
+  border-radius:var(--radius-md);box-shadow:var(--map-vignette);cursor:grab;touch-action:none;user-select:none;
+}
+.destination-map-svg:active,.destination-map-svg.map-dragging{cursor:grabbing}
+.destination-map-svg:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s ease}
-.map-landmass{fill:var(--map-land);stroke:var(--map-land-stroke);stroke-width:.75;opacity:.9}
-.map-graticule .map-grid-line{stroke:var(--map-grid);stroke-width:1;opacity:.5}
+.map-landmass{fill:var(--map-land);stroke:var(--map-land-stroke);stroke-width:var(--map-coast-width);opacity:.92;filter:var(--map-land-glow)}
+.map-graticule .map-grid-line{stroke:var(--map-grid);stroke-width:1;opacity:.5;stroke-dasharray:var(--map-grid-dash)}
 .map-graticule .map-grid-equator{opacity:.85;stroke:var(--map-grid-strong)}
-.map-status-banner{position:absolute;top:10px;left:10px;right:10px;margin:0 auto;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:.8rem;text-align:center;pointer-events:none;box-shadow:var(--shadow-sm,0 1px 4px rgba(0,0,0,.15))}
+.map-status-banner{position:absolute;top:10px;left:10px;right:10px;margin:0 auto;padding:8px 12px;background:var(--map-banner-bg);border:1px solid var(--map-banner-border);border-radius:var(--radius-sm);color:var(--map-banner-color);font-size:.8rem;text-align:center;pointer-events:none;box-shadow:var(--shadow-sm,0 1px 4px rgba(0,0,0,.15))}
 .map-status-banner .map-status-action{margin-top:6px;pointer-events:auto}
 .map-bubble{fill:var(--map-point);fill-opacity:var(--map-point-opacity);stroke:var(--map-point);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease}
 .map-bubble:hover,.map-bubble-selected{fill-opacity:.85;stroke-width:2}
@@ -1029,6 +1072,7 @@ function renderInstrumentGauges(data){
           <span class="map-zoom-group" role="group" aria-label="Map zoom">
             <button type="button" class="map-zoom-btn" id="map-zoom-out-btn" aria-label="Zoom out">&minus;</button>
             <button type="button" class="map-zoom-btn" id="map-zoom-in-btn" aria-label="Zoom in">+</button>
+            <button type="button" class="map-zoom-btn" id="map-fit-btn" aria-label="Fit map to data">Fit</button>
             <button type="button" class="map-zoom-btn" id="map-reset-btn" aria-label="Reset map view">Reset</button>
           </span>
         </div>
@@ -1281,6 +1325,7 @@ async function fetchAnalyticsFull(){
    cluster sizing metric are `dnsInspectorPrefs` preferences, independent of
    the application theme/Analytics visual style. */
 const MAP_W = 720, MAP_H = 360;
+const MAP_ZOOM_MIN = 1, MAP_ZOOM_MAX = 16;
 const MAP_STYLES = ['bemo-dark', 'aurora', 'white', 'minimal'];
 const MAP_METRICS = ['observations', 'unique_ips', 'domains'];
 let mapSelectedCountry = null;
@@ -1289,27 +1334,84 @@ let mapZoom = 1;
 let mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
 let mapLastPayload = null;
 function mapProject(lat, lon){ return { x: (lon+180)/360*MAP_W, y: (90-lat)/180*MAP_H }; }
+/* Real viewport state (Issue #39): `mapZoom`/`mapViewCenter` are continuous
+   (not the old fixed power-of-two steps) so wheel/pinch zoom and pointer-
+   drag panning feel like a real map rather than an SVG image with two zoom
+   buttons. All viewport math funnels through these three helpers so pan,
+   wheel zoom, pinch zoom, keyboard panning and fit-to-data stay consistent
+   with each other and with `mapViewBoxAttr()`, which every render path
+   already used to compute the SVG `viewBox`. */
+function mapClampZoom(z){ return Math.min(MAP_ZOOM_MAX, Math.max(MAP_ZOOM_MIN, z)); }
+function mapClampCenter(cx, cy){
+  const vw = MAP_W / mapZoom, vh = MAP_H / mapZoom;
+  return {
+    cx: Math.min(Math.max(cx, vw / 2), MAP_W - vw / 2),
+    cy: Math.min(Math.max(cy, vh / 2), MAP_H - vh / 2),
+  };
+}
+function mapViewBox(){
+  const vw = MAP_W / mapZoom, vh = MAP_H / mapZoom;
+  const vx = Math.min(Math.max(mapViewCenter.cx - vw / 2, 0), MAP_W - vw);
+  const vy = Math.min(Math.max(mapViewCenter.cy - vh / 2, 0), MAP_H - vh);
+  return { vx, vy, vw, vh };
+}
+/* Zoom around a fixed map-space point (the pointer under a wheel/pinch
+   gesture, or the current view center for the +/- buttons and keyboard)
+   instead of always re-centering on the middle of the map -- otherwise
+   zooming in on something near the edge would immediately pan away from it. */
+function mapZoomAt(factor, anchor){
+  const newZoom = mapClampZoom(mapZoom * factor);
+  if (newZoom === mapZoom) return false;
+  const scale = mapZoom / newZoom;
+  mapZoom = newZoom;
+  mapViewCenter = mapClampCenter(
+    anchor.x + (mapViewCenter.cx - anchor.x) * scale,
+    anchor.y + (mapViewCenter.cy - anchor.y) * scale,
+  );
+  return true;
+}
+function mapApplyViewBox(svg){ if (svg) svg.setAttribute('viewBox', mapViewBoxAttr()); }
+function mapClientToPoint(clientX, clientY, svg){
+  const rect = svg.getBoundingClientRect();
+  if (!rect.width || !rect.height) return { x: mapViewCenter.cx, y: mapViewCenter.cy };
+  const { vx, vy, vw, vh } = mapViewBox();
+  return { x: vx + (clientX - rect.left) / rect.width * vw, y: vy + (clientY - rect.top) / rect.height * vh };
+}
 /* Bundled/offline-safe world-landmass silhouette (Issue #33): a simplified,
    hand-authored equirectangular outline of the seven continents plus a few
    large islands, in the same 720x360 projection as mapProject()/the
    graticule below, so the background renders without any GeoIP database,
    network access or external map provider. It is intentionally stylized --
    not survey-accurate coastline data -- purely so the widget always shows a
-   recognizable world map rather than an empty card. */
+   recognizable world map rather than an empty card.
+
+   0.8.5.4 (Issue #39): the operator-reported "low-poly/flat SVG" look came
+   from a handful of very long, perfectly straight edges (a 100-unit-long
+   flat top-of-Asia edge, a similarly flat North America Arctic edge, and the
+   wide, sparsely-jointed Antarctica strip along the bottom border) standing
+   out against otherwise-reasonable continent shapes. Those specific edges
+   are broken up into more, shorter segments with small bay/peninsula-style
+   jogs (no long edge here is dead straight anymore), and a small British
+   Isles island group is added near Europe -- still a stylized outline, not
+   survey-accurate data, just no longer dominated by a few giant flat
+   polygon edges. Depth/contrast/atmosphere is layered on top of this same
+   geometry via the per-style CSS treatment below (ocean gradient, coastline
+   glow, graticule), not by inventing more precise coastline data. */
 const WORLD_LAND_D = [
-  'M24,50 L50,60 L80,40 L160,36 L210,40 L240,70 L254,84 L226,90 L212,100 L200,130 L180,122 L166,128 L184,138 L200,162 L192,160 L150,136 L130,124 L116,106 L112,88 L100,72 L90,64 Z',
+  'M24,50 L50,60 L80,40 L120,32 L140,38 L160,36 L180,30 L195,38 L210,40 L240,70 L254,84 L226,90 L212,100 L200,130 L180,122 L166,128 L184,138 L200,162 L192,160 L150,136 L130,124 L116,106 L112,88 L100,72 L90,64 Z',
   'M270,14 L320,16 L320,40 L270,60 L250,40 Z',
   'M206,156 L236,160 L258,170 L290,190 L284,206 L280,220 L274,226 L264,236 L246,250 L230,270 L224,290 L216,270 L218,250 L218,230 L198,192 L200,180 L206,166 Z',
   'M348,110 L380,106 L424,118 L446,156 L462,156 L462,176 L442,184 L438,194 L430,220 L424,238 L396,248 L384,216 L386,198 L378,184 L366,172 L350,170 L326,150 L340,116 Z',
   'M446,204 L460,212 L454,230 L448,220 Z',
-  'M342,94 L350,82 L370,78 L382,70 L410,38 L440,44 L480,36 L540,34 L640,34 L700,44 L716,52 L680,60 L640,90 L620,96 L602,118 L576,138 L576,158 L560,166 L568,178 L556,150 L544,136 L520,154 L514,164 L506,150 L500,138 L482,130 L472,130 L464,150 L446,156 L430,116 L432,108 L414,106 L398,100 L386,90 L378,92 Z',
+  'M330,74 L338,71 L342,78 L336,84 L327,80 Z',
+  'M342,94 L350,82 L370,78 L382,70 L410,38 L440,44 L480,36 L510,32 L540,34 L560,30 L578,36 L598,29 L618,34 L640,34 L700,44 L716,52 L680,60 L640,90 L620,96 L602,118 L576,138 L576,158 L560,166 L568,178 L556,150 L544,136 L520,154 L514,164 L506,150 L500,138 L482,130 L472,130 L464,150 L446,156 L430,116 L432,108 L414,106 L398,100 L386,90 L378,92 Z',
   'M344,74 L362,74 L354,62 L348,64 L340,70 Z',
   'M620,90 L644,90 L640,110 L624,114 L620,100 Z',
   'M550,170 L572,186 L590,196 L580,192 L560,176 Z',
   'M578,172 L598,172 L594,188 L576,184 Z',
   'M586,224 L620,204 L634,204 L642,202 L646,202 L650,214 L666,236 L660,254 L640,256 L632,250 L622,244 L590,248 L586,232 Z',
   'M706,256 L716,256 L708,272 L696,270 Z',
-  'M0,360 L0,344 L60,338 L150,346 L260,336 L380,344 L500,334 L620,344 L720,338 L720,360 Z'
+  'M0,360 L0,344 L30,338 L60,341 L105,335 L150,346 L205,338 L260,336 L320,343 L380,344 L440,336 L500,334 L560,342 L620,344 L670,337 L720,338 L720,360 Z'
 ].join(' ');
 function mapLandmassSvg(){ return `<path class="map-landmass" d="${WORLD_LAND_D}"/>`; }
 function mapBaseLayers(){ return `${mapLandmassSvg()}${mapGraticule()}`; }
@@ -1318,14 +1420,12 @@ function mapStatusBanner(text, actionHtml){
   return `<div class="map-status-banner">${text}${actionHtml ? `<div class="map-status-action">${actionHtml}</div>` : ''}</div>`;
 }
 function mapViewBoxAttr(){
-  const vw = MAP_W / mapZoom, vh = MAP_H / mapZoom;
-  const vx = Math.min(Math.max(mapViewCenter.cx - vw / 2, 0), MAP_W - vw);
-  const vy = Math.min(Math.max(mapViewCenter.cy - vh / 2, 0), MAP_H - vh);
+  const { vx, vy, vw, vh } = mapViewBox();
   return `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`;
 }
 function mapBaseSvg(label, inner){
   const style = MAP_STYLES.includes(prefs.mapStyle) ? prefs.mapStyle : 'bemo-dark';
-  return `<div class="destination-map-wrap" data-map-style="${esc(style)}"><svg viewBox="${mapViewBoxAttr()}" class="destination-map-svg" role="img" aria-label="${esc(label)}">${mapBaseLayers()}${inner || ''}</svg></div>`;
+  return `<div class="destination-map-wrap" data-map-style="${esc(style)}"><svg viewBox="${mapViewBoxAttr()}" class="destination-map-svg" tabindex="0" role="img" aria-label="${esc(label)}. Drag to pan, scroll or pinch to zoom, arrow keys to pan, +/- to zoom, 0 to reset.">${mapBaseLayers()}${inner || ''}</svg></div>`;
 }
 function mapGraticule(){
   let lines = '';
@@ -1495,9 +1595,9 @@ function renderDestinationsMode(data, capabilities){
     const key = node.getAttribute('data-cluster');
     const cluster = clusters.find(c => c.key === key);
     if (!cluster) return;
-    if (cluster.unique_ip_count > 1 && mapZoom < 8){
-      mapZoom = Math.min(8, mapZoom * 2);
-      mapViewCenter = { cx: cluster.x, cy: cluster.y };
+    if (cluster.unique_ip_count > 1 && mapZoom < MAP_ZOOM_MAX){
+      mapZoom = mapClampZoom(mapZoom * 2);
+      mapViewCenter = mapClampCenter(cluster.x, cluster.y);
       if (mapLastPayload) renderDestinationMap(mapLastPayload);
       return;
     }
@@ -1506,6 +1606,13 @@ function renderDestinationsMode(data, capabilities){
     renderMapDetail(mapSelectedDestinationKey ? cluster : null, 'destination');
   }));
 }
+/* GeoIP diagnostic state -> banner copy (Issue #39): `/api/analytics/map`'s
+   `provider.state` distinguishes six situations (see `geoip_map_payload()`
+   in app.py) so the operator sees exactly which link in the chain needs
+   attention instead of one generic empty map for every failure mode. Only
+   the four states below block the map itself -- `country_only` and
+   `full_coverage` have real data and are handled by the mode-specific
+   render functions instead. */
 function renderDestinationMap(data){
   const el = document.getElementById('destination-map'); if (!el) return;
   mapLastPayload = data;
@@ -1518,10 +1625,34 @@ function renderDestinationMap(data){
       ? 'Real observed DNS destination IPs plotted by coordinate and clustered when nearby — not verified physical server locations.'
       : 'Country-level aggregate of resolved DNS response IPs — not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.';
   }
-  if (!provider.configured && !capabilities.coordinates){
+  if (provider.state === 'not_configured'){
     el.innerHTML = mapBaseSvg(
       'World map; GeoIP not configured, destinations unmapped',
       mapStatusBanner('No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.')
+    );
+    renderMapDetail(null);
+    return;
+  }
+  if (provider.state === 'load_failed'){
+    el.innerHTML = mapBaseSvg(
+      'World map; GeoIP database configured but failed to load',
+      mapStatusBanner('GEOIP_DB_PATH is set, but no database loaded from it &mdash; check the configured path resolves inside the container and is readable. See docs/GEOIP.md.')
+    );
+    renderMapDetail(null);
+    return;
+  }
+  if (provider.state === 'no_public_destinations'){
+    el.innerHTML = mapBaseSvg(
+      'World map; GeoIP loaded, no observed public destinations yet',
+      mapStatusBanner('GeoIP database loaded, but no observed public destination IPs yet &mdash; this fills in once DNS queries with public A/AAAA answers are observed.')
+    );
+    renderMapDetail(null);
+    return;
+  }
+  if (provider.state === 'no_country_matches'){
+    el.innerHTML = mapBaseSvg(
+      'World map; observed destinations exist but none matched the GeoIP database',
+      mapStatusBanner('Observed public destination IPs exist, but none matched any range in the loaded database &mdash; double-check it loaded correctly and covers the address families you expect (e.g. IPv6). See docs/GEOIP.md.')
     );
     renderMapDetail(null);
     return;
@@ -1558,20 +1689,176 @@ document.getElementById('map-style-select')?.addEventListener('change', (e) => {
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-zoom-in-btn')?.addEventListener('click', () => {
-  mapZoom = Math.min(8, mapZoom * 2);
+  mapZoomAt(1.6, mapViewCenter);
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-zoom-out-btn')?.addEventListener('click', () => {
-  mapZoom = Math.max(1, mapZoom / 2);
-  if (mapZoom === 1) mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
+  mapZoomAt(1 / 1.6, mapViewCenter);
+  if (mapZoom === MAP_ZOOM_MIN) mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-reset-btn')?.addEventListener('click', () => {
-  mapZoom = 1; mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
+  mapZoom = MAP_ZOOM_MIN; mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
   mapSelectedCountry = null; mapSelectedDestinationKey = null;
   renderMapDetail(null);
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
+/* Fit-to-data (Issue #39): zoom/center the viewport to the bounding box of
+   whatever is currently plottable in the active mode -- country centroids in
+   Countries mode, real coordinate points in Destinations mode -- rather than
+   only ever offering a full-world reset. A no-op when there is nothing
+   plottable yet (e.g. no GeoIP coverage), matching the reset button's own
+   safe-no-op behavior in that case. */
+function mapFitToData(){
+  if (!mapLastPayload) return;
+  const mode = prefs.mapMode === 'destinations' ? 'destinations' : 'countries';
+  const points = mode === 'destinations'
+    ? (mapLastPayload.destinations || []).filter(p => p.lat != null && p.lon != null).map(p => mapProject(p.lat, p.lon))
+    : (mapLastPayload.countries || []).filter(c => c.centroid).map(c => mapProject(c.centroid[0], c.centroid[1]));
+  if (!points.length) return;
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const padX = Math.max(24, (maxX - minX) * 0.3);
+  const padY = Math.max(24, (maxY - minY) * 0.3);
+  const boxW = Math.max(10, maxX - minX + padX * 2);
+  const boxH = Math.max(10, maxY - minY + padY * 2);
+  mapZoom = mapClampZoom(Math.min(MAP_W / boxW, MAP_H / boxH));
+  mapViewCenter = mapClampCenter((minX + maxX) / 2, (minY + maxY) / 2);
+  renderDestinationMap(mapLastPayload);
+}
+document.getElementById('map-fit-btn')?.addEventListener('click', mapFitToData);
+/* Real map navigation (Issue #39): pointer drag to pan, wheel to zoom
+   (centered on the cursor), two-finger pinch to zoom on touch, and keyboard
+   arrow/+/-/0 support -- all delegated on the stable `#destination-map`
+   container (rather than re-bound per render) since its inner markup is
+   replaced on every render. Panning only mutates the live SVG's `viewBox`
+   attribute directly (cheap; bubble/cluster positions and sizes never
+   depend on pan), while zoom debounces a full re-render so Destinations
+   mode's zoom-dependent clustering catches up once the gesture settles. */
+let mapPointers = new Map();
+let mapDragState = null;
+let mapLastDragMoved = false;
+let mapRerenderTimer = null;
+function mapScheduleRerender(delay){
+  if (mapRerenderTimer) clearTimeout(mapRerenderTimer);
+  mapRerenderTimer = setTimeout(() => {
+    mapRerenderTimer = null;
+    if (mapLastPayload) renderDestinationMap(mapLastPayload);
+  }, delay);
+}
+function mapPointerDist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+function mapPointerMid(a, b){ return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+function mapOnPointerDown(e){
+  const svg = e.target.closest?.('.destination-map-svg');
+  if (!svg) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  svg.setPointerCapture?.(e.pointerId);
+  mapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (mapPointers.size === 1){
+    mapDragState = { mode: 'pan', pointerId: e.pointerId, svg, startClient: { x: e.clientX, y: e.clientY }, startCenter: { ...mapViewCenter }, moved: false };
+  } else if (mapPointers.size === 2){
+    const [a, b] = Array.from(mapPointers.values());
+    mapDragState = { mode: 'pinch', svg, startDist: mapPointerDist(a, b), startZoom: mapZoom, startCenter: { ...mapViewCenter }, startAnchor: mapClientToPoint(mapPointerMid(a, b).x, mapPointerMid(a, b).y, svg), moved: true };
+  }
+  svg.classList.add('map-dragging');
+}
+function mapOnPointerMove(e){
+  if (!mapPointers.has(e.pointerId)) return;
+  mapPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!mapDragState) return;
+  const svg = mapDragState.svg;
+  if (mapDragState.mode === 'pan' && e.pointerId === mapDragState.pointerId){
+    const rect = svg.getBoundingClientRect();
+    const { vw, vh } = mapViewBox();
+    const dxPx = e.clientX - mapDragState.startClient.x;
+    const dyPx = e.clientY - mapDragState.startClient.y;
+    if (Math.abs(dxPx) > 2 || Math.abs(dyPx) > 2) mapDragState.moved = true;
+    if (rect.width && rect.height){
+      const dx = dxPx / rect.width * vw;
+      const dy = dyPx / rect.height * vh;
+      mapViewCenter = mapClampCenter(mapDragState.startCenter.cx - dx, mapDragState.startCenter.cy - dy);
+      mapApplyViewBox(svg);
+    }
+  } else if (mapDragState.mode === 'pinch' && mapPointers.size >= 2){
+    const [a, b] = Array.from(mapPointers.values());
+    const dist = mapPointerDist(a, b);
+    if (mapDragState.startDist > 0){
+      mapZoom = mapClampZoom(mapDragState.startZoom * (dist / mapDragState.startDist));
+      const scale = mapDragState.startZoom / mapZoom;
+      mapViewCenter = mapClampCenter(
+        mapDragState.startAnchor.x + (mapDragState.startCenter.cx - mapDragState.startAnchor.x) * scale,
+        mapDragState.startAnchor.y + (mapDragState.startCenter.cy - mapDragState.startAnchor.y) * scale,
+      );
+      mapApplyViewBox(svg);
+    }
+  }
+}
+function mapOnPointerUp(e){
+  if (!mapPointers.has(e.pointerId)) return;
+  mapPointers.delete(e.pointerId);
+  if (!mapDragState) return;
+  if (mapDragState.mode === 'pinch' && mapPointers.size === 1){
+    const [remainingId, remainingPt] = Array.from(mapPointers.entries())[0];
+    mapDragState = { mode: 'pan', pointerId: remainingId, svg: mapDragState.svg, startClient: { ...remainingPt }, startCenter: { ...mapViewCenter }, moved: true };
+    return;
+  }
+  const svg = mapDragState.svg;
+  const moved = mapDragState.moved;
+  svg.classList.remove('map-dragging');
+  if (mapPointers.size === 0){
+    mapDragState = null;
+    mapLastDragMoved = moved;
+    mapScheduleRerender(0);
+  }
+}
+function mapOnWheel(e){
+  const svg = e.target.closest?.('.destination-map-svg');
+  if (!svg) return;
+  e.preventDefault();
+  const anchor = mapClientToPoint(e.clientX, e.clientY, svg);
+  const factor = e.deltaY < 0 ? 1.25 : 0.8;
+  if (mapZoomAt(factor, anchor)){
+    mapApplyViewBox(svg);
+    mapScheduleRerender(150);
+  }
+}
+function mapOnKeydown(e){
+  const svg = e.target.closest?.('.destination-map-svg');
+  if (!svg) return;
+  const panStep = (MAP_W / mapZoom) * 0.08;
+  let handled = true;
+  if (e.key === 'ArrowLeft') mapViewCenter = mapClampCenter(mapViewCenter.cx - panStep, mapViewCenter.cy);
+  else if (e.key === 'ArrowRight') mapViewCenter = mapClampCenter(mapViewCenter.cx + panStep, mapViewCenter.cy);
+  else if (e.key === 'ArrowUp') mapViewCenter = mapClampCenter(mapViewCenter.cx, mapViewCenter.cy - panStep);
+  else if (e.key === 'ArrowDown') mapViewCenter = mapClampCenter(mapViewCenter.cx, mapViewCenter.cy + panStep);
+  else if (e.key === '+' || e.key === '=') mapZoomAt(1.4, mapViewCenter);
+  else if (e.key === '-' || e.key === '_') mapZoomAt(1 / 1.4, mapViewCenter);
+  else if (e.key === '0' || e.key === 'Home'){ mapZoom = MAP_ZOOM_MIN; mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 }; }
+  else handled = false;
+  if (!handled) return;
+  e.preventDefault();
+  mapApplyViewBox(svg);
+  mapScheduleRerender(120);
+}
+function initMapInteraction(){
+  const container = document.getElementById('destination-map');
+  if (!container) return;
+  container.addEventListener('pointerdown', mapOnPointerDown);
+  container.addEventListener('pointermove', mapOnPointerMove);
+  container.addEventListener('pointerup', mapOnPointerUp);
+  container.addEventListener('pointercancel', mapOnPointerUp);
+  container.addEventListener('wheel', mapOnWheel, { passive: false });
+  container.addEventListener('keydown', mapOnKeydown);
+  // Capture-phase guard: a drag that ends on top of a bubble/cluster must not
+  // also fire that element's own click-to-select handler (registered in the
+  // bubble phase on the element itself), or every pan would toggle whatever
+  // happened to be under the pointer when it was released.
+  container.addEventListener('click', (e) => {
+    if (mapLastDragMoved){ e.stopPropagation(); e.preventDefault(); mapLastDragMoved = false; }
+  }, true);
+}
+initMapInteraction();
 async function fetchDestinationMap(){
   try{
     const r = await fetch('/api/analytics/map', {cache:'no-store'});
@@ -3638,6 +3925,16 @@ _geoip_city_cache_order = deque()
 _geoip_city_cache_lock = threading.Lock()
 
 
+def _geoip_provider_state(available, explicit):
+    """Classify a provider's basic load state (Issue #39). Distinguishes an
+    operator who never set the env var at all from one who set it to a path
+    that didn't actually load -- the second case is a real misconfiguration
+    worth surfacing distinctly rather than looking identical to "not set"."""
+    if available:
+        return "loaded"
+    return "load_failed" if explicit else "not_configured"
+
+
 def _geoip_diagnostics():
     """A small operator-facing snapshot of GeoIP provider state -- used by
     `/api/observability` and the one-time startup log line (see
@@ -3649,6 +3946,7 @@ def _geoip_diagnostics():
     return {
         "provider_type": type(provider).__name__,
         "configured": configured,
+        "state": _geoip_provider_state(configured, GEOIP_DB_PATH_EXPLICIT),
         "db_path_basename": os.path.basename(path) if configured and path else None,
         "range_count": provider.range_count if configured else 0,
     }
@@ -3664,6 +3962,7 @@ def _geoip_city_diagnostics():
     return {
         "provider_type": type(provider).__name__,
         "configured": configured,
+        "state": _geoip_provider_state(configured, GEOIP_CITY_DB_PATH_EXPLICIT),
         "db_path_basename": os.path.basename(path) if configured and path else None,
         "range_count": provider.range_count if configured else 0,
     }
@@ -3678,6 +3977,15 @@ def _log_geoip_status():
             f"from {diag['db_path_basename']}",
             flush=True,
         )
+    elif diag["state"] == "load_failed":
+        print(
+            f"GeoIP: GEOIP_DB_PATH is set but no database was loaded from it "
+            f"(missing file, unreadable, or empty/malformed CSV) -- double-check the "
+            f"in-container path actually resolves and is readable by the Inspector "
+            f"process. The destination map will honestly report 0% geolocated until "
+            f"this is fixed. See docs/GEOIP.md.",
+            flush=True,
+        )
     else:
         print(
             "GeoIP: no database configured (NullGeoIPProvider) -- the destination "
@@ -3690,6 +3998,14 @@ def _log_geoip_status():
         print(
             f"GeoIP city: {city_diag['provider_type']} loaded {city_diag['range_count']} "
             f"ranges from {city_diag['db_path_basename']} -- Destinations mode available",
+            flush=True,
+        )
+    elif city_diag["state"] == "load_failed":
+        print(
+            "GeoIP city: GEOIP_CITY_DB_PATH is set but no database was loaded from it "
+            "(missing file, unreadable, or empty/malformed CSV) -- Destinations mode "
+            "will report coordinate-level data as unavailable until this is fixed. "
+            "See docs/GEOIP.md.",
             flush=True,
         )
     else:
@@ -3886,9 +4202,46 @@ def geoip_map_payload():
     destination_list.sort(key=lambda d: -d["observation_count"])
     destination_list = destination_list[:GEOIP_MAP_DESTINATION_POINTS_LIMIT]
 
+    country_available = bool(_geoip_provider.available)
+    # A single, unambiguous diagnostic state (Issue #39) so the UI can tell an
+    # operator exactly which link in the chain is missing, instead of only
+    # ever showing one generic "no GeoIP database configured" banner
+    # regardless of whether the real problem is a missing database, a
+    # misconfigured path, no observed traffic yet, no matching ranges, or
+    # simply no city/coordinate database for Destinations mode:
+    #   not_configured        -- GEOIP_DB_PATH never set, using the default
+    #   load_failed           -- GEOIP_DB_PATH set explicitly but didn't load
+    #   no_public_destinations -- provider loaded, but zero observed public
+    #                             destination IPs exist yet (nothing to look up)
+    #   no_country_matches    -- observed public IPs exist, but none fell
+    #                             inside any loaded range (wrong/stale database)
+    #   country_only          -- country coverage exists; no city/coordinate
+    #                             database configured for Destinations mode
+    #   full_coverage         -- country coverage exists and a city/coordinate
+    #                             database is also loaded
+    if not country_available:
+        state = "load_failed" if GEOIP_DB_PATH_EXPLICIT else "not_configured"
+    elif total_observations == 0:
+        state = "no_public_destinations"
+    elif geolocated_observations == 0:
+        state = "no_country_matches"
+    elif not city_capable:
+        state = "country_only"
+    else:
+        state = "full_coverage"
+
     payload = {
         "updated": utcnow(),
-        "provider": {"configured": _geoip_provider.available, "path": GEOIP_DB_PATH if _geoip_provider.available else None},
+        "provider": {
+            "configured": country_available,
+            "state": state,
+            "db_path_basename": os.path.basename(GEOIP_DB_PATH) if country_available else None,
+        },
+        "city_provider": {
+            "configured": city_capable,
+            "state": _geoip_provider_state(city_capable, GEOIP_CITY_DB_PATH_EXPLICIT),
+            "db_path_basename": os.path.basename(GEOIP_CITY_DB_PATH) if city_capable else None,
+        },
         "countries": country_list,
         "destinations": destination_list,
         "unknown": {"domain_count": unknown_domains, "observation_count": unknown_observations},
@@ -3898,7 +4251,7 @@ def geoip_map_payload():
             "geolocated_pct": round((geolocated_observations / total_observations) * 100, 1) if total_observations else 0.0,
         },
         "capabilities": {
-            "country": bool(_geoip_provider.available),
+            "country": country_available,
             "coordinates": city_capable,
             "heatmap": False,
         },

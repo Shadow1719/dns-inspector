@@ -414,6 +414,25 @@ def test_geoip_map_payload_still_works_with_a_mix_of_mapped_and_unmapped_destina
     assert payload["coverage"]["geolocated_pct"] < 100
 
 
+# --- GeoIP default path (Issue #39 root-cause fix) ---------------------------
+#
+# The real-DEV bug: GEOIP_DB_PATH/GEOIP_CITY_DB_PATH used to default to
+# `BASE_DIR/data/...` (i.e. `/app/data/...` inside the container image) while
+# every other persistent path (DB_PATH, NEIGHBORS_PATH, TRACKERDB_PATH) and
+# the README's documented `-v /path/to/data:/data` volume convention point at
+# `/data`. An operator who mounted the documented volume and dropped the
+# converted CSV there had it silently ignored -- `/app/data` isn't even
+# created by the Dockerfile. These tests pin the corrected default.
+
+
+def test_geoip_db_path_defaults_under_the_documented_data_volume(app_module):
+    assert app_module.GEOIP_DB_PATH == "/data/geoip_country_ranges.csv"
+
+
+def test_geoip_city_db_path_defaults_under_the_documented_data_volume(app_module):
+    assert app_module.GEOIP_CITY_DB_PATH == "/data/geoip_city_ranges.csv"
+
+
 # --- GeoIP operator diagnostics ----------------------------------------------
 
 
@@ -422,8 +441,22 @@ def test_geoip_diagnostics_reports_unconfigured_for_the_null_provider(app_module
     diag = app_module._geoip_diagnostics()
     assert diag["provider_type"] == "NullGeoIPProvider"
     assert diag["configured"] is False
+    assert diag["state"] == "not_configured"
     assert diag["db_path_basename"] is None
     assert diag["range_count"] == 0
+
+
+def test_geoip_provider_state_is_load_failed_when_explicitly_configured_but_unavailable(app_module):
+    assert app_module._geoip_provider_state(False, True) == "load_failed"
+
+
+def test_geoip_provider_state_is_not_configured_when_never_set(app_module):
+    assert app_module._geoip_provider_state(False, False) == "not_configured"
+
+
+def test_geoip_provider_state_is_loaded_when_available(app_module):
+    assert app_module._geoip_provider_state(True, False) == "loaded"
+    assert app_module._geoip_provider_state(True, True) == "loaded"
 
 
 def test_geoip_diagnostics_reports_range_count_for_a_loaded_csv_provider(tmp_path, app_module, monkeypatch):

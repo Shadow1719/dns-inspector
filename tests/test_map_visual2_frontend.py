@@ -80,10 +80,16 @@ def test_clustering_never_drops_observations_when_merging_points(client):
 
 
 def test_zoom_and_reset_controls_are_wired_to_map_state(client):
+    """0.8.5.4 (Issue #39): zoom is continuous (pointer drag pan, wheel/pinch
+    zoom, keyboard) rather than the old fixed power-of-two steps -- both the
+    +/- buttons and every other zoom entry point funnel through the shared
+    `mapZoomAt()` helper so they all respect the same clamp/anchor logic."""
     body = client.get("/").data.decode("utf-8")
-    assert "mapZoom = Math.min(8, mapZoom * 2)" in body
-    assert "mapZoom = Math.max(1, mapZoom / 2)" in body
+    assert "function mapZoomAt(factor, anchor){" in body
+    assert "mapZoomAt(1.6, mapViewCenter)" in body
+    assert "mapZoomAt(1 / 1.6, mapViewCenter)" in body
     assert "map-reset-btn" in body
+    assert "map-fit-btn" in body
 
 
 # --- regression: existing honest-semantics/empty-state copy is preserved ----
@@ -128,3 +134,118 @@ def test_destination_map_widget_ids_are_unchanged(client):
     assert 'data-widget-id="destination-map"' in body
     assert 'id="destination-map"' in body
     assert 'id="destination-map-detail"' in body
+
+
+# --- Visual 2.1 (Issue #39): real pan/zoom navigation ------------------------
+
+
+def test_pointer_drag_pan_functions_exist(client):
+    body = client.get("/").data.decode("utf-8")
+    for fn in ("mapOnPointerDown", "mapOnPointerMove", "mapOnPointerUp", "initMapInteraction"):
+        assert f"function {fn}(" in body
+
+
+def test_wheel_and_keyboard_navigation_functions_exist(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "function mapOnWheel(" in body
+    assert "function mapOnKeydown(" in body
+    assert "addEventListener('wheel', mapOnWheel, { passive: false })" in body
+
+
+def test_fit_to_data_control_exists_and_is_wired(client):
+    body = client.get("/").data.decode("utf-8")
+    assert 'id="map-fit-btn"' in body
+    assert "function mapFitToData(){" in body
+    assert "document.getElementById('map-fit-btn')?.addEventListener('click', mapFitToData)" in body
+
+
+def test_map_svg_is_keyboard_focusable_and_describes_its_controls(client):
+    body = client.get("/").data.decode("utf-8")
+    assert 'tabindex="0"' in body
+    assert "Drag to pan" in body
+
+
+def test_map_uses_touch_action_none_so_the_browser_does_not_intercept_pan_gestures(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "touch-action:none" in body
+
+
+def test_drag_does_not_trigger_a_spurious_bubble_click(client):
+    """A pan that ends on top of a bubble/cluster must not also toggle that
+    element's own click-to-select handler -- see the capture-phase guard in
+    `initMapInteraction()`."""
+    body = client.get("/").data.decode("utf-8")
+    assert "mapLastDragMoved" in body
+    assert "e.stopPropagation(); e.preventDefault(); mapLastDragMoved = false;" in body
+
+
+def test_zoom_is_continuous_and_clamped_not_fixed_power_of_two_steps(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "const MAP_ZOOM_MIN = 1, MAP_ZOOM_MAX = 16;" in body
+    assert "function mapClampZoom(z){" in body
+    assert "function mapClampCenter(cx, cy){" in body
+
+
+# --- Visual 2.1 (Issue #39): genuinely distinct map style presets ------------
+
+
+def test_each_map_style_varies_more_than_just_the_accent_color(client):
+    """Each style must vary background treatment, coastline glow, graticule
+    dash pattern and banner colors -- not only the point/accent color -- or
+    switching styles just re-tints the same flat map."""
+    body = client.get("/").data.decode("utf-8")
+    style_blocks = {}
+    for style in ("bemo-dark", "aurora", "white", "minimal"):
+        match = re.search(
+            r'\.destination-map-wrap\[data-map-style="%s"\]\{([^}]*)\}' % re.escape(style), body,
+        )
+        assert match, f"no CSS rule found for style {style}"
+        style_blocks[style] = match.group(1)
+    # Every style must define its own ocean/background treatment, coastline
+    # glow and graticule dash pattern, not just reuse the default.
+    for style, block in style_blocks.items():
+        assert "--map-bg:" in block, style
+        assert "--map-land-glow:" in block, style
+        assert "--map-grid-dash:" in block, style
+        assert "--map-banner-bg:" in block, style
+    # And those values must actually differ across styles, not merely be
+    # re-declared identically.
+    backgrounds = {style: block.split("--map-bg:")[1].split(";")[0] for style, block in style_blocks.items()}
+    assert len(set(backgrounds.values())) == 4
+    banners = {style: block.split("--map-banner-bg:")[1].split(";")[0] for style, block in style_blocks.items()}
+    assert len(set(banners.values())) == 4
+
+
+def test_bemo_dark_and_aurora_have_distinct_grid_treatments(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "--map-grid-dash:1,4" in body  # aurora's atmospheric dashed graticule
+    assert '.destination-map-wrap[data-map-style="minimal"]{' in body
+
+
+def test_map_ocean_backgrounds_are_gradients_not_flat_fills(client):
+    """Depth/contrast requirement: the ocean/background treatment should read
+    as gradient depth, not a single flat fill color, for the non-minimal
+    styles."""
+    body = client.get("/").data.decode("utf-8")
+    for style in ("bemo-dark", "aurora", "white"):
+        match = re.search(
+            r'\.destination-map-wrap\[data-map-style="%s"\]\{([^}]*)\}' % re.escape(style), body,
+        )
+        assert "radial-gradient(" in match.group(1), style
+
+
+def test_map_svg_renders_a_vignette_box_shadow_for_depth(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "box-shadow:var(--map-vignette)" in body
+    assert "--map-vignette:" in body
+
+
+def test_status_banner_uses_map_style_colors_not_app_theme_surface_colors(client):
+    """The empty-state banner must vary per map style (Issue #39 item 3),
+    independent of the application theme -- it must not fall back to the
+    generic `--surface-1`/`--border`/`--text-secondary` app-theme tokens."""
+    body = client.get("/").data.decode("utf-8")
+    assert ".map-status-banner{position:absolute" in body
+    assert "background:var(--map-banner-bg)" in body
+    assert "border:1px solid var(--map-banner-border)" in body
+    assert "color:var(--map-banner-color)" in body

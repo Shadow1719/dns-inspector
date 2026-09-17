@@ -9,7 +9,13 @@ adds an optional, independent coordinate/city provider that powers the
 map's Destinations mode -- see
 ["Destinations mode: optional coordinate/city GeoIP"](#destinations-mode-optional-coordinatecity-geoip)
 below; the country-only provider and Countries mode described in the rest of
-this document are completely unchanged.
+this document are completely unchanged. 0.8.5.4 (Issue #39) fixes the
+default `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` to actually match the `/data`
+volume the rest of this document and the README already document (see the
+fix note in "Why no database ships by default" below) and adds a `state`
+diagnostic field to `/api/analytics/map` and `/api/observability` so an
+operator can tell exactly why coverage is zero -- see "Verifying the
+provider loaded" and "Verifying map coverage" below.
 
 If you just want to get the map populated, skip to
 ["Quick setup: DB-IP Country Lite"](#quick-setup-db-ip-country-lite).
@@ -87,8 +93,22 @@ implementations:
   Every lookup is honestly reported as unmapped; the map widget shows a
   clear "No GeoIP database configured" state and `% geolocated` reports 0%.
 - `CsvRangeGeoIPProvider` -- loads a CSV database from `GEOIP_DB_PATH` (an
-  environment variable, defaulting to `data/geoip_country_ranges.csv` next
-  to `app.py`) into a sorted, bisected range table per address family.
+  environment variable, defaulting to `/data/geoip_country_ranges.csv` --
+  the same persistent volume `DB_PATH`/`TRACKERDB_PATH`/`NEIGHBORS_PATH`
+  already use, see "Container volume path" below) into a sorted, bisected
+  range table per address family.
+
+> **0.8.5.4 fix:** before this release, the default was `data/geoip_country_ranges.csv`
+> resolved relative to `app.py` (i.e. `/app/data/...` inside the container
+> image) -- a directory the Dockerfile never creates and that is not part of
+> the `/data` volume the rest of this document and the README tell you to
+> mount. An operator who mounted `-v /path/to/data:/data` (as documented) and
+> dropped the converted CSV there had it silently ignored: the file existed on
+> the host, but the container process was looking somewhere else entirely, so
+> `CsvRangeGeoIPProvider` was never even constructed and the map fell back to
+> `NullGeoIPProvider` with no error. If you previously worked around this by
+> setting `GEOIP_DB_PATH=/data/geoip_country_ranges.csv` explicitly, nothing
+> changes for you -- that is now also the default.
 
 Swapping in a different backing source later only requires a new
 `GeoIPProvider` subclass; nothing else in the aggregation/API/UI path
@@ -133,9 +153,9 @@ attribution text DB-IP asks for).
    `CsvRangeGeoIPProvider` expects:
 
    ```bash
-   python scripts/convert_dbip_country_lite.py dbip-country-lite.csv -o data/geoip_country_ranges.csv
+   python scripts/convert_dbip_country_lite.py dbip-country-lite.csv -o geoip_country_ranges.csv
    # or, concatenating separate IPv4 + IPv6 exports:
-   cat dbip-country-lite-ipv4.csv dbip-country-lite-ipv6.csv | python scripts/convert_dbip_country_lite.py /dev/stdin -o data/geoip_country_ranges.csv
+   cat dbip-country-lite-ipv4.csv dbip-country-lite-ipv6.csv | python scripts/convert_dbip_country_lite.py /dev/stdin -o geoip_country_ranges.csv
    ```
 
    The converter (`scripts/convert_dbip_country_lite.py`) is a small, offline,
@@ -145,17 +165,17 @@ attribution text DB-IP asks for).
    aborting, and makes no network request of its own. Run
    `python scripts/convert_dbip_country_lite.py --help` for full usage.
 
-3. **Configure `GEOIP_DB_PATH`.** Point the Inspector at the converted file.
-   For a container deployment, this means two things together:
-   - mount a host directory containing the converted CSV into the container
-     (e.g. a volume already used for `DB_PATH`/`data/`, so it persists across
-     image upgrades);
-   - set `GEOIP_DB_PATH` to that file's path *inside the container*, e.g.
-     `GEOIP_DB_PATH=/data/geoip_country_ranges.csv` if you mount your host
-     directory to `/data`. If you keep the default `data/` directory next to
-     `app.py` and that directory is already part of your persistent volume,
-     you can skip setting `GEOIP_DB_PATH` explicitly and just drop the file
-     in as `geoip_country_ranges.csv`.
+3. **Place the converted file in your mounted `/data` volume.** The
+   Inspector's default `GEOIP_DB_PATH` is `/data/geoip_country_ranges.csv` --
+   the exact same host-mounted directory the README's `docker run` example
+   already mounts for `DB_PATH`/`TRACKERDB_PATH`/`NEIGHBORS_PATH`
+   (`-v /path/to/data:/data`). Copy the converted CSV into that host
+   directory as `geoip_country_ranges.csv` and you do not need to set
+   `GEOIP_DB_PATH` at all. Only set `GEOIP_DB_PATH` explicitly if you want a
+   different filename or a path outside `/data` -- and if you do, note that
+   an explicitly-set path that fails to load is now reported as a distinct
+   `load_failed` state (see "Verifying the provider loaded" below) rather
+   than looking identical to "never configured".
 
 4. **Restart.** `CsvRangeGeoIPProvider` loads the CSV once, at process
    startup (see `_geoip_provider = CsvRangeGeoIPProvider(GEOIP_DB_PATH) ...`
@@ -227,17 +247,19 @@ you.
    the rest into the schema above:
 
    ```bash
-   python scripts/convert_dbip_city_lite.py dbip-city-lite.csv -o data/geoip_city_ranges.csv
+   python scripts/convert_dbip_city_lite.py dbip-city-lite.csv -o geoip_city_ranges.csv
    # or, concatenating separate IPv4 + IPv6 exports:
-   cat dbip-city-lite-ipv4.csv dbip-city-lite-ipv6.csv | python scripts/convert_dbip_city_lite.py /dev/stdin -o data/geoip_city_ranges.csv
+   cat dbip-city-lite-ipv4.csv dbip-city-lite-ipv6.csv | python scripts/convert_dbip_city_lite.py /dev/stdin -o geoip_city_ranges.csv
    ```
 
    Like the country converter, this streams the input row by row (never
    loads the whole file into memory), makes no network request of its own,
    and skips malformed/out-of-range/header rows individually.
-3. **Configure `GEOIP_CITY_DB_PATH`** to point at the converted file, the
-   same way `GEOIP_DB_PATH` is configured above (mount a persistent volume,
-   set the env var to the in-container path).
+3. **Place the converted file in your mounted `/data` volume** as
+   `geoip_city_ranges.csv` -- the default `GEOIP_CITY_DB_PATH` is
+   `/data/geoip_city_ranges.csv`, the same volume as everything above. Only
+   set `GEOIP_CITY_DB_PATH` explicitly if you want a different filename or
+   location.
 4. **Restart** the Inspector -- `CsvCityGeoIPProvider` also loads once, at
    startup; there is no hot-reload.
 5. **Verify** via `/api/observability`'s new `geoip_city` field (same shape
@@ -280,12 +302,12 @@ startup.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GEOIP_DB_PATH` | `data/geoip_country_ranges.csv` next to `app.py` | Path to the country CSV database above. |
+| `GEOIP_DB_PATH` | `/data/geoip_country_ranges.csv` | Path to the country CSV database above -- the same `/data` volume as `DB_PATH`. |
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP country lookup results. |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | How long an aggregated map payload is reused before recomputing. |
 | `GEOIP_MAP_DOMAIN_LIMIT` | `1500` | Upper bound on domains scanned per aggregation pass (most-recently-active first). |
 | `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` | `32` | Upper bound on distinct observed destination IPs retained per domain. |
-| `GEOIP_CITY_DB_PATH` | `data/geoip_city_ranges.csv` next to `app.py` | Path to the optional coordinate/city CSV database (Destinations mode). |
+| `GEOIP_CITY_DB_PATH` | `/data/geoip_city_ranges.csv` | Path to the optional coordinate/city CSV database (Destinations mode) -- same `/data` volume. |
 | `GEOIP_CITY_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP city lookup results. |
 | `GEOIP_MAP_DESTINATION_POINTS_LIMIT` | `600` | Upper bound on individual coordinate points returned to the browser per map payload (a rendering-size cap only -- `coverage` is always computed over every observed destination regardless of this cap). |
 
@@ -299,13 +321,18 @@ agree:
   (never per query, so this never spams normal operation logs):
   - configured and loaded: `GeoIP: CsvRangeGeoIPProvider loaded <N> ranges
     from geoip_country_ranges.csv`
-  - not configured / failed to load: `GeoIP: no database configured
-    (NullGeoIPProvider) -- the destination map will honestly report 0%
-    geolocated until GEOIP_DB_PATH points at a loaded CSV database.`
+  - explicitly configured (`GEOIP_DB_PATH` set) but nothing loaded: `GeoIP:
+    GEOIP_DB_PATH is set but no database was loaded from it (missing file,
+    unreadable, or empty/malformed CSV) -- ...`
+  - never configured (using the default, and no file exists there): `GeoIP:
+    no database configured (NullGeoIPProvider) -- the destination map will
+    honestly report 0% geolocated until GEOIP_DB_PATH points at a loaded CSV
+    database.`
 
-  If you expected the first line and got the second, double-check the
-  in-container path `GEOIP_DB_PATH` actually resolves to (not just the host
-  path) and that the container process can read it.
+  If you expected the first line and got one of the other two, double-check
+  the in-container path `GEOIP_DB_PATH` actually resolves to (not just the
+  host path) and that the container process can read it -- see the 0.8.5.4
+  fix note above if your volume is mounted at `/data`.
 
 - **`/api/observability`.** The `geoip` field reports the same thing over
   HTTP, so you can check it without container log access:
@@ -314,10 +341,12 @@ agree:
   curl -s http://<inspector-host>:8080/api/observability | python3 -m json.tool
   ```
 
-  Look for a `geoip` object with `configured: true`, a `range_count` greater
-  than zero, and `provider_type: "CsvRangeGeoIPProvider"`. `db_path_basename`
-  reports only the filename, not the full path, so this endpoint doesn't leak
-  host filesystem layout.
+  Look for a `geoip` object with `configured: true`, `state: "loaded"`, a
+  `range_count` greater than zero, and `provider_type: "CsvRangeGeoIPProvider"`.
+  `state` is one of `not_configured` (never set, default path has no file),
+  `load_failed` (you set `GEOIP_DB_PATH` explicitly but nothing loaded from
+  it) or `loaded`. `db_path_basename` reports only the filename, not the
+  full path, so this endpoint doesn't leak host filesystem layout.
 
 ## Verifying map coverage
 
@@ -330,7 +359,14 @@ smoke test" below), check the aggregation endpoint directly:
 curl -s http://<inspector-host>:8080/api/analytics/map | python3 -m json.tool
 ```
 
-- `provider.configured` should be `true`.
+- `provider.configured` should be `true` and `provider.state` should be
+  `full_coverage` (both a country and a city database loaded and matching
+  observed traffic) or `country_only` (country database working, no city
+  database configured). The other possible `provider.state` values --
+  `not_configured`, `load_failed`, `no_public_destinations` (nothing observed
+  yet) and `no_country_matches` (traffic observed, but none of it fell inside
+  your loaded ranges) -- tell you exactly which link in the chain to look at
+  next instead of just one generic empty map.
 - `coverage.geolocated_pct` should be greater than `0` once at least one
   observed destination IP falls inside your loaded database's ranges.
 - `countries` should be a non-empty list, each with a `country_code`,
