@@ -2,6 +2,97 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.4]
+
+Destination Map Visual 2.1 (Issue #39): fixes the real root cause of the
+0.8.5.3 map staying empty on a real deployment, replaces the old single
+configured/not-configured boolean with a six-state diagnostic, adds real
+pointer/wheel/keyboard map navigation, makes the four map styles genuinely
+distinct presets, and improves the bundled offline basemap's geometry --
+without changing `/api/analytics/map`'s existing fields, the observed-DNS-
+destination semantics, or the bounded destination-IP model from prior
+releases.
+
+**Root cause fix: `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` now default under `/data`**
+
+- Both variables previously defaulted to `BASE_DIR/data/...`
+  (`/app/data/...` inside the container) while every other persistent path
+  (`DB_PATH`, `NEIGHBORS_PATH`, `TRACKERDB_PATH`) already defaulted under
+  `/data` -- the directory the Dockerfile creates and the README's
+  documented `-v host/path:/data` single-volume mount actually covers.
+  `/app/data` is never created by the image and is outside that documented
+  volume, so an operator who followed the README and dropped a converted
+  CSV into their mounted `/data` never had it picked up -- the map stayed
+  honestly empty not because GeoIP wasn't set up, but because the default
+  path didn't match the documented deployment convention. The defaults are
+  now `/data/geoip_country_ranges.csv` / `/data/geoip_city_ranges.csv`; an
+  explicit `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` override is unaffected.
+- A new standalone, offline, dependency-free script,
+  `scripts/verify_geoip.py`, lets an operator check a converted CSV loads
+  and produces real lookups *before* mounting/restarting the Inspector --
+  it prints the loaded range count per address family and resolves sample
+  IPs against both the country and city databases, and exits non-zero if
+  the country database is missing/unreadable/empty.
+
+**Six-state GeoIP diagnostics**
+
+- `/api/analytics/map` gains a `diagnostics` field
+  (`_geoip_diagnostic_state()` in `app.py`) that distinguishes
+  `not_configured`, `load_failed`, `no_public_destinations`,
+  `no_country_matches`, `country_only`, `partial_coordinate_coverage` and
+  `full_coverage` -- replacing the old single `provider.configured` boolean
+  the map widget used to render just one empty-state banner from. The map
+  widget now shows a distinct, honest banner for the "not configured" and
+  "database failed to load" cases, and for the "observed IPs exist but none
+  matched a range" case in Countries mode.
+- `provider` no longer returns the full configured `GEOIP_DB_PATH` -- only
+  `db_path_basename` (matching `/api/observability`'s existing `geoip`
+  field) and `range_count`, so the payload doesn't leak host filesystem
+  layout.
+
+**Real map navigation**
+
+- The destination map SVG is now pointer-drag pannable, wheel/pinch
+  zoomable toward the cursor, keyboard-navigable (arrow keys pan, +/-/0
+  zoom/reset) when focused, and touch-draggable (`touch-action:none` stops
+  the page from scrolling during a drag) -- on top of, not instead of, the
+  existing discrete +/- and Reset buttons. A new "Fit" control zooms/pans
+  to the currently visible data's bounding box on demand; it never runs
+  automatically on refresh, so the viewport doesn't jump while an operator
+  is looking at it.
+- A drag release over a country bubble/destination cluster no longer also
+  toggles its selection (a native `click` firing after a pan gesture used
+  to do this).
+
+**Genuinely distinct map styles**
+
+- BEMO Dark, Aurora, White and Minimal now each set their own ocean
+  gradient, land fill/glow, grid opacity, marker glow and empty-state
+  banner treatment through the existing `--map-*` custom properties scoped
+  under `[data-map-style]` -- not just one accent color as in 0.8.6/Visual
+  2.0. Minimal additionally disables the top-country pulse-ring animation
+  for a lower-noise empty state. Map style remains independent of the
+  application theme, unchanged from 0.8.6.
+
+**Basemap polish**
+
+- The bundled offline world-landmass silhouette (`WORLD_LAND_D`) gained
+  extra vertices on its longest, flattest edges (the most visible offender
+  was a perfectly straight 100px line across the top of Eurasia), reducing
+  the "obviously low-poly flat polygon" look without changing the overall
+  silhouette/bounding shape bubble and cluster placement rely on. A soft
+  blurred duplicate of the coastline renders behind the crisp fill for
+  depth on the glow-capable styles. This remains a stylized, hand-authored
+  outline, not survey-accurate coastline data.
+
+**Tests**
+
+- New `tests/test_geoip_map_diagnostics.py` (default-path regression via
+  the existing `importlib.reload()` pattern, every diagnostic state
+  transition, the no-path-leak regression), `tests/test_verify_geoip_script.py`
+  and `tests/test_map_navigation_visual21.py` (pan/zoom/keyboard wiring,
+  per-style property-count regression, denser basemap point count).
+
 ## [0.8.6]
 
 Destination Map Visual 2.0 (Issue #37): turns the 0.8.5.2 static country
