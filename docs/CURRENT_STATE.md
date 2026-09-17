@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.2`
+- Foundation version: `0.8.0`, current release: `0.8.6`
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
 
@@ -67,6 +67,41 @@ The repository recently underwent a modularization/observability refactor. Focus
 0.8.5.1 (Issue #31 follow-up) fixes the Dashboard Builder's layout-merge so widgets added in a later release (the destination-map/instrument-gauges pair above) are not lost for a browser that already has an older `dnsInspectorDashboardLayout` saved. `loadLayout()` previously reconciled a saved layout's `order` against the live `WIDGET_IDS` by blindly `push`ing any newly-introduced id onto the very end of the array, and `presetLayout()`'s `monitoring`/`investigation` presets set `base.order` to a hard-coded list that simply predated those widgets and omitted them outright; on a dashboard that already had eight-plus widgets and a "Top activity" chart grid at the end, this put the new widget below everything the user already had on screen -- effectively invisible without scrolling well past where the page used to end, which is what an operator upgrading from 0.8.5 actually saw. Both call sites now run their ids through a new pure helper, `insertWidgetsAtDefaultPosition(order, defaultOrder)`, which inserts a missing id next to its default neighbour instead of at the tail, so an upgraded browser's layout (and every named preset) ends up with new widgets positioned the same way a brand-new layout would, while still preserving the user's existing customization of the widgets that were already there. No widget markup, route or payload changed.
 
 0.8.5.2 (Issue #35) makes the 0.8.5.1 destination/GeoIP map practical to actually populate and verify, without touching its data model, semantics or visuals. `docs/GEOIP.md` now has an operator-ready "Quick setup: DB-IP Country Lite" walkthrough (source, conversion, `GEOIP_DB_PATH`/container volume configuration, restart requirement, and how to verify both provider load and map coverage) plus a documented end-to-end smoke-test procedure using the real DNS test domains from `nelsonjchen/cloud-geoip-dns-testing`, run through the operator's normal AdGuard resolver path (that project is a source of geo-routed test domains only, never imported as a GeoIP database itself, and the docs explain that the exact returned IP/country can vary with resolver location/EDNS Client Subnet/DNS routing). A new small, dependency-free, offline conversion utility, `scripts/convert_dbip_country_lite.py`, adds the missing `country_name` column to a DB-IP Country Lite export to produce the existing unchanged four-column `CsvRangeGeoIPProvider` schema -- streaming, IPv4/IPv6, deterministic output, no network access of its own. `GeoIPProvider` gains a `path`/`range_count` surface and a new `_geoip_diagnostics()` snapshot (provider type, configured/not, database filename only -- not the full path, loaded range count) that is logged once at startup (never per query) and exposed via `/api/observability`'s new `geoip` field, so an operator can confirm the provider loaded without container log access. New fixture-backed tests cover the conversion utility, the diagnostics snapshot/log line, a domain with mixed mapped/unmapped destination IPs, and `/api/analytics/map` returning non-zero geolocated coverage over real HTTP with a fixture provider configured.
+
+0.8.6 (Issue #37) reworks the 0.8.5.1/0.8.5.2 destination/GeoIP map from a
+static country bubble map into an interactive, configurable one, while
+keeping `/api/analytics/map`, `domain_destination_ips` and the observed-DNS-
+destination semantics as the unchanged source of truth -- no DNS
+re-resolution, no invented coordinates. Countries mode is the existing
+country-level aggregation, now sized by a selectable metric. Destinations
+mode plots real observed destination IPs by coordinate when a new, optional
+`CityGeoIPProvider` (`NullCityGeoIPProvider`/`CsvCityGeoIPProvider`, fully
+additive to and independent of the existing country-only `GeoIPProvider`) is
+configured via `GEOIP_CITY_DB_PATH`; nearby points are grid-clustered
+client-side, with click-to-zoom re-clustering at a finer scale. If only a
+country database is configured, Destinations mode explicitly says
+coordinate data is unavailable rather than substituting a country centroid.
+`CsvCityGeoIPProvider` stores IPv4 ranges (the bulk of a real city database)
+as parallel fixed-width `array.array` columns with interned country/city
+string tables instead of a plain Python list of millions of row tuples; a
+new offline conversion utility, `scripts/convert_dbip_city_lite.py`, builds
+its CSV schema from a DB-IP City Lite export the same way
+`convert_dbip_country_lite.py` already does for the country database (see
+`docs/GEOIP.md` for the CC BY 4.0 attribution requirement). `/api/analytics
+/map` gains two additive fields, `capabilities` (what the current
+configuration can actually show) and `destinations` (bounded, deduplicated
+per-IP coordinate points); `countries` entries gain one additive
+`unique_ip_count` field; all other existing fields are unchanged in shape.
+Map appearance (four styles -- BEMO Dark/Aurora/White/Minimal, expressed as
+scoped `--map-*` custom properties, independent of the application theme)
+and the bubble/cluster sizing metric (Observations/Unique IPs/Domains) are
+new `dnsInspectorPrefs` keys (`mapMode`/`mapMetric`/`mapStyle`), persisted
+the same client-side-only way as every other Inspector BEMO preference. A
+discrete zoom control and a reset/recenter control were added; the bundled
+offline world-landmass basemap, country-bubble rendering path and
+reduced-motion handling from Issue #33/#27 are unchanged. Heatmap mode is
+deliberately left as a documented follow-up rather than a half-working
+implementation, matching the task contract's own allowance for that case.
 
 ## How to update this file
 

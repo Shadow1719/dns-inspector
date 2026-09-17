@@ -1,6 +1,24 @@
 # Issue #37 — Destination Map Visual 2.0 — implementation contract
 
-Status: READY
+Status: IMPLEMENTED (0.8.6)
+
+Implemented as described below, with one documented scope reduction: Heatmap
+mode (section "2. Optional Heatmap mode") was left as a follow-up rather
+than shipped, per this document's own allowance ("If this becomes too large
+for one coherent implementation, leave Heatmap as a clearly documented
+follow-up rather than creating a half-working implementation"). Everything
+else in "Product requirements" was implemented, including both data modes,
+the four configurable styles, the configurable metric, interaction (hover/
+click/zoom/reset/empty-states/reduced-motion), honest data semantics, the
+extended `GeoIPProvider` architecture (`CityGeoIPProvider`), and the no-
+remote-map-dependency constraint. See `CHANGELOG.md`'s `[0.8.6]` entry and
+`docs/CURRENT_STATE.md` for what changed, and `docs/GEOIP.md` for the new
+Destinations-mode setup/attribution documentation. Focused automated tests
+were written for the new backend/frontend logic (see the implementing PR's
+description for exactly what could and could not be executed in this
+session, and why); the real-deployment acceptance test in this document's
+"Acceptance test — real deployment" section was not performed and remains
+an operator validation step.
 
 This document is the implementation contract for Issue #37. It is intentionally explicit so the implementation agent does not have to infer the desired product behaviour from a chat conversation.
 

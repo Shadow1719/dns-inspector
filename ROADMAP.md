@@ -228,6 +228,33 @@ the 0.8.5 CHANGELOG.md entry for why). 0.8.5.1 implements it:
   multi-destination domain can appear in more than one country, with UI copy
   that consistently says "observed destinations"
 
+## Implemented: Destination Map Visual 2.0 (0.8.6)
+
+0.8.6 (Issue #37) turns the map above from a static country bubble map into
+an interactive, configurable one, without changing its data model or
+semantics:
+
+- a new, optional `CityGeoIPProvider` abstraction (`NullCityGeoIPProvider`/
+  `CsvCityGeoIPProvider`) is additive to and fully independent of the
+  country-only `GeoIPProvider` above; a Destinations mode plots real
+  observed destination IPs by coordinate when a city/coordinate database is
+  configured (`GEOIP_CITY_DB_PATH`), client-side grid-clustered so nearby
+  points stay readable and separate again on zoom -- it never substitutes a
+  country centroid for a missing coordinate
+- `CsvCityGeoIPProvider` stores the (potentially several-million-row) IPv4
+  side of a real city database as parallel fixed-width `array.array`
+  columns with interned country/city string tables, not a plain Python list
+  of per-row tuples/strings, per the task contract's memory-efficiency
+  requirement
+- `/api/analytics/map` gains additive `capabilities` and `destinations`
+  fields; existing fields are unchanged in shape
+- map appearance (BEMO Dark/Aurora/White/Minimal, independent of the
+  application theme) and the bubble/cluster sizing metric are new
+  `dnsInspectorPrefs` keys, persisted the same client-side-only way as every
+  other Inspector BEMO preference
+- Heatmap mode is deliberately left as a documented follow-up rather than a
+  half-working implementation
+
 ---
 
 # Design principles

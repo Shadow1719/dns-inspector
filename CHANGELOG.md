@@ -2,6 +2,88 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.6]
+
+Destination Map Visual 2.0 (Issue #37): turns the 0.8.5.2 static country
+bubble map into an interactive, configurable map, while keeping
+`/api/analytics/map`, `domain_destination_ips` and the existing
+observed-DNS-destination semantics as the unchanged source of truth. No DNS
+re-resolution and no invented coordinates were added anywhere in this path.
+
+**Two data modes**
+
+- **Countries** -- the existing 0.8.5.1/0.8.5.2 country-level aggregation,
+  now sized by a selectable metric (see below) and restyled.
+- **Destinations** -- plots real observed destination IPs by coordinate when
+  an optional city/coordinate GeoIP database is configured
+  (`GEOIP_CITY_DB_PATH`), grid-clustering nearby points client-side so the
+  map stays readable; clicking a multi-point cluster zooms in and the grid
+  re-clusters at the finer scale, separating points that were merged before.
+  If only a country database is configured, Destinations mode explicitly
+  says coordinate-level data is unavailable and offers to switch back to
+  Countries -- it never substitutes a country centroid for a real
+  city/IP coordinate.
+
+**Optional coordinate/city GeoIP provider**
+
+- A new `CityGeoIPProvider` abstraction (`NullCityGeoIPProvider` /
+  `CsvCityGeoIPProvider`, `app.py`) is additive to and fully independent of
+  the existing country-only `GeoIPProvider` -- a deployment can have either,
+  both, or neither database configured, and the country provider's own
+  behaviour is completely unchanged.
+- `CsvCityGeoIPProvider` loads `start_ip,end_ip,country_code,country_name,
+  city,latitude,longitude` rows into a bounded, indexed runtime
+  representation rather than a plain Python list of millions of per-row
+  tuples: IPv4 ranges (the overwhelming majority of a real city database)
+  are stored as parallel fixed-width `array.array` columns with interned
+  country/city string tables, so the small set of distinct names is only
+  ever stored once each; the far smaller set of IPv6 ranges stays a plain
+  sorted list, matching the existing country provider's approach.
+- A new offline, dependency-free, streaming conversion utility,
+  `scripts/convert_dbip_city_lite.py`, converts a DB-IP City Lite export
+  into that schema, the same way `convert_dbip_country_lite.py` already
+  does for the country database. DB-IP City Lite is documented as an
+  acceptable source (CC BY 4.0, attribution required -- see
+  `docs/GEOIP.md`); no database is committed to the repository.
+- `_geoip_city_diagnostics()` and a new `geoip_city` field on
+  `/api/observability` mirror the existing country diagnostics, and the
+  one-time startup log line now also reports city provider status.
+
+**Backend/API**
+
+- `/api/analytics/map` gains two additive fields: `capabilities`
+  (`country`/`coordinates`/`heatmap` booleans reporting what the current
+  configuration can actually show) and `destinations` (bounded, deduplicated
+  per-IP coordinate points -- two domains observed answering from the same
+  IP produce one point with a combined observation/domain count, not two
+  overlapping points). Existing `countries`/`unknown`/`coverage`/`provider`
+  fields are unchanged in shape; `countries` entries gain one additive
+  `unique_ip_count` field. Heatmap is left as a documented follow-up rather
+  than a half-working implementation.
+- New bounded config: `GEOIP_CITY_DB_PATH`, `GEOIP_CITY_CACHE_MAX_ENTRIES`,
+  `GEOIP_MAP_DESTINATION_POINTS_LIMIT` (rendering-size cap only --
+  `coverage` is always computed over every observed destination regardless
+  of how many individual points are returned).
+
+**Configurable map appearance and metric**
+
+- Four map styles -- BEMO Dark, Aurora, White, Minimal -- expressed as
+  `--map-*` custom properties scoped under `[data-map-style]` on the map
+  element, entirely independent of the application theme (a BEMO Dark app
+  theme with a White map is a supported combination). Dark styles use a
+  luminous cyan/teal (BEMO Dark) or violet/cyan (Aurora) point/cluster glow;
+  White and Minimal stay restrained.
+- A bubble/cluster sizing metric -- Observations (default), Unique IPs or
+  Domains -- drives both Countries mode bubbles and Destinations mode
+  clusters from each entity's own already-aggregated field.
+- Map mode, metric and style are persisted via the existing client-side
+  `dnsInspectorPrefs` mechanism (`mapMode`/`mapMetric`/`mapStyle`) -- no
+  database migration.
+- Zoom (discrete steps, click-to-zoom into a multi-point cluster) and a
+  reset/recenter control were added; the bundled offline world-landmass
+  basemap, country-bubble rendering path and reduced-motion handling from
+  Issue #33/#27 are unchanged.
+
 ## [0.8.5.2]
 
 Operator-facing GeoIP setup/verification build (Issue #35): makes the
