@@ -16,6 +16,7 @@ DNS-over-HTTPS-re-resolved snapshot used only by the domain detail page).
 """
 
 import json
+import re
 import sqlite3
 import uuid
 from contextlib import closing
@@ -463,3 +464,62 @@ def test_reduced_motion_suppresses_gauge_needle_and_map_pulse_animation(client):
     body = client.get("/").data.decode("utf-8")
     assert 'html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:' in body
     assert 'html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}' in body
+
+
+# --- bundled world-map background (Issue #33) --------------------------------
+#
+# Before this fix, an unconfigured/empty map state replaced the whole widget
+# with a plain `<div class="empty-state">` card -- no map was ever visible.
+# These tests pin the fix: a bundled/offline-safe landmass silhouette is
+# always rendered, and the GeoIP-unconfigured/empty states now overlay a
+# non-blocking status banner on top of the still-visible map instead of
+# tearing it out.
+
+
+def test_world_landmass_asset_is_bundled_and_offline_safe(client):
+    """The map background must ship as a static asset in the page itself --
+    no fetch to a CDN/external map provider, no GeoIP database required."""
+    body = client.get("/").data.decode("utf-8")
+    assert "const WORLD_LAND_D" in body
+    assert ".map-landmass{" in body
+    assert 'class="map-landmass"' in body
+
+
+def test_world_landmass_coordinates_stay_within_the_map_viewbox(client):
+    """Every point in the bundled silhouette must fall inside the same
+    0..MAP_W x 0..MAP_H (720x360) space the graticule and country bubbles
+    are projected into, or the asset would render clipped/misaligned."""
+    body = client.get("/").data.decode("utf-8")
+    match = re.search(r"const WORLD_LAND_D = \[(.*?)\]\.join", body, re.S)
+    assert match, "WORLD_LAND_D constant not found in rendered page"
+    coords = re.findall(r"[ML](-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)", match.group(1))
+    assert len(coords) > 50  # a real multi-continent silhouette, not a stub
+    for x, y in coords:
+        assert 0 <= float(x) <= 720
+        assert 0 <= float(y) <= 360
+
+
+def test_map_render_helpers_for_the_bundled_background_exist(client):
+    body = client.get("/").data.decode("utf-8")
+    for fn in ("mapLandmassSvg", "mapBaseLayers", "mapStatusBanner", "mapBaseSvg"):
+        assert f"function {fn}(" in body
+
+
+def test_map_no_longer_replaces_itself_with_a_plain_empty_state_card(client):
+    """Regression guard for the exact bug reported in Issue #33: the map
+    widget must not go back to swapping its whole innerHTML for a bare
+    `.empty-state` card with no visual map."""
+    body = client.get("/").data.decode("utf-8")
+    assert 'el.innerHTML = \'<div class="empty-state">No GeoIP database configured' not in body
+
+
+def test_map_stays_visible_with_a_non_blocking_banner_when_geoip_not_configured(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "mapStatusBanner('No GeoIP database configured" in body
+    assert ".map-status-banner{" in body
+    assert "pointer-events:none" in body
+
+
+def test_map_configured_state_still_renders_the_bundled_background_behind_bubbles(client):
+    body = client.get("/").data.decode("utf-8")
+    assert "mapBaseSvg('Observed DNS destinations by country', bubbles)" in body
