@@ -3070,6 +3070,16 @@ class GeoIPProvider:
     def available(self):
         return False
 
+    @property
+    def range_count(self):
+        """Number of loaded IP ranges, when the provider has a concept of one."""
+        return 0
+
+    @property
+    def path(self):
+        """Configured backing file path, when the provider has one."""
+        return None
+
 
 class NullGeoIPProvider(GeoIPProvider):
     """No database configured: every address is honestly reported unmapped
@@ -3131,6 +3141,14 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
     def available(self):
         return self._loaded
 
+    @property
+    def range_count(self):
+        return len(self._v4) + len(self._v6)
+
+    @property
+    def path(self):
+        return self._path
+
     def lookup(self, ip):
         try:
             addr = ipaddress.ip_address(ip)
@@ -3156,6 +3174,40 @@ _geoip_provider = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if os.path.exists(GEOIP_D
 _geoip_cache = {}
 _geoip_cache_order = deque()
 _geoip_cache_lock = threading.Lock()
+
+
+def _geoip_diagnostics():
+    """A small operator-facing snapshot of GeoIP provider state -- used by
+    `/api/observability` and the one-time startup log line (see
+    `_log_geoip_status`). Deliberately excludes the full configured path so a
+    debug bundle/observability payload doesn't leak filesystem layout."""
+    provider = _geoip_provider
+    configured = bool(provider.available)
+    path = provider.path
+    return {
+        "provider_type": type(provider).__name__,
+        "configured": configured,
+        "db_path_basename": os.path.basename(path) if configured and path else None,
+        "range_count": provider.range_count if configured else 0,
+    }
+
+
+def _log_geoip_status():
+    """Log GeoIP provider state once at startup -- never per-query."""
+    diag = _geoip_diagnostics()
+    if diag["configured"]:
+        print(
+            f"GeoIP: {diag['provider_type']} loaded {diag['range_count']} ranges "
+            f"from {diag['db_path_basename']}",
+            flush=True,
+        )
+    else:
+        print(
+            "GeoIP: no database configured (NullGeoIPProvider) -- the destination "
+            "map will honestly report 0% geolocated until GEOIP_DB_PATH points at "
+            "a loaded CSV database. See docs/GEOIP.md.",
+            flush=True,
+        )
 
 
 def geoip_lookup(ip):
@@ -4881,6 +4933,7 @@ def _observability_payload():
         'platform': platform.platform(),
         'db_size_bytes': db_size,
         'db_counts': _observability_db_counts(),
+        'geoip': _geoip_diagnostics(),
     }
 
 
@@ -5088,6 +5141,7 @@ def serve():
 def main():
     """The single startup path for DNS Inspector."""
     init_db()
+    _log_geoip_status()
     _prune_stale_device_ips()
     start_background_workers()
     serve()

@@ -61,6 +61,14 @@ class _FixedProvider:
     def available(self):
         return True
 
+    @property
+    def path(self):
+        return None
+
+    @property
+    def range_count(self):
+        return len(self._mapping)
+
 
 def _reset_map_cache(app_module):
     app_module._geoip_map_cache["data"] = None
@@ -378,6 +386,111 @@ def test_geoip_map_payload_result_is_cached_for_geoip_map_cache_seconds(app_modu
     assert second is first
 
 
+def test_geoip_map_payload_still_works_with_a_mix_of_mapped_and_unmapped_destinations(
+    app_module, initialised_db, monkeypatch,
+):
+    """A domain whose answers include both a geolocatable and an unmapped
+    destination IP must still produce a valid payload: the mapped IP counts
+    toward its country and the domain counts as geolocated overall, while the
+    unmapped observation is tracked honestly rather than silently dropped or
+    crashing the aggregation."""
+    domain = _unique("geo-mixed-destinations")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=9)
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.30", observations=5)
+    _add_destination_ip(initialised_db, domain, now, "198.51.100.30", observations=4)
+    _use_provider(app_module, monkeypatch, _FixedProvider({
+        "203.0.113.30": ("US", "United States"),
+        # 198.51.100.30 intentionally left unmapped.
+    }))
+
+    payload = app_module.geoip_map_payload()
+
+    us = next(c for c in payload["countries"] if c["country_code"] == "US")
+    assert domain in us["sample_domains"]
+    assert us["observation_count"] >= 5
+    assert payload["coverage"]["geolocated_domains"] >= 1
+    assert payload["coverage"]["geolocated_pct"] > 0
+    assert payload["coverage"]["geolocated_pct"] < 100
+
+
+# --- GeoIP operator diagnostics ----------------------------------------------
+
+
+def test_geoip_diagnostics_reports_unconfigured_for_the_null_provider(app_module, monkeypatch):
+    _use_provider(app_module, monkeypatch, app_module.NullGeoIPProvider())
+    diag = app_module._geoip_diagnostics()
+    assert diag["provider_type"] == "NullGeoIPProvider"
+    assert diag["configured"] is False
+    assert diag["db_path_basename"] is None
+    assert diag["range_count"] == 0
+
+
+def test_geoip_diagnostics_reports_range_count_for_a_loaded_csv_provider(tmp_path, app_module, monkeypatch):
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "203.0.113.0,203.0.113.255,US,United States\n"
+        "198.51.100.0,198.51.100.255,DE,Germany\n",
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    _use_provider(app_module, monkeypatch, provider)
+
+    diag = app_module._geoip_diagnostics()
+
+    assert diag["provider_type"] == "CsvRangeGeoIPProvider"
+    assert diag["configured"] is True
+    assert diag["db_path_basename"] == "geoip.csv"
+    assert diag["range_count"] == 2
+
+
+def test_geoip_diagnostics_does_not_leak_the_full_configured_path(tmp_path, app_module, monkeypatch):
+    """Only the basename is reported, not the full filesystem path, so an
+    observability/debug-bundle payload doesn't expose host directory layout."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text("203.0.113.0,203.0.113.255,US,United States\n")
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    _use_provider(app_module, monkeypatch, provider)
+
+    diag = app_module._geoip_diagnostics()
+
+    assert str(tmp_path) not in json.dumps(diag)
+
+
+def test_log_geoip_status_mentions_the_range_count_when_configured(tmp_path, app_module, monkeypatch, capsys):
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text("203.0.113.0,203.0.113.255,US,United States\n")
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    _use_provider(app_module, monkeypatch, provider)
+
+    app_module._log_geoip_status()
+
+    captured = capsys.readouterr()
+    assert "1 ranges" in captured.out
+    assert "geoip.csv" in captured.out
+
+
+def test_log_geoip_status_is_honest_when_unconfigured(app_module, monkeypatch, capsys):
+    _use_provider(app_module, monkeypatch, app_module.NullGeoIPProvider())
+
+    app_module._log_geoip_status()
+
+    captured = capsys.readouterr()
+    assert "no database configured" in captured.out.lower()
+
+
+def test_observability_payload_includes_geoip_diagnostics(app_module):
+    payload = app_module._observability_payload()
+    assert "geoip" in payload
+    assert set(payload["geoip"]) >= {"provider_type", "configured", "db_path_basename", "range_count"}
+
+
+def test_api_observability_route_exposes_geoip_diagnostics(client):
+    response = client.get("/api/observability")
+    payload = json.loads(response.data)
+    assert "geoip" in payload
+    assert "configured" in payload["geoip"]
+
+
 # --- HTTP surface -------------------------------------------------------
 
 
@@ -397,6 +510,30 @@ def test_api_analytics_map_returns_expected_shape(client):
         "geolocated_observations", "geolocated_pct",
     }
     assert set(payload["unknown"]) >= {"domain_count", "observation_count"}
+
+
+def test_api_analytics_map_returns_geolocated_coverage_with_a_fixture_provider_configured(
+    app_module, initialised_db, client, monkeypatch,
+):
+    """End-to-end through the real HTTP route (not just `geoip_map_payload()`
+    directly): with a fixture provider and a fixture destination IP in place,
+    `/api/analytics/map` itself must report non-zero geolocated coverage and
+    a plotted country -- this is what an operator checks per docs/GEOIP.md's
+    verification steps."""
+    domain = _unique("geo-http-route")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=3)
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.99", observations=3)
+    _use_provider(app_module, monkeypatch, _FixedProvider({"203.0.113.99": ("US", "United States")}))
+
+    response = client.get("/api/analytics/map")
+
+    assert response.status_code == 200
+    payload = json.loads(response.data)
+    assert payload["provider"]["configured"] is True
+    assert payload["coverage"]["geolocated_pct"] > 0
+    us = next(c for c in payload["countries"] if c["country_code"] == "US")
+    assert domain in us["sample_domains"]
 
 
 def test_api_analytics_includes_total_devices_for_the_active_devices_gauge(client):
