@@ -109,6 +109,33 @@ def test_dead_pre_dashboard_builder_css_was_removed(client):
     assert ".live-gauge svg" not in body
 
 
+def test_new_widgets_are_reconciled_into_saved_layouts_at_their_default_position(client):
+    """Issue #31: a widget shipped in a later release (e.g. the 0.8.5.1
+    `destination-map`/`instrument-gauges` widgets) is absent from any
+    `dnsInspectorDashboardLayout` an older build already persisted, and from
+    every named preset's own hard-coded reorder list. Blindly appending such
+    ids to the very end of `order` buried them below everything a returning
+    user's browser already had saved -- on a long dashboard that reads as
+    "the widget is gone", not "the widget moved", and required the operator
+    to manually clear localStorage to see it. `loadLayout()` and
+    `presetLayout()` must reconcile missing ids next to their default
+    neighbour instead of pushing them past the end of a pre-existing order.
+    """
+    body = client.get("/").data.decode("utf-8")
+    assert "function insertWidgetsAtDefaultPosition(order, defaultOrder){" in body
+    # Both the saved-layout merge and every named preset must run their
+    # widget ids through the reconciliation helper rather than trusting a
+    # stale/hard-coded order verbatim.
+    assert (
+        "const order = insertWidgetsAtDefaultPosition("
+        "raw.order.filter(id => WIDGET_IDS.includes(id)), DEFAULT_LAYOUT.order);"
+    ) in body
+    assert "base.order = insertWidgetsAtDefaultPosition(base.order, DEFAULT_LAYOUT.order);" in body
+    # The old blind-append merge (`if (!order.includes(id)) order.push(id)`)
+    # is the exact bug this regresses -- it must not come back.
+    assert "if (!order.includes(id)) order.push(id)" not in body
+
+
 def test_device_detail_reuses_the_dashboard_builder_free_shell(app_module, client):
     """Regression guard matching the equivalent checks in
     test_ui_design_system.py / test_settings_and_themes.py: the device/IP

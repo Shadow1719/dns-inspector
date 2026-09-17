@@ -1309,6 +1309,34 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   const DEFAULT_LAYOUT = defaultLayout();
   const clone = (obj) => JSON.parse(JSON.stringify(obj));
 
+  /* A widget introduced by a later release (e.g. the 0.8.5.1 GeoIP map) is
+     absent from any `order` saved by an older build, and from any preset's
+     own hard-coded reorder list. Naively appending such ids to the very end
+     of `order` buries a newly-shipped widget below everything a user's
+     browser already persisted -- functionally invisible without scrolling
+     past what used to be the bottom of the page. Placing it right next to
+     its default neighbour keeps existing customization intact while still
+     surfacing the new widget close to where a fresh layout would show it. */
+  function insertWidgetsAtDefaultPosition(order, defaultOrder){
+    order = order.slice();
+    defaultOrder.forEach((id, defaultIdx) => {
+      if (order.includes(id)) return;
+      let insertAt = -1;
+      for (let i = defaultIdx - 1; i >= 0 && insertAt === -1; i--){
+        const idx = order.indexOf(defaultOrder[i]);
+        if (idx !== -1) insertAt = idx + 1;
+      }
+      if (insertAt === -1){
+        for (let i = defaultIdx + 1; i < defaultOrder.length && insertAt === -1; i++){
+          const idx = order.indexOf(defaultOrder[i]);
+          if (idx !== -1) insertAt = idx;
+        }
+      }
+      order.splice(insertAt === -1 ? order.length : insertAt, 0, id);
+    });
+    return order;
+  }
+
   function presetLayout(name){
     const base = clone(DEFAULT_LAYOUT);
     base.preset = name;
@@ -1329,6 +1357,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       set('activity-devices', {h:'tall'});
       set('live-overview', {w:'half', h:'compact'});
     }
+    base.order = insertWidgetsAtDefaultPosition(base.order, DEFAULT_LAYOUT.order);
     return base;
   }
 
@@ -1338,8 +1367,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       if (!raw || !raw.widgets || !raw.order) return clone(DEFAULT_LAYOUT);
       const widgets = {};
       WIDGET_IDS.forEach(id => { widgets[id] = Object.assign({w:'full',h:'normal',hidden:false}, raw.widgets[id] || {}); });
-      const order = raw.order.filter(id => WIDGET_IDS.includes(id));
-      WIDGET_IDS.forEach(id => { if (!order.includes(id)) order.push(id); });
+      const order = insertWidgetsAtDefaultPosition(raw.order.filter(id => WIDGET_IDS.includes(id)), DEFAULT_LAYOUT.order);
       return { preset: raw.preset || 'custom', order, widgets };
     }catch(e){ return clone(DEFAULT_LAYOUT); }
   }
