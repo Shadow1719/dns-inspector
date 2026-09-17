@@ -146,7 +146,12 @@ def test_main_reports_the_converted_row_count_on_stderr(tmp_path, capsys):
     assert exit_code == 0
     captured = capsys.readouterr()
     assert "Converted 1 range(s)" in captured.err
-    assert output_path.read_text(encoding="utf-8") == "1.2.3.0,1.2.3.255,US,United States\r\n"
+    # `csv.writer`'s default dialect always emits CRLF row terminators
+    # regardless of platform; read with newline="" so the comparison sees
+    # those literal bytes instead of having `Path.read_text()`'s universal
+    # newline translation collapse them to "\n" first.
+    with open(output_path, "r", encoding="utf-8", newline="") as f:
+        assert f.read() == "1.2.3.0,1.2.3.255,US,United States\r\n"
 
 
 def test_main_prints_usage_help_without_error():
