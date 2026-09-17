@@ -153,6 +153,20 @@ _GEOIP_UPDATE_CONFIG = geoip_updater.build_config_from_env()
 # without needing a restart, while the real network probe only ever happens
 # once the configured interval has actually elapsed.
 GEOIP_AUTO_UPDATE_POLL_SECONDS = max(60, int(os.getenv("GEOIP_AUTO_UPDATE_POLL_SECONDS", "3600")))
+# Issue #43: a real-world run was observed with `in_progress=true` and both
+# targets' `last_checked_at=null` for several minutes with no success/error.
+# `geoip_updater.run_update()` now persists state incrementally per target
+# (see its own change log), but this is a second, independent safety net in
+# `geoip_auto_update_worker()` itself -- `run_update()` is bounded by its own
+# per-request connect/read timeouts, yet nothing previously bounded the
+# *whole* check/download/convert pass, so a run stuck on something those
+# per-request timeouts don't cover (e.g. a hung DNS resolution, an
+# unexpectedly slow decompress/convert of a huge file) could hold
+# `_geoip_update_in_progress` at `true` indefinitely. Once this many seconds
+# elapse the worker gives up waiting on that pass, records a timeout error
+# and clears the flag so the *next* poll can try again -- it deliberately
+# does not try to kill the stuck pass (see `geoip_auto_update_worker()`).
+GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS = max(60, int(os.getenv("GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS", "1800")))
 
 app = Flask(__name__)
 db_lock = threading.Lock()
@@ -478,6 +492,12 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
 .settings-kv b{color:var(--text-secondary);font-weight:600}
 .settings-kv span{font-family:var(--font-mono)}
 .settings-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--border)}
+.settings-restart-block{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+#system-restart-btn{border-color:var(--sem-crit);color:var(--sem-crit);background:transparent}
+#system-restart-btn:hover{background:var(--sem-crit);color:#fff}
+#system-restart-btn.confirming{background:var(--sem-crit);color:#fff}
+#system-restart-btn:disabled{opacity:.6;cursor:wait;background:transparent;color:var(--sem-crit)}
+.settings-restart-note{color:var(--text-tertiary);font-size:.78rem}
 @media(max-width:640px){.settings-body{flex-direction:column;max-height:70vh}.settings-nav{flex-direction:row;flex-wrap:wrap;flex:0 0 auto;border-right:0;border-bottom:1px solid var(--border)}.settings-row{flex-direction:column;align-items:flex-start}.settings-control{justify-content:flex-start}}
 
 /* ---- Analytics Visual 2.0 (0.8.5): same metric, three distinct presentations ---- */
@@ -632,9 +652,13 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .dash-customize-btn{border-radius:var(--radius-pill)}
 .dash-customize-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
 .dash-hint{color:var(--text-tertiary);font-size:.78rem}
-.dash-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;align-items:start}
-.dash-widget{grid-column:span 2;min-width:0}
-.dash-widget[data-w="half"]{grid-column:span 1}
+.dash-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start;grid-auto-flow:dense}
+.dash-widget{grid-column:span 4;min-width:0;min-height:0}
+.dash-widget .card{min-height:120px}
+.dash-widget[data-w="1"]{grid-column:span 1}
+.dash-widget[data-w="2"]{grid-column:span 2}
+.dash-widget[data-w="3"]{grid-column:span 3}
+.dash-widget[data-w="4"]{grid-column:span 4}
 .dash-widget[data-hidden="1"]{display:none}
 .dash-grid.dash-customizing .dash-widget[data-hidden="1"]{display:block;opacity:.5}
 .dash-grid.dash-customizing .dash-widget{outline:1px dashed var(--border-strong);outline-offset:3px;border-radius:var(--radius-lg)}
@@ -648,6 +672,16 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .dash-widget[data-h="tall"] .metric-visual{--metric-h:196px}
 .dash-widget[data-h="compact"] .dash-scroll,.dash-widget[data-h="compact"] .chart-list{max-height:120px;overflow:auto}
 .dash-widget[data-h="tall"] .dash-scroll,.dash-widget[data-h="tall"] .chart-list{max-height:440px;overflow:auto}
+/* 0.8.5.6: a real 4-column layout grid (1-4 column span per widget) instead
+   of a binary half/full choice; `grid-auto-flow:dense` back-fills gaps left
+   by mixed-width widgets instead of leaving holes. Two intermediate
+   breakpoints keep the same span *proportions* readable as the viewport
+   narrows, rather than only collapsing straight to one column. */
+@media(max-width:1300px){
+  .dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dash-widget[data-w="1"],.dash-widget[data-w="2"]{grid-column:span 1}
+  .dash-widget[data-w="3"],.dash-widget[data-w="4"]{grid-column:span 2}
+}
 @media(max-width:900px){.dash-grid{grid-template-columns:1fr}.dash-widget{grid-column:1/-1!important}}
 </style></head><body>
 {% if is_dev_environment %}<div class="dev-banner" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4"/><circle cx="12" cy="17.5" r=".1" fill="currentColor" stroke="currentColor" stroke-width="2"/></svg><span>DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</span></div>{% endif %}
@@ -738,6 +772,10 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
       <section class="settings-section" data-settings-panel="system">
         <h3>System</h3>
         <div class="settings-kv" id="system-kv"><b>Loading…</b><span></span></div>
+        <div class="settings-restart-block">
+          <button type="button" id="system-restart-btn">Restart DNS Inspector</button>
+          <span class="settings-restart-note" id="system-restart-note">Restarts the running application/container. In-progress requests are dropped; persisted data in <code>/data</code> is unaffected.</span>
+        </div>
       </section>
       <section class="settings-section" data-settings-panel="about">
         <h3>About</h3>
@@ -1010,7 +1048,7 @@ function renderInstrumentGauges(data){
     <span class="dash-hint" id="dash-hint" hidden>Use the handle to drag, or the arrow/size/hide buttons &mdash; changes save to this browser.</span>
   </div>
   <div class="dash-grid" id="analytics-dash-grid">
-    <div class="dash-widget" data-widget-id="live-overview" data-title="Live activity" data-w="full" data-h="normal">
+    <div class="dash-widget" data-widget-id="live-overview" data-title="Live activity" data-w="4" data-h="normal">
       <div class="analytics-hero">
         <div class="card live-card" id="live-card">
           <div class="live-title"><span class="live-dot"></span>Live activity</div>
@@ -1027,7 +1065,7 @@ function renderInstrumentGauges(data){
         </div>
       </div>
     </div>
-    <div class="dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" data-w="full" data-h="normal">
+    <div class="dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" data-w="4" data-h="normal">
       <div class="card">
         <h2>DNS activity over time</h2>
         <div class="analytics-range-controls" role="group" aria-label="Historical time range">
@@ -1039,20 +1077,20 @@ function renderInstrumentGauges(data){
         <div id="chart-query-volume"></div>
       </div>
     </div>
-    <div class="dash-widget" data-widget-id="new-domains" data-title="New domains discovered" data-w="half" data-h="normal">
+    <div class="dash-widget" data-widget-id="new-domains" data-title="New domains discovered" data-w="2" data-h="normal">
       <div class="card"><h2>New domains discovered</h2><div id="chart-new-domains"></div></div>
     </div>
-    <div class="dash-widget" data-widget-id="new-devices" data-title="New devices discovered" data-w="half" data-h="normal">
+    <div class="dash-widget" data-widget-id="new-devices" data-title="New devices discovered" data-w="2" data-h="normal">
       <div class="card"><h2>New devices discovered</h2><div id="chart-new-devices"></div></div>
     </div>
-    <div class="dash-widget" data-widget-id="status-breakdown" data-title="Status breakdown" data-w="full" data-h="normal">
+    <div class="dash-widget" data-widget-id="status-breakdown" data-title="Status breakdown" data-w="4" data-h="normal">
       <div class="card">
         <h2>Status breakdown</h2>
         <div id="status-breakdown" class="dash-scroll"></div>
         <div class="stats-note">All known domains, grouped by their current AdGuard filtering outcome.</div>
       </div>
     </div>
-    <div class="dash-widget" data-widget-id="instrument-gauges" data-title="Instrument gauges" data-w="full" data-h="normal">
+    <div class="dash-widget" data-widget-id="instrument-gauges" data-title="Instrument gauges" data-w="4" data-h="normal">
       <div class="card">
         <h2>Instrument gauges</h2>
         <div id="instrument-gauges" class="gauge-cluster">
@@ -1061,7 +1099,7 @@ function renderInstrumentGauges(data){
         </div>
       </div>
     </div>
-    <div class="dash-widget" data-widget-id="destination-map" data-title="DNS Destinations (observed)" data-w="full" data-h="normal">
+    <div class="dash-widget" data-widget-id="destination-map" data-title="DNS Destinations (observed)" data-w="4" data-h="normal">
       <div class="card">
         <h2>DNS Destinations <span class="sub">(observed)</span></h2>
         <div class="stats-note" style="margin-top:0" id="destination-map-subtitle">Country-level aggregate of resolved DNS response IPs &mdash; not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.</div>
@@ -1094,13 +1132,13 @@ function renderInstrumentGauges(data){
         <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
       </div>
     </div>
-    <div class="dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" data-w="half" data-h="normal">
+    <div class="dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" data-w="2" data-h="normal">
       <div class="card"><h2>Recently active domains</h2><div id="activity-domains" class="dash-scroll"></div></div>
     </div>
-    <div class="dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" data-w="half" data-h="normal">
+    <div class="dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" data-w="2" data-h="normal">
       <div class="card"><h2>Recently active devices</h2><div id="activity-devices" class="dash-scroll"></div></div>
     </div>
-    <div class="dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" data-w="full" data-h="normal">
+    <div class="dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" data-w="4" data-h="normal">
       <div class="card"><h2>Top activity (all time)</h2><div class="stats-note" style="margin-top:0">Cumulative totals since the database was created.</div></div>
       <div class="chart-grid">
         <div class="card chart-card"><h2>Most requested domains</h2><div id="chart-domains" class="chart-list"></div><div class="stats-note">Based on recorded DNS requests.</div></div>
@@ -1832,12 +1870,24 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   if (!grid) return;
   const WIDGET_IDS = Array.from(grid.querySelectorAll('.dash-widget')).map(w => w.dataset.widgetId);
   const LAYOUT_KEY = 'dnsInspectorDashboardLayout';
+  const WIDTH_STEPS = ['1','2','3','4'];
+
+  /* 0.8.5.6: the grid moved from a binary half/full width to a real 1-4
+     column span. A browser that already persisted a pre-0.8.5.6
+     `dnsInspectorDashboardLayout` (or a preset built before this change) can
+     still hand back the old 'full'/'half' strings -- normalize those to the
+     equivalent span instead of treating them as an invalid/unknown width. */
+  function normalizeWidth(w){
+    if (w === 'full') return '4';
+    if (w === 'half') return '2';
+    return WIDTH_STEPS.includes(String(w)) ? String(w) : '4';
+  }
 
   function defaultLayout(){
     const widgets = {};
     WIDGET_IDS.forEach(id => {
       const el = grid.querySelector(`[data-widget-id="${id}"]`);
-      widgets[id] = { w: el.dataset.w || 'full', h: el.dataset.h || 'normal', hidden: false };
+      widgets[id] = { w: normalizeWidth(el.dataset.w), h: el.dataset.h || 'normal', hidden: false };
     });
     return { preset: 'default', order: WIDGET_IDS.slice(), widgets };
   }
@@ -1890,7 +1940,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       set('top-activity', {h:'tall'});
       set('activity-domains', {h:'tall'});
       set('activity-devices', {h:'tall'});
-      set('live-overview', {w:'half', h:'compact'});
+      set('live-overview', {w:'2', h:'compact'});
     }
     base.order = insertWidgetsAtDefaultPosition(base.order, DEFAULT_LAYOUT.order);
     return base;
@@ -1901,7 +1951,11 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
       if (!raw || !raw.widgets || !raw.order) return clone(DEFAULT_LAYOUT);
       const widgets = {};
-      WIDGET_IDS.forEach(id => { widgets[id] = Object.assign({w:'full',h:'normal',hidden:false}, raw.widgets[id] || {}); });
+      WIDGET_IDS.forEach(id => {
+        const merged = Object.assign({w:'4',h:'normal',hidden:false}, raw.widgets[id] || {});
+        merged.w = normalizeWidth(merged.w);
+        widgets[id] = merged;
+      });
       const order = insertWidgetsAtDefaultPosition(raw.order.filter(id => WIDGET_IDS.includes(id)), DEFAULT_LAYOUT.order);
       return { preset: raw.preset || 'custom', order, widgets };
     }catch(e){ return clone(DEFAULT_LAYOUT); }
@@ -1912,7 +1966,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   let customizing = false;
 
   function widgetHeadHtml(title){
-    return `<div class="dash-widget-head"><span class="dash-drag-handle" draggable="true" title="Drag to reorder">⠿</span><span class="dash-widget-title">${esc(title)}</span><button type="button" data-dash-action="move-up" title="Move up" aria-label="Move ${esc(title)} up">&uarr;</button><button type="button" data-dash-action="move-down" title="Move down" aria-label="Move ${esc(title)} down">&darr;</button><button type="button" data-dash-action="width" title="Toggle width (half/full)">&hArr;</button><button type="button" data-dash-action="height" title="Toggle height (compact/normal/tall)">&vArr;</button><button type="button" data-dash-action="hide" title="Hide widget" aria-label="Hide ${esc(title)}">&times;</button></div>`;
+    return `<div class="dash-widget-head"><span class="dash-drag-handle" draggable="true" title="Drag to reorder">⠿</span><span class="dash-widget-title">${esc(title)}</span><button type="button" data-dash-action="move-up" title="Move up" aria-label="Move ${esc(title)} up">&uarr;</button><button type="button" data-dash-action="move-down" title="Move down" aria-label="Move ${esc(title)} down">&darr;</button><button type="button" class="dash-width-btn" data-dash-action="width" aria-label="Change ${esc(title)} width">&hArr;</button><button type="button" data-dash-action="height" title="Toggle height (compact/normal/tall)">&vArr;</button><button type="button" data-dash-action="hide" title="Hide widget" aria-label="Hide ${esc(title)}">&times;</button></div>`;
   }
   WIDGET_IDS.forEach(id => {
     const el = grid.querySelector(`[data-widget-id="${id}"]`);
@@ -1924,12 +1978,14 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       const el = grid.querySelector(`[data-widget-id="${id}"]`);
       if (!el) return;
       el.style.order = String(i);
-      const w = layout.widgets[id] || {w:'full',h:'normal',hidden:false};
-      el.dataset.w = w.w || 'full';
+      const w = layout.widgets[id] || {w:'4',h:'normal',hidden:false};
+      el.dataset.w = normalizeWidth(w.w);
       el.dataset.h = w.h || 'normal';
       el.dataset.hidden = w.hidden ? '1' : '0';
       const hideBtn = el.querySelector('[data-dash-action="hide"]');
       if (hideBtn){ hideBtn.innerHTML = w.hidden ? '&#43;' : '&times;'; hideBtn.title = w.hidden ? 'Show widget' : 'Hide widget'; }
+      const widthBtn = el.querySelector('[data-dash-action="width"]');
+      if (widthBtn) widthBtn.title = `Width: ${el.dataset.w}/4 columns (click to widen/narrow)`;
     });
     const presetSelect = document.getElementById('dash-preset-select');
     if (presetSelect) presetSelect.value = layout.preset || 'custom';
@@ -1947,7 +2003,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     const cur = layout.widgets[id];
     if (action === 'move-up' && idx > 0){ [layout.order[idx-1], layout.order[idx]] = [layout.order[idx], layout.order[idx-1]]; }
     else if (action === 'move-down' && idx < layout.order.length-1){ [layout.order[idx+1], layout.order[idx]] = [layout.order[idx], layout.order[idx+1]]; }
-    else if (action === 'width'){ cur.w = cur.w === 'full' ? 'half' : 'full'; }
+    else if (action === 'width'){ cur.w = WIDTH_STEPS[(WIDTH_STEPS.indexOf(normalizeWidth(cur.w)) + 1) % WIDTH_STEPS.length]; }
     else if (action === 'height'){ cur.h = cur.h === 'compact' ? 'normal' : (cur.h === 'normal' ? 'tall' : 'compact'); }
     else if (action === 'hide'){ cur.hidden = !cur.hidden; }
     markCustom();
@@ -2108,6 +2164,86 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     const el = document.getElementById('about-uptime'); if (!el) return;
     try{ const r = await fetch('/api/observability', {cache:'no-store'}); const d = await r.json(); el.textContent = d.uptime_human || '—'; }catch(e){ el.textContent = '—'; }
   }
+
+  /* ---- Restart control (Issue #43) ----
+     Two-step in-panel confirm (no native confirm() dialog, matching the
+     rest of this custom Settings UI) -> POST /api/system/restart with an
+     explicit confirm flag -> disable the button immediately so a second
+     click can't queue a duplicate request (the backend independently
+     rejects a concurrent one with 409 either way) -> poll /health until the
+     restarted process answers again, then reload. */
+  (function wireRestartControl(){
+    const btn = document.getElementById('system-restart-btn');
+    const note = document.getElementById('system-restart-note');
+    if (!btn) return;
+    const originalLabel = btn.textContent;
+    const originalNote = note ? note.textContent : '';
+    let confirmTimer = null;
+    let awaitingConfirm = false;
+
+    function resetButton(){
+      awaitingConfirm = false;
+      confirmTimer = null;
+      btn.classList.remove('confirming');
+      btn.textContent = originalLabel;
+      if (note) note.textContent = originalNote;
+    }
+
+    async function waitForServerAndReload(){
+      for (let attempt = 0; attempt < 60; attempt++){
+        await new Promise(r => setTimeout(r, 1000));
+        try{
+          const r = await fetch('/health', {cache:'no-store'});
+          if (r.ok){ window.location.reload(); return; }
+        }catch(e){ /* still restarting -- keep polling */ }
+      }
+      window.location.reload();
+    }
+
+    async function triggerRestart(){
+      btn.disabled = true;
+      btn.classList.remove('confirming');
+      btn.textContent = 'Restarting…';
+      if (note) note.textContent = 'Restarting DNS Inspector — this page will reload automatically once it is back.';
+      try{
+        const r = await fetch('/api/system/restart', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({confirm: true}),
+        });
+        if (r.status === 409){
+          if (note) note.textContent = 'A restart is already in progress — waiting for it to finish.';
+          await waitForServerAndReload();
+          return;
+        }
+        if (!r.ok){
+          if (note) note.textContent = 'Restart request failed. Check the server logs.';
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          return;
+        }
+      }catch(e){
+        // The connection can legitimately drop mid-restart once the process
+        // image is replaced -- that is expected, not a failure.
+      }
+      await waitForServerAndReload();
+    }
+
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      if (!awaitingConfirm){
+        awaitingConfirm = true;
+        btn.classList.add('confirming');
+        btn.textContent = 'Click again to confirm restart';
+        if (note) note.textContent = 'This restarts the running application/container. Click again within 5 seconds to confirm.';
+        confirmTimer = setTimeout(resetButton, 5000);
+        return;
+      }
+      clearTimeout(confirmTimer);
+      awaitingConfirm = false;
+      triggerRestart();
+    });
+  })();
 
   syncControls();
 })();
@@ -3962,38 +4098,78 @@ def _geoip_update_diagnostics():
     }
 
 
+def _run_geoip_update_pass():
+    """Run exactly one watchdog-guarded check/update pass and update
+    `_geoip_update_in_progress` accordingly. Split out from
+    `geoip_auto_update_worker()`'s infinite loop so a single pass is directly
+    callable from tests (Issue #43) without looping forever.
+
+    The actual `geoip_updater.run_update()` call runs in its own daemon
+    thread so this can enforce `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS` as a
+    whole-pass deadline via `Thread.join(timeout)` -- `run_update()`'s own
+    per-request connect/read timeouts bound each individual network call,
+    but nothing previously bounded the *entire* pass, and a real deployment
+    was observed with `in_progress=true` and both targets' `last_checked_at`
+    stuck at `null` for several minutes. If the deadline is hit, the run
+    thread is left to finish on its own (daemon, so it never blocks process
+    exit) while this returns immediately, records an explicit timeout error
+    via `geoip_updater.mark_stuck_checks_as_timed_out()`, and clears
+    `_geoip_update_in_progress` so the next poll can try again.
+    """
+    global _geoip_update_in_progress
+    with _geoip_update_lock:
+        _geoip_update_in_progress = True
+    outcome = {}
+
+    def _run():
+        try:
+            outcome["results"] = geoip_updater.run_update(_GEOIP_UPDATE_CONFIG, logger=lambda msg: print(msg, flush=True))
+        except Exception as e:
+            outcome["error"] = e
+
+    run_thread = threading.Thread(target=_run, daemon=True, name="geoip-auto-update-run")
+    run_thread.start()
+    run_thread.join(GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS)
+    try:
+        if run_thread.is_alive():
+            print(
+                f"GeoIP auto-update error: check/update pass exceeded "
+                f"GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS={GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS}s -- "
+                f"giving up on this pass, will retry next poll", flush=True,
+            )
+            geoip_updater.mark_stuck_checks_as_timed_out(_GEOIP_UPDATE_CONFIG.state_path)
+        elif "error" in outcome:
+            print(f"GeoIP auto-update error: {outcome['error']!r}", flush=True)
+        else:
+            results = outcome.get("results", [])
+            if any(r["action"] == "updated" for r in results):
+                _reload_geoip_providers()
+    finally:
+        with _geoip_update_lock:
+            _geoip_update_in_progress = False
+
+
 def geoip_auto_update_worker():
     """Background worker (Issue #42 / 0.8.5.5): periodically checks DB-IP
     Lite for a newer monthly release and, if one is found and validated,
     atomically replaces the active database and reloads the in-process
-    providers -- see `geoip_updater.run_update()` for the download/validate/
-    convert/atomic-replace pipeline and `_reload_geoip_providers()` for the
-    hot-reload. Runs entirely in its own daemon thread: a large City Lite
-    download/conversion never blocks DNS ingestion or request handling, and
-    `geoip_updater`'s own atomicity guarantees mean a failed check never
-    disturbs the database currently in use.
+    providers -- see `_run_geoip_update_pass()` for a single watchdog-guarded
+    pass and `_reload_geoip_providers()` for the hot-reload. Runs entirely in
+    its own daemon thread: a large City Lite download/conversion never
+    blocks DNS ingestion or request handling, and `geoip_updater`'s own
+    atomicity guarantees mean a failed check never disturbs the database
+    currently in use.
 
     Wakes up every `GEOIP_AUTO_UPDATE_POLL_SECONDS` to re-evaluate whether an
     update is due (a cheap local state-file read); the actual network check
     against DB-IP only happens once `GEOIP_UPDATE_INTERVAL_DAYS` has elapsed
     per target (see `geoip_updater._is_check_due()`).
     """
-    global _geoip_update_in_progress
     if not GEOIP_AUTO_UPDATE:
         print("GeoIP auto-update: disabled (GEOIP_AUTO_UPDATE=false). Enable it or run scripts/geoip_updater.py manually. See docs/GEOIP.md.", flush=True)
         return
     while True:
-        with _geoip_update_lock:
-            _geoip_update_in_progress = True
-        try:
-            results = geoip_updater.run_update(_GEOIP_UPDATE_CONFIG, logger=lambda msg: print(msg, flush=True))
-            if any(r["action"] == "updated" for r in results):
-                _reload_geoip_providers()
-        except Exception as e:
-            print(f"GeoIP auto-update error: {e!r}", flush=True)
-        finally:
-            with _geoip_update_lock:
-                _geoip_update_in_progress = False
+        _run_geoip_update_pass()
         time.sleep(GEOIP_AUTO_UPDATE_POLL_SECONDS)
 
 
@@ -6053,6 +6229,59 @@ def debug_bundle():
     except Exception as e:
         print('debug bundle error:', repr(e), flush=True)
         return jsonify({'ok': False, 'error': 'Could not generate debug bundle'}), 500
+
+
+# === Restart control (Issue #43) ===
+# The container runs `app.py` directly as PID 1 with no supervisor/entrypoint
+# script (see the Dockerfile's `CMD ["python", "/app/app.py"]`) and Flask's
+# built-in dev server, not a process manager -- a real restart therefore
+# cannot rely on an orchestrator's restart policy (that requires the
+# deployer to have configured one, and the container would otherwise stay
+# fully down until they notice) and must not be faked by only restarting a
+# background worker thread. `os.execv` replaces this process's image in
+# place: the PID and the container never actually stop, `main()` runs again
+# from scratch exactly as it would on a fresh container start (re-opens the
+# SQLite database, restarts every `BACKGROUND_WORKERS` thread, rebinds the
+# listening socket), and `/data` -- a bind-mounted volume the process itself
+# never touches -- is completely unaffected.
+RESTART_DELAY_SECONDS = max(0.1, float(os.getenv("RESTART_DELAY_SECONDS", "0.75")))
+_restart_lock = threading.Lock()
+_restart_in_progress = False
+
+
+def _perform_self_restart():
+    """Runs in its own daemon thread, started only after `api_system_restart`
+    has already built its HTTP response. The short delay gives the
+    single-threaded dev server time to flush that response over the socket
+    before this replaces the process image -- without it, the client could
+    see the connection drop before ever learning the restart was accepted."""
+    global _restart_in_progress
+    time.sleep(RESTART_DELAY_SECONDS)
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except OSError as e:
+        print(f"Self-restart failed: {e!r}", flush=True)
+        with _restart_lock:
+            _restart_in_progress = False
+
+
+@app.route('/api/system/restart', methods=['POST'])
+def api_system_restart():
+    """Restart control backing the Settings > System panel's Restart button.
+    Requires an explicit `{"confirm": true}` JSON body -- an accidental or
+    blind POST (a health checker, a replayed request) can never trigger a
+    real restart -- and rejects a second request while one is already in
+    flight instead of queuing or double-executing it."""
+    global _restart_in_progress
+    payload = request.get_json(silent=True) or {}
+    if payload.get('confirm') is not True:
+        return jsonify({'ok': False, 'error': 'restart requires {"confirm": true} in the request body'}), 400
+    with _restart_lock:
+        if _restart_in_progress:
+            return jsonify({'ok': False, 'error': 'a restart is already in progress'}), 409
+        _restart_in_progress = True
+    threading.Thread(target=_perform_self_restart, daemon=True, name='self-restart').start()
+    return jsonify({'ok': True, 'status': 'restarting'}), 202
 
 
 # === APPLICATION ENTRY POINT (0.8.0) ===

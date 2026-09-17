@@ -411,6 +411,79 @@ def test_run_update_rejects_conflicting_only_flags(tmp_path):
         gu.run_update(config, country_only=True, city_only=True)
 
 
+def test_run_update_persists_state_after_each_target_not_only_at_the_end(tmp_path, monkeypatch):
+    """Issue #43 regression: a real deployment showed `in_progress=true` with
+    *both* targets' `last_checked_at=null` for several minutes. The previous
+    implementation only called `save_state()` once, after every target had
+    already been processed -- so a slow/stuck later target (city) hid the
+    fact that an earlier target (country) had already finished. Simulate
+    city blowing up mid-check and confirm country's result was already
+    durably persisted to disk before that happened, not lost with it.
+    """
+    template = "https://example.test/dbip-country-lite-{year:04d}-{month:02d}.csv.gz"
+    url = template.format(year=2026, month=9)
+    dest = tmp_path / "country.csv"
+    dest.write_text("stale\n")
+    state_path = tmp_path / "state.json"
+    session = FakeSession(
+        head_responses={url: FakeResponse(200)},
+        get_responses={url: FakeResponse(200, body=_gzip_bytes(COUNTRY_ROWS_RAW))},
+    )
+    config = gu.UpdaterConfig(
+        country_db_path=str(dest), country_url_template=template,
+        state_path=str(state_path), lookback_months=0, min_country_ranges=1,
+    )
+
+    real_update_one = gu._update_one
+
+    def flaky_update_one(target, *args, **kwargs):
+        if target == "city":
+            raise RuntimeError("simulated hang/crash mid-check")
+        return real_update_one(target, *args, **kwargs)
+
+    monkeypatch.setattr(gu, "_update_one", flaky_update_one)
+
+    with pytest.raises(RuntimeError):
+        gu.run_update(config, session=session, today=date(2026, 9, 15))
+
+    saved = gu.load_state(str(state_path))
+    assert saved["country"]["last_checked_at"] is not None
+    assert saved["country"]["last_error"] is None
+    assert saved["country"]["current_release"] == "2026-09"
+
+
+def test_mark_stuck_checks_as_timed_out_records_an_error_for_an_unsettled_check(tmp_path):
+    state_path = tmp_path / "state.json"
+    state = gu.default_state()
+    state["country"]["last_checked_at"] = gu._now_iso()
+    gu.save_state(str(state_path), state)
+
+    gu.mark_stuck_checks_as_timed_out(str(state_path))
+
+    saved = gu.load_state(str(state_path))
+    assert saved["country"]["last_error"]
+    assert saved["country"]["last_error_at"] is not None
+    # city was never checked this pass -- nothing to mark for it.
+    assert saved["city"]["last_checked_at"] is None
+    assert saved["city"]["last_error"] is None
+
+
+def test_mark_stuck_checks_as_timed_out_leaves_a_settled_check_untouched(tmp_path):
+    state_path = tmp_path / "state.json"
+    state = gu.default_state()
+    checked = gu._now_iso()
+    state["country"]["last_checked_at"] = checked
+    state["country"]["last_success_at"] = checked
+    state["country"]["current_release"] = "2026-09"
+    gu.save_state(str(state_path), state)
+
+    gu.mark_stuck_checks_as_timed_out(str(state_path))
+
+    saved = gu.load_state(str(state_path))
+    assert saved["country"]["last_error"] is None
+    assert saved["country"]["current_release"] == "2026-09"
+
+
 # --- disabled mode ---------------------------------------------------------------
 
 

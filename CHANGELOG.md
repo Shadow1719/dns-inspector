@@ -2,6 +2,56 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.6]
+
+Dashboard widget layout fix, a functional restart control, and a GeoIP
+updater watchdog (Issue #43).
+
+- **Dashboard Builder: a real layout grid, not a preset picker.** The
+  Analytics `.dash-grid` moves from a 2-column grid with a binary
+  `half`/`full` width to a real 4-column grid where every widget picks an
+  actual 1-4 column span (`data-w="1".."4"`); `grid-auto-flow:dense`
+  back-fills the gaps a mix of spans would otherwise leave, and two
+  responsive breakpoints (`1300px`, `900px`) keep the same span proportions
+  legible as the viewport narrows instead of only collapsing straight to one
+  column. The width toggle button now cycles through all four spans instead
+  of flipping between two, and its tooltip shows the widget's current
+  width. A `normalizeWidth()` helper migrates a browser's pre-existing
+  `dnsInspectorDashboardLayout` (or an older preset) from the old
+  `half`/`full` strings to the equivalent span, so nobody's saved
+  customization silently resets. No widget was removed, and every widget's
+  underlying data/route is unchanged.
+- **Restart DNS Inspector.** Settings > System gets a real restart control:
+  a two-step in-panel confirm (click once, click again within 5 seconds),
+  a `Restarting…` state, and a client-side guard against a second click
+  while one is already in flight. It calls a new `POST /api/system/restart`
+  (requires an explicit `{"confirm": true}` body; rejects a concurrent
+  request with 409). Because the container runs `app.py` directly as PID 1
+  with no supervisor (`Dockerfile`'s `CMD ["python", "/app/app.py"]`) and
+  Flask's built-in dev server, the backend performs a real restart via
+  `os.execv` -- replacing the process image in place rather than depending
+  on a Docker restart policy or only restarting a background worker thread.
+  `main()` runs again from scratch exactly as on a fresh container start;
+  `/data` (a bind-mounted volume the process itself never touches) is
+  unaffected. The frontend polls `/health` until the restarted process
+  answers again, then reloads the page.
+- **GeoIP updater: fix the indefinite `in_progress` regression.** Runtime
+  evidence showed `geoip_update.in_progress=true` with both Country and City
+  targets' `last_checked_at=null` for several minutes with no success/error.
+  `scripts/geoip_updater.py`'s `run_update()` now calls `save_state()` after
+  *each* target instead of once at the very end, so a slow target no longer
+  hides that an earlier one already finished. `app.py`'s
+  `geoip_auto_update_worker()` is also split into a new
+  `_run_geoip_update_pass()` that runs the check/update pass in its own
+  thread and enforces a whole-pass deadline
+  (`GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS`, default 1800s) via `Thread.join()`
+  -- a second, independent safety net on top of `geoip_updater`'s own
+  per-request connect/read timeouts. If the deadline is hit, a new
+  `geoip_updater.mark_stuck_checks_as_timed_out()` records an explicit error
+  for whichever target never recorded its own outcome, and
+  `_geoip_update_in_progress` is cleared so the next poll can retry --
+  `in_progress` can no longer stay stuck at `true` indefinitely.
+
 ## [0.8.5.5]
 
 Automatic DB-IP Lite GeoIP updates (Issue #42): the destination map's GeoIP
