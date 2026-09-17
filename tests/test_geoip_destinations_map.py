@@ -451,6 +451,41 @@ def test_map_honestly_reports_plotted_vs_total_geolocated_countries(client):
     assert "geolocated countries plotted" in body
 
 
+def test_no_geoip_configured_state_still_renders_a_base_world_map(client):
+    """Issue #31 follow-up: a screenshot showed the no-GeoIP state as pure
+    empty-state text with no map visualization at all. A small bundled/
+    offline low-poly world landmass outline must always render (no external
+    tiles/CDN); GeoIP configuration/data only ever controls the destination-
+    bubble overlay drawn on top of it, never whether the map itself appears."""
+    body = client.get("/").data.decode("utf-8")
+    assert "function worldMapLandPaths(" in body
+    assert "const WORLD_LAND_MASSES = [" in body
+    assert 'class="map-land"' in body
+    assert "el.innerHTML = baseSvg('World map, no GeoIP database configured')" in body
+
+
+def test_base_map_svg_is_shared_across_every_render_branch(client):
+    """Every renderDestinationMap() branch -- not-configured, zero
+    geolocated, zero plotted, and real data -- must route through the same
+    baseSvg() helper so none of them can independently regress back to a
+    text-only empty state that drops the map."""
+    body = client.get("/").data.decode("utf-8")
+    for needle in (
+        "baseSvg('World map, no GeoIP database configured')",
+        "baseSvg('World map, no geolocated destinations yet')",
+        "baseSvg('World map, geolocated countries have no plotted coordinates yet')",
+        "baseSvg('Observed DNS destinations by country', bubbles)",
+    ):
+        assert needle in body
+
+
+def test_map_land_css_rule_renders_a_distinct_landmass_fill(client):
+    """.map-land must be styled distinctly from the svg's own background so
+    the bundled outline is actually visible, not just present in the DOM."""
+    body = client.get("/").data.decode("utf-8")
+    assert ".map-land{fill:var(--surface-3);" in body
+
+
 def test_gauge_needle_uses_a_valid_animatable_css_property(client):
     """SVG `<line>` endpoints (x1/y1/x2/y2) are not themselves animatable CSS
     properties -- `transform` is; the needle must be rotated, not stretched."""
