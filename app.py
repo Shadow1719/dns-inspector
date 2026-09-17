@@ -489,13 +489,20 @@ html[data-motion="reduced"] .metric-sweep,html[data-motion="reduced"] .radar-swe
 .gauge-face{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:180px}
 html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:transform .5s ease}
 
-/* ---- DNS Destinations map (0.8.5.1): a bounded graticule + country-bubble
-   visualization, not a bundled coastline asset -- see docs/GEOIP.md. Bubble
-   size/position is entirely data-driven; only the top country's pulse ring
-   animates, and only when motion isn't reduced. ---- */
+/* ---- DNS Destinations map (Issue #33): a bundled/offline-safe stylized
+   world-landmass silhouette (WORLD_LAND_D below), a graticule and a
+   country-bubble overlay. The landmass path is a simplified, hand-authored
+   equirectangular outline -- not survey-accurate coastline data -- so the
+   map always renders something recognizable even with no GeoIP database
+   configured and no network access. Bubble size/position is entirely
+   data-driven; only the top country's pulse ring animates, and only when
+   motion isn't reduced. ---- */
+.destination-map-wrap{position:relative}
 .destination-map-svg{width:100%;height:auto;aspect-ratio:2/1;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-md)}
+.map-landmass{fill:var(--surface-3);stroke:var(--border-strong);stroke-width:.75;opacity:.9}
 .map-graticule .map-grid-line{stroke:var(--border);stroke-width:1;opacity:.5}
 .map-graticule .map-grid-equator{opacity:.85;stroke:var(--border-strong)}
+.map-status-banner{position:absolute;top:10px;left:10px;right:10px;margin:0 auto;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:.8rem;text-align:center;pointer-events:none;box-shadow:var(--shadow-sm,0 1px 4px rgba(0,0,0,.15))}
 .map-bubble{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:1;cursor:pointer;transition:fill-opacity .3s ease,stroke-width .3s ease}
 .map-bubble:hover,.map-bubble-selected{fill-opacity:.85;stroke-width:2}
 .map-bubble-pulse-ring{fill:none;stroke:var(--accent);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none}
@@ -1189,6 +1196,34 @@ async function fetchAnalyticsFull(){
 const MAP_W = 720, MAP_H = 360;
 let mapSelectedCountry = null;
 function mapProject(lat, lon){ return { x: (lon+180)/360*MAP_W, y: (90-lat)/180*MAP_H }; }
+/* Bundled/offline-safe world-landmass silhouette (Issue #33): a simplified,
+   hand-authored equirectangular outline of the seven continents plus a few
+   large islands, in the same 720x360 projection as mapProject()/the
+   graticule below, so the background renders without any GeoIP database,
+   network access or external map provider. It is intentionally stylized --
+   not survey-accurate coastline data -- purely so the widget always shows a
+   recognizable world map rather than an empty card. */
+const WORLD_LAND_D = [
+  'M24,50 L50,60 L80,40 L160,36 L210,40 L240,70 L254,84 L226,90 L212,100 L200,130 L180,122 L166,128 L184,138 L200,162 L192,160 L150,136 L130,124 L116,106 L112,88 L100,72 L90,64 Z',
+  'M270,14 L320,16 L320,40 L270,60 L250,40 Z',
+  'M206,156 L236,160 L258,170 L290,190 L284,206 L280,220 L274,226 L264,236 L246,250 L230,270 L224,290 L216,270 L218,250 L218,230 L198,192 L200,180 L206,166 Z',
+  'M348,110 L380,106 L424,118 L446,156 L462,156 L462,176 L442,184 L438,194 L430,220 L424,238 L396,248 L384,216 L386,198 L378,184 L366,172 L350,170 L326,150 L340,116 Z',
+  'M446,204 L460,212 L454,230 L448,220 Z',
+  'M342,94 L350,82 L370,78 L382,70 L410,38 L440,44 L480,36 L540,34 L640,34 L700,44 L716,52 L680,60 L640,90 L620,96 L602,118 L576,138 L576,158 L560,166 L568,178 L556,150 L544,136 L520,154 L514,164 L506,150 L500,138 L482,130 L472,130 L464,150 L446,156 L430,116 L432,108 L414,106 L398,100 L386,90 L378,92 Z',
+  'M344,74 L362,74 L354,62 L348,64 L340,70 Z',
+  'M620,90 L644,90 L640,110 L624,114 L620,100 Z',
+  'M550,170 L572,186 L590,196 L580,192 L560,176 Z',
+  'M578,172 L598,172 L594,188 L576,184 Z',
+  'M586,224 L620,204 L634,204 L642,202 L646,202 L650,214 L666,236 L660,254 L640,256 L632,250 L622,244 L590,248 L586,232 Z',
+  'M706,256 L716,256 L708,272 L696,270 Z',
+  'M0,360 L0,344 L60,338 L150,346 L260,336 L380,344 L500,334 L620,344 L720,338 L720,360 Z'
+].join(' ');
+function mapLandmassSvg(){ return `<path class="map-landmass" d="${WORLD_LAND_D}"/>`; }
+function mapBaseLayers(){ return `${mapLandmassSvg()}${mapGraticule()}`; }
+function mapStatusBanner(text){ return text ? `<div class="map-status-banner">${text}</div>` : ''; }
+function mapBaseSvg(label, inner){
+  return `<div class="destination-map-wrap"><svg viewBox="0 0 ${MAP_W} ${MAP_H}" class="destination-map-svg" role="img" aria-label="${esc(label)}">${mapBaseLayers()}${inner || ''}</svg></div>`;
+}
 function mapGraticule(){
   let lines = '';
   for (let lon=-180; lon<=180; lon+=30){ const x=((lon+180)/360*MAP_W).toFixed(1); lines += `<line class="map-grid-line" x1="${x}" y1="0" x2="${x}" y2="${MAP_H}"/>`; }
@@ -1213,13 +1248,19 @@ function renderDestinationMap(data){
   const cov = data?.coverage || {};
   const unknownDomains = data?.unknown?.domain_count || 0;
   if (!provider.configured){
-    el.innerHTML = '<div class="empty-state">No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.</div>';
+    el.innerHTML = mapBaseSvg(
+      'World map; GeoIP not configured, destinations unmapped',
+      mapStatusBanner('No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.')
+    );
     renderMapDetail(null);
     return;
   }
   const allCountries = data?.countries || [];
   if (!allCountries.length){
-    el.innerHTML = '<div class="empty-state">No geolocated destinations yet. This fills in as domains are queried and their actual DNS answers get matched against the configured GeoIP database.</div>';
+    el.innerHTML = mapBaseSvg(
+      'World map; no geolocated destinations yet',
+      mapStatusBanner('No geolocated destinations yet. This fills in as domains are queried and their actual DNS answers get matched against the configured GeoIP database.')
+    );
     renderMapDetail(null);
     return;
   }
@@ -1234,7 +1275,10 @@ function renderDestinationMap(data){
     : `${esc(countries.length)} countr${countries.length===1?'y':'ies'} plotted`;
   const coverageNote = `<div class="stats-note">${esc(cov.geolocated_pct ?? 0)}% of observed destinations geolocated &middot; ${plottedNote} &middot; ${esc(unknownDomains)} domain${unknownDomains===1?'':'s'} unmapped</div>`;
   if (!countries.length){
-    el.innerHTML = `<div class="empty-state">${esc(allCountries.length)} countr${allCountries.length===1?'y':'ies'} geolocated, but none have map bubble coordinates configured yet -- see the country list below.</div>` + coverageNote;
+    el.innerHTML = mapBaseSvg(
+      'World map; geolocated countries have no plotted coordinates yet',
+      mapStatusBanner(`${esc(allCountries.length)} countr${allCountries.length===1?'y':'ies'} geolocated, but none have map bubble coordinates configured yet -- see the country list below.`)
+    ) + coverageNote;
     renderMapDetail(null);
     return;
   }
@@ -1248,7 +1292,7 @@ function renderDestinationMap(data){
     const pulse = c.country_code === topCode ? `<circle class="map-bubble-pulse-ring" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>` : '';
     return `${pulse}<circle class="map-bubble${selected}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"><title>${esc(c.country_name)}: ${esc(c.observation_count)} destination observations, ${esc(c.domain_count)} domains</title></circle>`;
   }).join('');
-  el.innerHTML = `<svg viewBox="0 0 ${MAP_W} ${MAP_H}" class="destination-map-svg" role="img" aria-label="Observed DNS destinations by country">${mapGraticule()}${bubbles}</svg>` + coverageNote;
+  el.innerHTML = mapBaseSvg('Observed DNS destinations by country', bubbles) + coverageNote;
   el.querySelectorAll('[data-country]').forEach(node => node.addEventListener('click', () => {
     const code = node.getAttribute('data-country');
     mapSelectedCountry = (mapSelectedCountry === code) ? null : code;
