@@ -2,6 +2,52 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.2]
+
+Operator-facing GeoIP setup/verification build (Issue #35): makes the
+0.8.5.1 destination/GeoIP map practical to actually populate and verify with
+real DNS observations. No change to the map's data model, semantics or
+visuals -- functionality/documentation only.
+
+**Practical GeoIP setup**
+
+- `docs/GEOIP.md` gains an operator-ready "Quick setup: DB-IP Country Lite"
+  walkthrough: where to get the database, how to convert it, `GEOIP_DB_PATH`
+  configuration and container volume/mount considerations, the restart
+  requirement, and how to verify the provider loaded and the map has
+  non-zero geolocated coverage
+- a new small, dependency-free, offline conversion utility,
+  `scripts/convert_dbip_country_lite.py`, adds the missing `country_name`
+  column to a DB-IP Country Lite export (`start_ip,end_ip,country_code`) to
+  produce the Inspector's existing four-column CSV schema unchanged -- it
+  streams the input file row by row, supports IPv4 and IPv6, produces
+  deterministic output, and makes no network request of its own
+- a documented end-to-end smoke-test procedure using the real DNS test
+  domains from `nelsonjchen/cloud-geoip-dns-testing` (PowerShell and
+  Linux/macOS examples), performed through the operator's normal AdGuard
+  resolver path so the Inspector observes AdGuard's real answers; the docs
+  explain that the exact returned IP/country can vary because DNS
+  geolocation depends on resolver location/EDNS Client Subnet and DNS
+  routing responses can be region-specific
+
+**Operator diagnostics**
+
+- a new `_geoip_diagnostics()` snapshot (provider type, configured/not
+  configured, database filename -- not the full path, and loaded range
+  count) is logged once at startup (never per query) and exposed via the
+  existing `/api/observability` route's new `geoip` field, so an operator
+  can confirm the provider loaded without needing container log access
+
+**Test coverage**
+
+- new fixture-backed tests for the conversion utility (representative
+  IPv4/IPv6 rows, malformed/header handling, CLI usage, round-tripping
+  through `CsvRangeGeoIPProvider`), the new diagnostics snapshot/log line,
+  a domain with a mix of mapped and unmapped destination IPs, and
+  `/api/analytics/map` returning non-zero geolocated coverage over real HTTP
+  once a fixture provider is configured -- no external network access
+  required
+
 ## [0.8.5.1]
 
 Functional DNS Destinations / GeoIP map and instrument gauges (Issue #27):
