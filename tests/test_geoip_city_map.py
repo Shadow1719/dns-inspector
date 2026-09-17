@@ -43,6 +43,26 @@ def _add_destination_ip(db_path, domain, now, ip, observations=1):
         conn.commit()
 
 
+def _clear_all_destination_ips(db_path):
+    """Wipe every observed destination IP.
+
+    `initialised_db` is session-scoped (see conftest.py) so every test in
+    this module shares one on-disk database; earlier tests in this file
+    (e.g. the Destinations-mode tests above) leave their own
+    `domain_destination_ips` rows behind. `geoip_map_payload()`'s
+    `provider.state` is a *global* diagnostic computed over every domain
+    with `requests > 0`, so those leftover rows count toward
+    `total_observations` even though they belong to unrelated domains --
+    without this, a test asserting "nothing observed yet" only passes when
+    it happens to run first, and reports `no_country_matches` (leftover
+    observations, none matching the empty `_FixedProvider` in this test)
+    instead of `no_public_destinations` whenever it doesn't.
+    """
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute("DELETE FROM domain_destination_ips")
+        conn.commit()
+
+
 class _FixedProvider:
     """Deterministic country-provider test double, same shape as the one in
     test_geoip_destinations_map.py."""
@@ -482,6 +502,7 @@ def test_api_analytics_map_advertises_capabilities_and_destinations(client):
 def test_provider_state_is_no_public_destinations_when_nothing_observed_yet(app_module, initialised_db, monkeypatch):
     domain = _unique("state-no-public")
     now = app_module.utcnow()
+    _clear_all_destination_ips(initialised_db)
     _insert_domain(initialised_db, domain, now, requests=2)
     _use_country_provider(app_module, monkeypatch, _FixedProvider({}))
     _use_city_provider(app_module, monkeypatch, app_module.NullCityGeoIPProvider())
