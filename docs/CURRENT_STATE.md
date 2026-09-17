@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.6` (the `VERSION` file
+- Foundation version: `0.8.0`, current release: `0.8.5.7` (the `VERSION` file
   is authoritative; a prior hand-off left this line reading `0.8.6` after the
   `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
   "fix: keep map visual build in 0.8.5.x series" commit -- without this line
@@ -211,6 +211,54 @@ independent of `geoip_updater`'s own per-request timeouts; on timeout, a new
 `geoip_updater.mark_stuck_checks_as_timed_out()` records an explicit error
 for whichever target never recorded its own outcome and `in_progress` is
 cleared so the next poll can retry.
+
+0.8.5.7 (Issue #44) fixes real-deployment evidence of `geoip_update.in_progress=true`
+appearing immediately after startup: `geoip_auto_update_worker()` previously
+ran its first check/update pass at background-thread startup, before its
+first `time.sleep`, and `geoip_updater._is_check_due()` treated a missing
+`last_checked_at` as due -- so a fresh `/data` (no `geoip_update_state.json`
+yet) could start the ~650MB / ~7.75M-row DB-IP City Lite download and Python
+CSV conversion while the application was still trying to become healthy.
+The worker now sleeps until a configured daily local-time window
+(`GEOIP_AUTO_UPDATE_HOUR`/`GEOIP_AUTO_UPDATE_MINUTE`, default `03:00`,
+resolved against `GEOIP_AUTO_UPDATE_TIMEZONE` via `zoneinfo`, default `UTC`)
+via two new pure functions in `scripts/geoip_updater.py`
+(`resolve_auto_update_timezone()`, `next_scheduled_run()`) and never runs a
+pass at thread startup -- replacing the previous hourly
+`GEOIP_AUTO_UPDATE_POLL_SECONDS` re-check loop. `_is_check_due()` is
+unchanged in spirit (still gates the real 30-day network check locally) but
+now reads a new persisted field, `last_checked_ok_at`, instead of
+`last_checked_at`: the latter is stamped at the *start* of every attempt
+including a failed one, so gating on it meant a single failed check (a
+stale URL template, a transient network error, no release published yet)
+silently locked a target out of retrying for another full
+`GEOIP_UPDATE_INTERVAL_DAYS` -- `last_checked_ok_at` only advances on an
+attempt that did not end in an error, so a failed check is retried at the
+next scheduled window instead. The scheduled pass itself now runs
+`scripts/geoip_updater.py` as a **subprocess** (`app.py`'s
+`_run_geoip_update_pass()`/`_geoip_updater_cli_command()`) rather than an
+in-process daemon thread, so a City Lite conversion can never contend with
+Flask's own threads for the GIL, and `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS`
+is enforced via `Popen.communicate(timeout=...)`: a child still running
+past the deadline is actually terminated
+(`_terminate_geoip_subprocess()` -- `SIGTERM` then `SIGKILL`), something the
+previous same-process thread watchdog could time out on but never stop.
+`/api/observability`'s `geoip_update` field gains `schedule`
+(`hour`/`minute`/`timezone`), a single `status` value (`disabled`/
+`scheduled`/`in_progress`) and `next_scheduled_run_at`, so an operator (or
+the eventual UI) can distinguish "waiting for its window" from "actively
+running" without guessing from `in_progress` alone. The container image now
+also installs the `tzdata` PyPI package so `GEOIP_AUTO_UPDATE_TIMEZONE`
+values like `Europe/Bucharest` resolve reliably regardless of the base
+image's own system tzdata. **A strengthened Docker CI smoke-test step was
+written but could not be committed from this hand-off**: the bot's GitHub
+App token lacks the `workflows` permission needed to push a change to
+`.github/workflows/docker.yml`, so that file is unchanged in this release.
+The intended step (run the built image with `GEOIP_AUTO_UPDATE=true` and a
+genuinely empty `/data`, assert `/health` responds within 15s, and grep the
+container's own logs for "scheduled for" without ever seeing "starting
+scheduled check/update pass") is recorded in the Issue #44 PR description
+for the repository owner to add by hand.
 
 ## How to update this file
 

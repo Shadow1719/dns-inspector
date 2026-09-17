@@ -291,14 +291,58 @@ correct for a first-time manual conversion, or for a deployment that
 disables this and manages the file(s) by hand (`GEOIP_AUTO_UPDATE=false`),
 but a default deployment does not need to repeat them every month.
 
-A background worker (`geoip_auto_update_worker()` in `app.py`, running in its
-own daemon thread alongside ingestion) periodically calls
-`scripts/geoip_updater.run_update()`, which:
+**0.8.5.7 (Issue #44):** the worker previously ran its first check/update
+pass immediately when its background thread started, and treated a missing
+state file the same as "an update is due" -- so a fresh deployment (empty
+`/data`, no `geoip_update_state.json` yet) could start the DB-IP Lite
+Country/City Lite download and Python CSV conversion (City Lite is roughly
+650MB / ~7.75M rows) at the same time the application was trying to become
+healthy. The worker (`geoip_auto_update_worker()` in `app.py`) now never
+runs a check/update pass at thread startup: it sleeps until a configured
+daily local-time window --
+
+- `GEOIP_AUTO_UPDATE_HOUR` / `GEOIP_AUTO_UPDATE_MINUTE` (default `3:00`)
+- `GEOIP_AUTO_UPDATE_TIMEZONE` (default `UTC`; e.g. `Europe/Bucharest`) --
+  resolved via the standard library's `zoneinfo`, so it needs an IANA time
+  zone database available at runtime. The container image installs the
+  `tzdata` PyPI package for this so it doesn't depend on the base image's
+  own system tzdata; an unknown/unavailable zone name falls back to UTC with
+  a logged warning rather than crashing the worker.
+
+and only then runs a single pass. That pass still independently gates each
+database's real network check on `GEOIP_UPDATE_INTERVAL_DAYS` (a cheap local
+state-file read, no network) -- the daily wake just controls *when* that
+gate is re-evaluated, so first-ever installs simply wait for the next
+scheduled window instead of downloading at startup, and the worker never
+polls the network hourly to discover nothing is due.
+
+Because a heavy City Lite conversion running inside the same process as
+Flask could still compete for the interpreter (the GIL) even from a
+background thread, and a thread that hangs cannot actually be killed, the
+scheduled pass now runs `scripts/geoip_updater.py` as a **subprocess** --
+the same CLI entry point documented below -- rather than calling
+`run_update()` in-process. `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS` (default
+1800s) is enforced as a hard deadline on that child process: if it's still
+running past the deadline, the parent terminates it (`SIGTERM`, then
+`SIGKILL` if it doesn't exit promptly) and records a timeout error for
+whichever target never recorded its own outcome -- the Flask process itself
+is never at risk of being starved or hung by a stuck decompress/convert.
+
+A failed check (a stale URL template, a transient network error, or simply
+no release published yet) is retried at the **next scheduled window**, not
+after another full `GEOIP_UPDATE_INTERVAL_DAYS` -- only a check that
+actually succeeds, or confirms the current release is still the latest,
+resets that cadence. (0.8.5.5/0.8.5.6 had a latent bug here: every check
+attempt, including a failed one, reset the 30-day timer, so a single bad
+month could silently lock a target out of ever retrying for another 30
+days.)
+
+Once awake and due, the child process calls `scripts/geoip_updater.run_update()`,
+which:
 
 1. **Checks** whether `GEOIP_UPDATE_INTERVAL_DAYS` (default 30) has elapsed
-   since the last check for each database independently -- a cheap local
-   read of the persisted state file, no network call, so this is safe to
-   evaluate as often as the worker wakes up.
+   since the last non-error check for each database independently -- a
+   cheap local read of the persisted state file, no network call.
 2. **Discovers** the newest available DB-IP Lite release by probing DB-IP's
    Lite distribution convention with an HTTP `HEAD` (current month, then a
    bounded number of prior months via `GEOIP_UPDATE_LOOKBACK_MONTHS`, in
@@ -324,7 +368,9 @@ own daemon thread alongside ingestion) periodically calls
    just written and clears their lookup caches, so the new data is live
    immediately -- no container restart needed.
 
-This all happens in a background thread: a multi-hundred-thousand-row City
+This all happens outside the request-serving path -- in the worker's own
+scheduling thread and, since 0.8.5.7, in a separate child process for the
+actual check/download/convert work -- so a multi-hundred-thousand-row City
 Lite conversion never blocks DNS ingestion or a browser request, and GeoIP
 lookups themselves remain a purely local/offline table scan exactly as
 before -- the updater changes *which file* backs that table, never how
@@ -362,11 +408,18 @@ It reads the same `GEOIP_*`/`GEOIP_UPDATE_*` environment variables as the
 background worker, so a manual run and the automatic one behave identically.
 
 **Diagnostics.** `/api/observability`'s `geoip_update` field reports
-`auto_update_enabled`, `interval_days`, an in-memory `in_progress` flag set
-only while a check/update is actively running, and per-database
-`current_release`/`last_checked_at`/`last_success_at`/`last_error`/
-`last_error_at`/`next_check_at`. The worker and CLI also log every check,
-download, success and failure.
+`auto_update_enabled`, `interval_days`, a `schedule` object
+(`hour`/`minute`/`timezone`), a single `status` value (`disabled` /
+`scheduled` -- waiting for its next window -- / `in_progress`), the
+in-memory `next_scheduled_run_at` timestamp for the next window, the same
+in-memory `in_progress` flag (guaranteed to clear again once a pass
+finishes or times out -- it can never sit at `true` forever), and
+per-database `current_release`/`last_checked_at`/`last_checked_ok_at`/
+`last_success_at`/`last_error`/`last_error_at`/`next_check_at`
+(`last_checked_ok_at`, 0.8.5.7, is the timestamp the 30-day cadence
+actually gates on -- see above). The worker and CLI also log when a pass is
+scheduled, when it actually starts, which target is being processed, and
+when it completes, fails or times out.
 
 **Disabling it.** Set `GEOIP_AUTO_UPDATE=false` to fall back entirely to the
 manual "Quick setup" workflow above -- the background worker logs that it's
@@ -396,7 +449,17 @@ disabled and returns immediately without ever making a network request.
 | `GEOIP_UPDATE_STATE_PATH` | `/data/geoip_update_state.json` | Where the updater persists last-checked/current-release/last-error state per database. |
 | `GEOIP_UPDATE_CONNECT_TIMEOUT_SECONDS` / `GEOIP_UPDATE_READ_TIMEOUT_SECONDS` | `10` / `300` | Network timeouts for the updater's own requests. |
 | `GEOIP_UPDATE_CHUNK_SIZE` | `1048576` (1 MiB) | Streaming download chunk size. |
-| `GEOIP_AUTO_UPDATE_POLL_SECONDS` | `3600` | How often the background worker wakes up to re-evaluate whether a check is due (a local, no-network read) -- independent of `GEOIP_UPDATE_INTERVAL_DAYS`, which controls how often an update actually happens. |
+| `GEOIP_AUTO_UPDATE_HOUR` | `3` | Hour (0-23, local to `GEOIP_AUTO_UPDATE_TIMEZONE`) of the daily maintenance window. A real check/download only actually happens if `GEOIP_UPDATE_INTERVAL_DAYS` has also elapsed. |
+| `GEOIP_AUTO_UPDATE_MINUTE` | `0` | Minute (0-59) of the daily maintenance window. |
+| `GEOIP_AUTO_UPDATE_TIMEZONE` | `UTC` | IANA time zone name (e.g. `Europe/Bucharest`) the hour/minute above are local to. An unknown/unavailable name falls back to UTC with a logged warning rather than crashing the worker. |
+| `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS` | `1800` | Hard deadline for one scheduled check/update child process. A child still running past this is terminated (`SIGTERM` then `SIGKILL`) and the pass is recorded as timed out; the parent Flask process is never blocked waiting for it. |
+
+**0.8.5.7 (Issue #44):** replaced `GEOIP_AUTO_UPDATE_POLL_SECONDS` (an hourly
+"wake up and re-check whether anything is due" poll, which also ran its
+first pass immediately at worker startup) with the daily
+`GEOIP_AUTO_UPDATE_HOUR`/`GEOIP_AUTO_UPDATE_MINUTE`/`GEOIP_AUTO_UPDATE_TIMEZONE`
+schedule described above -- the worker now only wakes once a day, and never
+at process startup.
 
 **0.8.5.4:** `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` used to default under
 `BASE_DIR/data/...` (`/app/data/...` inside the container) -- a directory the

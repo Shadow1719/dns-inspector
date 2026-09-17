@@ -1,2 +1,9 @@
 flask==3.1.2
 requests==2.32.5
+# Ships the IANA time zone database so `zoneinfo.ZoneInfo(GEOIP_AUTO_UPDATE_TIMEZONE)`
+# (e.g. "Europe/Bucharest") resolves reliably inside the container regardless
+# of whether the base image's own system tzdata is present -- Debian slim
+# images do not guarantee it. A version floor, not an exact pin like the
+# packages above, since this implementation had no network access to
+# confirm the latest release on PyPI.
+tzdata>=2024.2
