@@ -255,6 +255,19 @@ semantics:
 - Heatmap mode is deliberately left as a documented follow-up rather than a
   half-working implementation
 
+0.8.5.4 (Issue #39) is a real implementation/fix pass on the above, driven by
+live-DEV operator testing: fixed the `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH`
+default path (it pointed at `BASE_DIR/data/...` inside the container image
+instead of the documented `/data` volume, so a correctly-configured
+deployment's database was silently never found); added a `state` diagnostic
+(`not_configured`/`load_failed`/`no_public_destinations`/`no_country_matches`/
+`country_only`/`full_coverage`) to `/api/analytics/map` and
+`/api/observability`; replaced the fixed power-of-two zoom steps with a real
+continuous viewport (pointer-drag pan, wheel/pinch zoom, keyboard, fit-to-
+data); and made the four map styles vary background gradient, coastline
+glow, graticule dash pattern and banner colors, not just the accent color.
+Heatmap mode remains the same documented follow-up above.
+
 ---
 
 # Design principles

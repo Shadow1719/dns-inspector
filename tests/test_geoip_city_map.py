@@ -469,3 +469,113 @@ def test_api_analytics_map_advertises_capabilities_and_destinations(client):
     assert "capabilities" in payload
     assert set(payload["capabilities"]) == {"country", "coordinates", "heatmap"}
     assert isinstance(payload["destinations"], list)
+
+
+# --- provider.state: single unambiguous diagnostic classification (Issue #39)
+#
+# `/api/analytics/map`'s `provider.state` distinguishes six situations so an
+# operator/the UI can tell exactly which link in the GeoIP chain is missing
+# instead of one generic empty map for every failure mode -- see
+# `geoip_map_payload()` in app.py.
+
+
+def test_provider_state_is_no_public_destinations_when_nothing_observed_yet(app_module, initialised_db, monkeypatch):
+    domain = _unique("state-no-public")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=2)
+    _use_country_provider(app_module, monkeypatch, _FixedProvider({}))
+    _use_city_provider(app_module, monkeypatch, app_module.NullCityGeoIPProvider())
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["provider"]["state"] == "no_public_destinations"
+
+
+def test_provider_state_is_no_country_matches_when_observed_ips_do_not_match_any_range(
+    app_module, initialised_db, monkeypatch,
+):
+    domain = _unique("state-no-match")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=1)
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.77", observations=1)
+    _use_country_provider(app_module, monkeypatch, _FixedProvider({}))  # loaded, but maps nothing
+    _use_city_provider(app_module, monkeypatch, app_module.NullCityGeoIPProvider())
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["provider"]["state"] == "no_country_matches"
+
+
+def test_provider_state_is_country_only_when_no_city_database_is_configured(app_module, initialised_db, monkeypatch):
+    domain = _unique("state-country-only")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=1)
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.88", observations=1)
+    _use_country_provider(app_module, monkeypatch, _FixedProvider({"203.0.113.88": ("US", "United States")}))
+    _use_city_provider(app_module, monkeypatch, app_module.NullCityGeoIPProvider())
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["provider"]["state"] == "country_only"
+    assert payload["capabilities"]["coordinates"] is False
+
+
+def test_provider_state_is_full_coverage_when_both_databases_are_loaded_and_matching(
+    app_module, initialised_db, monkeypatch,
+):
+    domain = _unique("state-full-coverage")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=1)
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.99", observations=1)
+    _use_country_provider(app_module, monkeypatch, _FixedProvider({"203.0.113.99": ("US", "United States")}))
+    _use_city_provider(app_module, monkeypatch, _FixedCityProvider({
+        "203.0.113.99": {"country_code": "US", "country_name": "United States", "city": "Ashburn", "lat": 39.04, "lon": -77.49},
+    }))
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["provider"]["state"] == "full_coverage"
+    assert payload["city_provider"]["state"] == "loaded"
+
+
+def test_provider_state_is_not_configured_when_country_provider_is_the_default_null(
+    app_module, initialised_db, monkeypatch,
+):
+    domain = _unique("state-not-configured")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=1)
+    _use_country_provider(app_module, monkeypatch, app_module.NullGeoIPProvider())
+    monkeypatch.setattr(app_module, "GEOIP_DB_PATH_EXPLICIT", False)
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["provider"]["state"] == "not_configured"
+
+
+def test_provider_state_is_load_failed_when_explicitly_configured_but_unavailable(
+    app_module, initialised_db, monkeypatch,
+):
+    domain = _unique("state-load-failed")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=1)
+    _use_country_provider(app_module, monkeypatch, app_module.NullGeoIPProvider())
+    monkeypatch.setattr(app_module, "GEOIP_DB_PATH_EXPLICIT", True)
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["provider"]["state"] == "load_failed"
+
+
+def test_provider_state_does_not_leak_the_full_configured_path(app_module, initialised_db, monkeypatch):
+    """`db_path_basename` replaces the old `path` field (Issue #39) -- the
+    full filesystem path must never reach this public HTTP endpoint."""
+    domain = _unique("state-no-leak")
+    now = app_module.utcnow()
+    _insert_domain(initialised_db, domain, now, requests=1)
+    _add_destination_ip(initialised_db, domain, now, "203.0.113.11", observations=1)
+    _use_country_provider(app_module, monkeypatch, _FixedProvider({"203.0.113.11": ("US", "United States")}))
+
+    payload = app_module.geoip_map_payload()
+
+    assert "path" not in payload["provider"]
+    assert payload["provider"]["db_path_basename"] is None or "/" not in payload["provider"]["db_path_basename"]

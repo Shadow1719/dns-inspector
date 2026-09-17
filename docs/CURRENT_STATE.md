@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.6`
+- Foundation version: `0.8.0`, current release: `0.8.5.4` (see `VERSION`; the 0.8.6-labeled Destination Map Visual 2.0 feature content below was released under the `0.8.5.x` version series -- see Issue #37/#39 history for why)
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
 
@@ -102,6 +102,36 @@ offline world-landmass basemap, country-bubble rendering path and
 reduced-motion handling from Issue #33/#27 are unchanged. Heatmap mode is
 deliberately left as a documented follow-up rather than a half-working
 implementation, matching the task contract's own allowance for that case.
+
+0.8.5.4 (Issue #39) fixes the concrete problems the operator found testing
+the live 0.8.5.3 map, on top of the same `/api/analytics/map` /
+`domain_destination_ips` source of truth. The real root cause of GeoIP
+staying empty on a real deployment was found and fixed: `GEOIP_DB_PATH`/
+`GEOIP_CITY_DB_PATH` defaulted to `BASE_DIR/data/...` (`/app/data/...` inside
+the container image) instead of the `/data` volume every other persistent
+path (`DB_PATH`/`TRACKERDB_PATH`/`NEIGHBORS_PATH`) and the README's
+documented `-v /path/to/data:/data` volume already use -- an operator
+following the documented setup had their converted CSV silently ignored.
+Both now default under `/data`. `geoip_map_payload()` and
+`_geoip_diagnostics()`/`_geoip_city_diagnostics()` gain a `state`
+classification (`not_configured`/`load_failed`/`no_public_destinations`/
+`no_country_matches`/`country_only`/`full_coverage`) surfaced through
+`/api/analytics/map` and `/api/observability`, replacing one generic empty-
+map message with state-specific operator guidance; the `provider` object no
+longer echoes the full configured database path (it now reports
+`db_path_basename` only, matching the existing observability convention).
+The map viewport (`mapZoom`/`mapViewCenter` in the `HTML` template's inline
+JS) is now continuous rather than fixed power-of-two steps, with real
+pointer-drag panning, wheel/pinch zoom centered on the gesture, keyboard
+arrow/+/-/0 support, and a new Fit-to-data control, all layered on the
+existing `viewBox`-based rendering with no new animation (reduced-motion
+unaffected). The four map styles (BEMO Dark/Aurora/White/Minimal) now each
+vary background gradient, coastline glow, graticule dash pattern and banner
+colors via additional `--map-*` custom properties, not just the marker/
+accent color, while remaining independent of the application theme. The
+bundled offline world-landmass silhouette's most visually flat/straight
+edges were densified with additional coastline detail; it remains a
+stylized, hand-authored outline, not survey-accurate geographic data.
 
 ## How to update this file
 

@@ -2,6 +2,99 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.4]
+
+Destination Map Visual 2.1 (Issue #39): fixes the concrete problems reported
+after testing the live 0.8.5.3 map -- real pan/zoom navigation, genuinely
+distinct map style presets, a denser/more polished basemap, and (most
+importantly) the actual root cause of GeoIP staying empty on a real
+deployment. `/api/analytics/map`, `domain_destination_ips` and the
+observed-DNS-destination semantics are unchanged; no DNS re-resolution and
+no invented coordinates were added anywhere in this path.
+
+**GeoIP root-cause fix: the `/data` volume default path bug**
+
+- `GEOIP_DB_PATH` and `GEOIP_CITY_DB_PATH` used to default to
+  `BASE_DIR/data/...` (i.e. `/app/data/...` inside the container image) --
+  a directory the Dockerfile never creates and that is **not** the `/data`
+  volume `DB_PATH`/`TRACKERDB_PATH`/`NEIGHBORS_PATH` already use and the
+  README's `docker run -v /path/to/data:/data` example already documents.
+  An operator who mounted that documented volume and dropped the converted
+  CSV there had it silently ignored -- the file existed on the host, but the
+  container process was looking somewhere else entirely. Both variables now
+  default to `/data/geoip_country_ranges.csv` / `/data/geoip_city_ranges.csv`,
+  matching every other persistent path. See `docs/GEOIP.md` for the corrected
+  setup walkthrough.
+- Setting `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` explicitly still works exactly
+  as before; if you were already working around the bug this way, nothing
+  changes for you.
+
+**GeoIP diagnosability: six distinct states instead of one generic empty map**
+
+- `/api/analytics/map`'s `provider`/`city_provider` objects gain a `state`
+  field (`_geoip_provider_state()` / classification in `geoip_map_payload()`,
+  `app.py`) distinguishing `not_configured`, `load_failed` (explicitly
+  configured but nothing loaded -- a real misconfiguration, now distinguished
+  from "never configured"), `no_public_destinations` (loaded, but nothing
+  observed yet), `no_country_matches` (observed traffic exists but matched no
+  range), `country_only` and `full_coverage`. `/api/observability`'s
+  `geoip`/`geoip_city` fields gain the same `state` classification.
+  The map widget's empty-state banner now shows state-specific copy instead
+  of one generic "No GeoIP database configured" message for every failure
+  mode.
+- The startup log line and `_log_geoip_status()` now say explicitly when
+  `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` was set but nothing loaded from it,
+  rather than looking identical to "never configured".
+- `/api/analytics/map`'s `provider` object no longer echoes the full
+  configured database path (it leaked via `provider.path`); it now reports
+  only `db_path_basename`, matching the existing `/api/observability`
+  convention.
+
+**Real map navigation**
+
+- The map viewport (`mapZoom`/`mapViewCenter`) is now continuous rather than
+  fixed power-of-two steps: pointer drag pans the map, mouse wheel zooms
+  centered on the cursor, two-finger pinch zooms on touch, and arrow/+/-/0
+  keyboard shortcuts work when the map has focus (it's keyboard-focusable
+  and describes its controls via `aria-label`). A new **Fit** control zooms/
+  centers on the bounding box of whatever is currently plottable (country
+  centroids or real coordinate points); **Reset** still returns to the full
+  world view. Panning only mutates the SVG's `viewBox` directly (bubble/
+  cluster geometry doesn't depend on pan), while zoom debounces a full
+  re-render so Destinations mode's zoom-dependent clustering catches up once
+  a gesture settles. No new animation/transition was added, so the existing
+  reduced-motion preference is unaffected.
+
+**Genuinely distinct map style presets**
+
+- BEMO Dark/Aurora/White/Minimal now each vary background treatment (a
+  radial-gradient ocean, not a flat fill, for the three non-minimal styles),
+  coastline glow/weight, graticule dash pattern and the empty-state banner's
+  colors -- previously switching styles changed little beyond the marker/
+  accent color. Aurora's graticule is dashed for a more atmospheric feel;
+  Minimal's stays fully hidden as before. All four remain expressed purely
+  through `--map-*` custom properties scoped to `[data-map-style]`,
+  independent of the application theme, matching 0.8.6's original contract.
+
+**Basemap polish**
+
+- The bundled offline world-landmass silhouette's most visually "flat
+  polygon" edges (a 100-unit dead-straight top-of-Asia edge, a similarly flat
+  North America Arctic edge, and the sparsely-jointed Antarctica strip along
+  the bottom border) are broken up into more, shorter segments with small
+  bay/peninsula-style jogs, plus a small British Isles island group was
+  added near Europe. Still a stylized, hand-authored outline -- not
+  survey-accurate coastline data -- just no longer dominated by a handful of
+  giant flat edges. A subtle vignette and coastline glow (`--map-vignette`,
+  `--map-land-glow`) add depth/contrast on top of the same geometry.
+
+**Tests**
+
+- New coverage for the corrected default paths, the `state` classification
+  across all six provider states (`geoip_map_payload()` and
+  `_geoip_provider_state()`), the removed path-leak, and the new pan/zoom/
+  keyboard/fit-to-data functions and per-style CSS variable distinctness.
+
 ## [0.8.6]
 
 Destination Map Visual 2.0 (Issue #37): turns the 0.8.5.2 static country
