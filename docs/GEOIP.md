@@ -9,7 +9,14 @@ adds an optional, independent coordinate/city provider that powers the
 map's Destinations mode -- see
 ["Destinations mode: optional coordinate/city GeoIP"](#destinations-mode-optional-coordinatecity-geoip)
 below; the country-only provider and Countries mode described in the rest of
-this document are completely unchanged.
+this document are completely unchanged. 0.8.5.4 (Issue #39) fixes the actual
+root cause of the map staying empty on a real deployment that followed this
+document's own container instructions -- `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH`
+now default under `/data` like every other persistent path instead of an
+`/app/data` directory the image never creates -- and adds a six-state
+`diagnostics` field to `/api/analytics/map` plus a standalone
+`scripts/verify_geoip.py` pre-flight check; see "Verifying with
+`scripts/verify_geoip.py`" and "Diagnostic states" below.
 
 If you just want to get the map populated, skip to
 ["Quick setup: DB-IP Country Lite"](#quick-setup-db-ip-country-lite).
@@ -148,14 +155,14 @@ attribution text DB-IP asks for).
 3. **Configure `GEOIP_DB_PATH`.** Point the Inspector at the converted file.
    For a container deployment, this means two things together:
    - mount a host directory containing the converted CSV into the container
-     (e.g. a volume already used for `DB_PATH`/`data/`, so it persists across
-     image upgrades);
-   - set `GEOIP_DB_PATH` to that file's path *inside the container*, e.g.
-     `GEOIP_DB_PATH=/data/geoip_country_ranges.csv` if you mount your host
-     directory to `/data`. If you keep the default `data/` directory next to
-     `app.py` and that directory is already part of your persistent volume,
-     you can skip setting `GEOIP_DB_PATH` explicitly and just drop the file
-     in as `geoip_country_ranges.csv`.
+     at `/data` -- the same volume the README documents for `DB_PATH`
+     (`-v /path/to/data:/data`), so it persists across image upgrades;
+   - drop the converted file in as `/data/geoip_country_ranges.csv`. That is
+     `GEOIP_DB_PATH`'s default (0.8.5.4), so if you're already using the
+     documented single `/data` volume you don't need to set the environment
+     variable explicitly at all -- just place the file there. Only set
+     `GEOIP_DB_PATH` if you want a different filename/path inside the
+     container.
 
 4. **Restart.** `CsvRangeGeoIPProvider` loads the CSV once, at process
    startup (see `_geoip_provider = CsvRangeGeoIPProvider(GEOIP_DB_PATH) ...`
@@ -280,14 +287,44 @@ startup.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GEOIP_DB_PATH` | `data/geoip_country_ranges.csv` next to `app.py` | Path to the country CSV database above. |
+| `GEOIP_DB_PATH` | `/data/geoip_country_ranges.csv` | Path to the country CSV database above. |
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP country lookup results. |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | How long an aggregated map payload is reused before recomputing. |
 | `GEOIP_MAP_DOMAIN_LIMIT` | `1500` | Upper bound on domains scanned per aggregation pass (most-recently-active first). |
 | `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` | `32` | Upper bound on distinct observed destination IPs retained per domain. |
-| `GEOIP_CITY_DB_PATH` | `data/geoip_city_ranges.csv` next to `app.py` | Path to the optional coordinate/city CSV database (Destinations mode). |
+| `GEOIP_CITY_DB_PATH` | `/data/geoip_city_ranges.csv` | Path to the optional coordinate/city CSV database (Destinations mode). |
 | `GEOIP_CITY_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP city lookup results. |
 | `GEOIP_MAP_DESTINATION_POINTS_LIMIT` | `600` | Upper bound on individual coordinate points returned to the browser per map payload (a rendering-size cap only -- `coverage` is always computed over every observed destination regardless of this cap). |
+
+**0.8.5.4:** `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` used to default under
+`BASE_DIR/data/...` (`/app/data/...` inside the container) -- a directory the
+Dockerfile never creates and the README's documented `-v host/path:/data`
+single-volume mount does not cover. Every other persistent path (`DB_PATH`,
+`NEIGHBORS_PATH`, `TRACKERDB_PATH`) already defaulted under `/data`; an
+operator who followed the documented single-volume setup and dropped a
+converted CSV into their mounted `/data` never had it picked up. The
+defaults above now match `/data` like everything else. If you were already
+working around this by setting `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH`
+explicitly to a path under your mounted volume, nothing changes for you.
+
+## Verifying with `scripts/verify_geoip.py`
+
+Before mounting a converted CSV into a container at all, you can check it
+loads and produces sane lookups with the bundled, offline, dependency-free
+verification script (0.8.5.4):
+
+```bash
+python scripts/verify_geoip.py --db data/geoip_country_ranges.csv --city-db data/geoip_city_ranges.csv \
+  --ip 8.8.8.8 --ip 2001:4860:4860::8888
+```
+
+Run with no arguments and it checks the same paths `GEOIP_DB_PATH`/
+`GEOIP_CITY_DB_PATH` default to (or whatever those environment variables are
+set to in your shell) against a few well-known public sample IPs. It prints
+the loaded range count per address family and the resolved country/city for
+each sample IP, and exits non-zero if the country database is missing,
+unreadable, or produced zero usable ranges -- suitable as a pre-flight check
+in a deployment script, before you ever restart the Inspector container.
 
 ## Verifying the provider loaded
 
@@ -330,7 +367,9 @@ smoke test" below), check the aggregation endpoint directly:
 curl -s http://<inspector-host>:8080/api/analytics/map | python3 -m json.tool
 ```
 
-- `provider.configured` should be `true`.
+- `provider.configured` should be `true`, with `provider.range_count`
+  greater than zero (`provider.db_path_basename` reports only the filename,
+  never the full configured path -- 0.8.5.4 stopped returning that here).
 - `coverage.geolocated_pct` should be greater than `0` once at least one
   observed destination IP falls inside your loaded database's ranges.
 - `countries` should be a non-empty list, each with a `country_code`,
@@ -338,12 +377,38 @@ curl -s http://<inspector-host>:8080/api/analytics/map | python3 -m json.tool
 - `capabilities.country` should be `true`; `capabilities.coordinates` is
   only `true` once a city database is also configured (see "Destinations
   mode" above) -- until then `destinations` is honestly an empty list.
+- `diagnostics.state` (0.8.5.4) should read `full_coverage` once both a
+  country match and (if a city database is configured) a coordinate match
+  exist -- see "Diagnostic states" below for the full list.
 
 Then open Analytics in the UI -- the DNS Destinations widget should show
 country bubbles instead of the "No GeoIP database configured" banner, with
 the same `% geolocated` figure the API reports. If you've also configured a
 city database, switch the widget to Destinations mode to see individual/
 clustered coordinate points instead.
+
+## Diagnostic states
+
+`/api/analytics/map`'s `diagnostics` field (0.8.5.4) is a single state
+machine that replaces the old configured/not-configured boolean, so an
+operator (or the UI banner) can tell these apart without container log
+access:
+
+| `diagnostics.state` | Meaning |
+| --- | --- |
+| `not_configured` | No file exists at `GEOIP_DB_PATH` -- the default `NullGeoIPProvider` is in use. |
+| `load_failed` | A file exists at `GEOIP_DB_PATH` but failed to parse into any usable range -- check the CSV schema and file permissions. |
+| `no_public_destinations` | The country database loaded, but no observed public destination IPs have been recorded yet. |
+| `no_country_matches` | Observed public destination IPs exist, but none matched a range in the loaded database -- check IPv4/IPv6 coverage and that the database is current. |
+| `country_only` | Country-level geolocation is working; no city/coordinate database is configured, so Destinations mode is unavailable. |
+| `partial_coordinate_coverage` | Country-level geolocation is working and a city database is configured, but it doesn't yet cover the observed destination IPs. |
+| `full_coverage` | Both country and coordinate-level geolocation are working. |
+
+`diagnostics.message` is the same human-readable copy the map widget's
+banner shows. `diagnostics.country`/`diagnostics.city` are the existing
+`_geoip_diagnostics()`/`_geoip_city_diagnostics()` snapshots (provider type,
+configured, range count, basename only) already used by
+`/api/observability`.
 
 ## End-to-end smoke test
 

@@ -106,12 +106,12 @@ All configuration is environment variables, read once at startup.
 | `MACVENDOR_CACHE_HOURS` | `168` | MAC vendor cache TTL |
 | `DNS_RECORDS_CACHE_HOURS` | `168` | DNS record cache TTL |
 | `HOSTNAME_CACHE_HOURS` | `24` | Reverse hostname cache TTL |
-| `GEOIP_DB_PATH` | `data/geoip_country_ranges.csv` | Local/offline GeoIP CSV database for the DNS Destinations map. No database ships by default -- see [`docs/GEOIP.md`](docs/GEOIP.md) |
+| `GEOIP_DB_PATH` | `/data/geoip_country_ranges.csv` | Local/offline GeoIP CSV database for the DNS Destinations map. No database ships by default -- see [`docs/GEOIP.md`](docs/GEOIP.md) |
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded per-IP GeoIP lookup cache size |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | Server-side cache TTL for the aggregated destination map payload |
 | `GEOIP_MAP_DOMAIN_LIMIT` | `1500` | Max domains scanned per map aggregation pass |
 | `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` | `32` | Max distinct observed destination IPs retained per domain |
-| `GEOIP_CITY_DB_PATH` | `data/geoip_city_ranges.csv` | Optional local/offline coordinate/city GeoIP CSV database for the map's Destinations mode. No database ships by default -- see [`docs/GEOIP.md`](docs/GEOIP.md) |
+| `GEOIP_CITY_DB_PATH` | `/data/geoip_city_ranges.csv` | Optional local/offline coordinate/city GeoIP CSV database for the map's Destinations mode. No database ships by default -- see [`docs/GEOIP.md`](docs/GEOIP.md) |
 | `GEOIP_CITY_CACHE_MAX_ENTRIES` | `8192` | Bounded per-IP city GeoIP lookup cache size |
 | `GEOIP_MAP_DESTINATION_POINTS_LIMIT` | `600` | Max individual coordinate points returned per map payload (rendering-size cap only) |
 

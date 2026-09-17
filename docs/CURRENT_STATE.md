@@ -6,7 +6,11 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.6`
+- Foundation version: `0.8.0`, current release: `0.8.5.4` (the `VERSION` file
+  is authoritative; a prior hand-off left this line reading `0.8.6` after the
+  `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
+  "fix: keep map visual build in 0.8.5.x series" commit -- without this line
+  being corrected at the time)
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
 
@@ -102,6 +106,37 @@ offline world-landmass basemap, country-bubble rendering path and
 reduced-motion handling from Issue #33/#27 are unchanged. Heatmap mode is
 deliberately left as a documented follow-up rather than a half-working
 implementation, matching the task contract's own allowance for that case.
+
+0.8.5.4 (Issue #39) fixes real-DEV problems found after 0.8.6/Issue #37
+shipped, without changing `/api/analytics/map`'s existing fields, the
+observed-DNS-destination semantics, or the bounded destination-IP model.
+The actual root cause of the map staying empty on a real deployment was
+`GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` defaulting under `BASE_DIR/data/...`
+(`/app/data/...` inside the container) while every other persistent path
+(`DB_PATH`, `NEIGHBORS_PATH`, `TRACKERDB_PATH`) already defaulted under
+`/data` -- the directory the Dockerfile creates and the README's documented
+single-volume mount actually covers; the defaults now match `/data` like
+everything else, and a new standalone script, `scripts/verify_geoip.py`,
+lets an operator prove a converted CSV loads and resolves sample IPs before
+ever mounting it into the container. `geoip_map_payload()` also gains a
+`_geoip_diagnostic_state()` state machine (`not_configured`/`load_failed`/
+`no_public_destinations`/`no_country_matches`/`country_only`/
+`partial_coordinate_coverage`/`full_coverage`), exposed as `/api/analytics
+/map`'s new `diagnostics` field, replacing the single `provider.configured`
+boolean the map widget used to render one empty-state banner from;
+`provider` no longer returns the full configured `GEOIP_DB_PATH`, only its
+basename and range count, matching what `/api/observability` already did.
+On the frontend, the destination map SVG gained real pointer-drag panning,
+wheel/pinch zoom toward the cursor, keyboard panning/zooming, touch support
+and an on-demand "Fit to data" control, additive to the existing discrete
+zoom/reset buttons; the four map styles (BEMO Dark/Aurora/White/Minimal) now
+each set a double-digit number of distinct `--map-*` properties (ocean
+gradient, land glow, grid opacity, marker glow, empty-state banner
+treatment) instead of effectively only recoloring one accent variable; and
+the bundled offline world-landmass silhouette gained extra vertices on its
+longest, flattest edges (still a stylized hand-authored outline, not
+survey-accurate coastline data) plus a soft blurred depth layer behind the
+crisp coastline on the glow-capable styles.
 
 ## How to update this file
 
