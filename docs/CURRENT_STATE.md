@@ -247,15 +247,18 @@ previous same-process thread watchdog could time out on but never stop.
 (`hour`/`minute`/`timezone`), a single `status` value (`disabled`/
 `scheduled`/`in_progress`) and `next_scheduled_run_at`, so an operator (or
 the eventual UI) can distinguish "waiting for its window" from "actively
-running" without guessing from `in_progress` alone. The Docker CI smoke
-test (`.github/workflows/docker.yml`) gained a second startup check that
-runs the built image with `GEOIP_AUTO_UPDATE=true` and a genuinely empty
-`/data` (no volume mounted), asserting `/health` responds within 15s and
-that the container's own logs show the updater logged its schedule but
-never actually started a check/update pass during that window. The
-container image now also installs the `tzdata` PyPI package so
-`GEOIP_AUTO_UPDATE_TIMEZONE` values like `Europe/Bucharest` resolve
-reliably regardless of the base image's own system tzdata.
+running" without guessing from `in_progress` alone. The container image now
+also installs the `tzdata` PyPI package so `GEOIP_AUTO_UPDATE_TIMEZONE`
+values like `Europe/Bucharest` resolve reliably regardless of the base
+image's own system tzdata. **A strengthened Docker CI smoke-test step was
+written but could not be committed from this hand-off**: the bot's GitHub
+App token lacks the `workflows` permission needed to push a change to
+`.github/workflows/docker.yml`, so that file is unchanged in this release.
+The intended step (run the built image with `GEOIP_AUTO_UPDATE=true` and a
+genuinely empty `/data`, assert `/health` responds within 15s, and grep the
+container's own logs for "scheduled for" without ever seeing "starting
+scheduled check/update pass") is recorded in the Issue #44 PR description
+for the repository owner to add by hand.
 
 ## How to update this file
 
