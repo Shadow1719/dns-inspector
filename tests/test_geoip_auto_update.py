@@ -11,6 +11,9 @@ fake-session tests.
 """
 
 import importlib
+import threading
+
+from scripts import geoip_updater as gu
 
 
 def test_geoip_auto_update_defaults_to_enabled(monkeypatch):
@@ -76,6 +79,64 @@ def test_observability_endpoint_includes_geoip_update_field(client):
     payload = resp.get_json()
     assert "geoip_update" in payload
     assert "country" in payload["geoip_update"] and "city" in payload["geoip_update"]
+
+
+def test_run_geoip_update_pass_completes_normally_and_reloads_on_update(app_module, monkeypatch, tmp_path):
+    """Baseline/happy-path guard for the `_run_geoip_update_pass()` refactor
+    (Issue #43): a normal, fast pass must still clear `in_progress` and still
+    hot-reload the providers on a real update -- the watchdog must never
+    fire on a pass that completes well within its deadline."""
+    config = gu.UpdaterConfig(state_path=str(tmp_path / "state.json"))
+    monkeypatch.setattr(app_module, "_GEOIP_UPDATE_CONFIG", config)
+    monkeypatch.setattr(app_module, "GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS", 5)
+    reload_calls = []
+    monkeypatch.setattr(app_module, "_reload_geoip_providers", lambda: reload_calls.append(True))
+    monkeypatch.setattr(
+        gu, "run_update",
+        lambda *a, **k: [{"target": "country", "action": "updated", "release": "2026-09", "rows": 123}],
+    )
+
+    app_module._run_geoip_update_pass()
+
+    assert app_module._geoip_update_in_progress is False
+    assert reload_calls == [True]
+
+
+def test_run_geoip_update_pass_watchdog_clears_in_progress_on_a_hung_pass(app_module, monkeypatch, tmp_path):
+    """Issue #43 regression: real runtime evidence showed
+    `geoip_update.in_progress=true` with both targets' `last_checked_at=null`
+    for several minutes with no success/error -- i.e. the whole check/update
+    pass hung somewhere past what `geoip_updater`'s own per-request
+    connect/read timeouts cover. `_run_geoip_update_pass()`'s watchdog must
+    give up once `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS` elapses, clear
+    `_geoip_update_in_progress` so the next poll can retry, and leave a real,
+    visible error rather than an unexplained `null`."""
+    state_path = tmp_path / "state.json"
+    state = gu.default_state()
+    state["country"]["last_checked_at"] = gu._now_iso()
+    gu.save_state(str(state_path), state)
+    config = gu.UpdaterConfig(state_path=str(state_path))
+    monkeypatch.setattr(app_module, "_GEOIP_UPDATE_CONFIG", config)
+    monkeypatch.setattr(app_module, "GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS", 0.05)
+
+    release_event = threading.Event()
+
+    def hanging_run_update(*args, **kwargs):
+        release_event.wait(5)  # far longer than the 0.05s watchdog above
+        return []
+
+    monkeypatch.setattr(gu, "run_update", hanging_run_update)
+
+    try:
+        app_module._run_geoip_update_pass()
+
+        assert app_module._geoip_update_in_progress is False
+        saved = gu.load_state(str(state_path))
+        assert saved["country"]["last_error"]
+        assert "watchdog" in saved["country"]["last_error"].lower()
+    finally:
+        release_event.set()
+        app_module._geoip_update_in_progress = False
 
 
 def test_reload_geoip_providers_swaps_the_provider_and_clears_the_cache(app_module, monkeypatch, tmp_path):

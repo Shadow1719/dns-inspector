@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.5` (the `VERSION` file
+- Foundation version: `0.8.0`, current release: `0.8.5.6` (the `VERSION` file
   is authoritative; a prior hand-off left this line reading `0.8.6` after the
   `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
   "fix: keep map visual build in 0.8.5.x series" commit -- without this line
@@ -180,6 +180,37 @@ check", never as a reason to touch the existing database). DB-IP attribution
 CC BY 4.0 attribution requirement. The Dockerfile now also copies `scripts/`
 into the image, since `app.py` imports `scripts.geoip_updater` directly and
 previously only `app.py`/`VERSION`/`static/` shipped.
+
+0.8.5.6 (Issue #43) fixes the Dashboard Builder's layout system, adds a
+functional restart control, and fixes the 0.8.5.5 GeoIP updater's indefinite
+`in_progress` regression. The Analytics `.dash-grid` is now a real 4-column
+grid: every widget picks an actual 1-4 column span (`data-w="1".."4"`,
+replacing the old binary `half`/`full`), `grid-auto-flow:dense` back-fills
+gaps a mix of spans would otherwise leave, and two responsive breakpoints
+(1300px/900px) keep the same span proportions readable as the viewport
+narrows. A `normalizeWidth()` helper in the same script migrates a browser's
+pre-existing `dnsInspectorDashboardLayout` (or an older named preset) from
+the old strings to the equivalent span so no saved customization silently
+resets; no widget, route or payload changed. Settings > System gained a real
+"Restart DNS Inspector" control (two-step in-panel confirm, a `Restarting…`
+state, a client + server guard against a duplicate/concurrent request)
+backed by a new `POST /api/system/restart` route; because the container runs
+`app.py` directly as PID 1 with no supervisor (see the Dockerfile) and
+Flask's built-in dev server, the backend performs a real restart via
+`os.execv` (`_perform_self_restart()`) rather than depending on a Docker
+restart policy or only restarting a background worker thread -- `main()`
+runs again from scratch exactly as on a fresh container start, and `/data`
+is untouched. Runtime evidence showed the 0.8.5.5 GeoIP auto-updater stuck
+at `geoip_update.in_progress=true` with both targets' `last_checked_at=null`
+for several minutes with no success/error; `scripts/geoip_updater.py`'s
+`run_update()` now saves state after each target instead of once at the
+end, and `app.py`'s `geoip_auto_update_worker()` is split into a new
+`_run_geoip_update_pass()` that runs the pass in its own thread and enforces
+a whole-pass deadline (`GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS`, default 1800s)
+independent of `geoip_updater`'s own per-request timeouts; on timeout, a new
+`geoip_updater.mark_stuck_checks_as_timed_out()` records an explicit error
+for whichever target never recorded its own outcome and `in_progress` is
+cleared so the next poll can retry.
 
 ## How to update this file
 

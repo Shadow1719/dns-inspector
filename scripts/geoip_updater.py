@@ -455,6 +455,13 @@ def run_update(config, dry_run=False, force=False, country_only=False, city_only
     `rows`/`error` where applicable). `today` overrides "the current date"
     used for release discovery -- exposed for deterministic tests, not
     normally passed by callers.
+
+    State is persisted after *each* target, not once at the end (Issue #43):
+    a City Lite download/conversion can legitimately take minutes, and with a
+    single save at the end an operator watching `/api/observability` mid-run
+    saw both targets' `last_checked_at` stuck at `null` -- indistinguishable
+    from a hang. Saving incrementally means a target that has already
+    finished is durably visible while a slower one is still in flight.
     """
     if country_only and city_only:
         raise ValueError("country_only and city_only are mutually exclusive")
@@ -462,11 +469,47 @@ def run_update(config, dry_run=False, force=False, country_only=False, city_only
     state = load_state(config.state_path)
     targets = [t for t in _STATE_TARGETS if not (t == "country" and city_only) and not (t == "city" and country_only)]
 
-    results = [_update_one(target, config, state, session, dry_run, force, logger, today=today) for target in targets]
-
-    if not dry_run:
-        save_state(config.state_path, state)
+    results = []
+    for target in targets:
+        results.append(_update_one(target, config, state, session, dry_run, force, logger, today=today))
+        if not dry_run:
+            save_state(config.state_path, state)
     return results
+
+
+def mark_stuck_checks_as_timed_out(state_path, message="check/update pass exceeded the watchdog timeout"):
+    """Called by `app.py`'s `_run_geoip_update_pass()` watchdog (Issue #43)
+    when a whole `run_update()` call ran past
+    `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS`. A target's own `_update_one()` sets
+    `last_checked_at` before it
+    does anything slow (network probe/download/convert), so a target whose
+    `last_checked_at` is newer than both its `last_success_at` and
+    `last_error_at` is exactly the one whose check started but never
+    recorded its own outcome -- record an explicit, visible error for it
+    instead of leaving an operator staring at an unexplained `null`. If the
+    stuck pass eventually does finish, its own (later) incremental save
+    overwrites this the moment it actually completes."""
+    def _parse(ts):
+        try:
+            return datetime.fromisoformat(ts)
+        except (TypeError, ValueError):
+            return None
+
+    state = load_state(state_path)
+    changed = False
+    for target in _STATE_TARGETS:
+        entry = state[target]
+        checked = _parse(entry.get("last_checked_at"))
+        if checked is None:
+            continue
+        settled = [d for d in (_parse(entry.get("last_success_at")), _parse(entry.get("last_error_at"))) if d is not None]
+        if settled and max(settled) >= checked:
+            continue
+        entry["last_error"] = message
+        entry["last_error_at"] = _now_iso()
+        changed = True
+    if changed:
+        save_state(state_path, state)
 
 
 # --- CLI -----------------------------------------------------------------------
