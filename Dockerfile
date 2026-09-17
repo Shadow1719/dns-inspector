@@ -19,6 +19,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # build, which meant the image and the repository were never the same program.
 COPY app.py VERSION /app/
 COPY static /app/static
+# app.py imports scripts/geoip_updater.py directly (Issue #42 / 0.8.5.5) for
+# the automatic DB-IP Lite updater -- it must ship in the image, not just be
+# available for an operator to run manually from a repo checkout.
+COPY scripts /app/scripts
 
 RUN mkdir -p /data
 

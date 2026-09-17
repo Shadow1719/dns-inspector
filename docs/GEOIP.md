@@ -16,7 +16,12 @@ now default under `/data` like every other persistent path instead of an
 `/app/data` directory the image never creates -- and adds a six-state
 `diagnostics` field to `/api/analytics/map` plus a standalone
 `scripts/verify_geoip.py` pre-flight check; see "Verifying with
-`scripts/verify_geoip.py`" and "Diagnostic states" below.
+`scripts/verify_geoip.py`" and "Diagnostic states" below. 0.8.5.5
+(Issue #42) adds the automatic monthly updater described in
+["Automatic updates"](#automatic-updates) below, which replaces the manual
+"Quick setup"/"Update mechanism" steps for an operator who leaves it enabled
+-- the manual steps remain accurate for anyone who prefers (or needs, with
+`GEOIP_AUTO_UPDATE=false`) to convert and place a database by hand.
 
 If you just want to get the map populated, skip to
 ["Quick setup: DB-IP Country Lite"](#quick-setup-db-ip-country-lite).
@@ -220,10 +225,13 @@ coordinate are skipped individually rather than failing the whole load.
 
 [DB-IP City Lite](https://db-ip.com/db/lite.php) is the documented source
 for this provider -- free, no account/license key, licensed **CC BY 4.0**.
-**If you use it, follow the attribution instructions on that download page
-in your own deployment's documentation/about page** -- DNS Inspector does
-not ship or embed the database, and does not automate that attribution for
-you.
+DNS Inspector does not ship or embed the database itself, but as of 0.8.5.5
+the Settings > About panel and the destination map widget footer both
+display the required "IP Geolocation by DB-IP" attribution/link back to
+db-ip.com automatically, whether the database was placed manually or by the
+automatic updater (see ["Automatic updates"](#automatic-updates) above).
+Read DB-IP's own attribution text on the download page if your deployment
+has additional documentation of its own that should mention it too.
 
 1. **Download** the current month's IP to City Lite CSV (IPv4/IPv6 are
    separate downloads). As of the September 2026 release this ships as
@@ -275,13 +283,94 @@ its own EULA/redistribution terms. `scripts/convert_dbip_city_lite.py` does
 not support MaxMind's CIDR+`geoname_id` join format; build the seven-column
 schema above yourself if you choose MaxMind instead of DB-IP.
 
-## Update mechanism
+## Automatic updates
 
-There is no in-app updater. Regenerate the CSV from your chosen source on
-whatever cadence you're comfortable with (the underlying allocations change
-slowly) and replace the file at `GEOIP_DB_PATH` (and/or `GEOIP_CITY_DB_PATH`),
-then restart the container/process -- each provider loads its file once at
-startup.
+**0.8.5.5 (Issue #42):** by default, DNS Inspector now keeps both GeoIP
+databases current on its own -- the "Quick setup" steps above are still
+correct for a first-time manual conversion, or for a deployment that
+disables this and manages the file(s) by hand (`GEOIP_AUTO_UPDATE=false`),
+but a default deployment does not need to repeat them every month.
+
+A background worker (`geoip_auto_update_worker()` in `app.py`, running in its
+own daemon thread alongside ingestion) periodically calls
+`scripts/geoip_updater.run_update()`, which:
+
+1. **Checks** whether `GEOIP_UPDATE_INTERVAL_DAYS` (default 30) has elapsed
+   since the last check for each database independently -- a cheap local
+   read of the persisted state file, no network call, so this is safe to
+   evaluate as often as the worker wakes up.
+2. **Discovers** the newest available DB-IP Lite release by probing DB-IP's
+   Lite distribution convention with an HTTP `HEAD` (current month, then a
+   bounded number of prior months via `GEOIP_UPDATE_LOOKBACK_MONTHS`, in
+   case a release is published a few days late). If the current release is
+   already the one in use, or nothing resolves, the worker no-ops.
+3. **Downloads and validates** the export: a successful HTTP status, a real
+   gzip header, an optional checksum (only if you've configured a checksum
+   source -- see below; DB-IP's free Lite tier is not confirmed to publish
+   one, so this is opt-in rather than assumed) and a minimum converted
+   row-count floor all have to pass.
+4. **Converts** it with the *exact same* `scripts/convert_dbip_country_lite.py`
+   / `convert_dbip_city_lite.py` logic the manual setup above uses -- no
+   second, drifting implementation.
+5. **Replaces the file atomically.** The download and conversion happen in
+   temp files next to the destination; only a final `os.replace()` touches
+   `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH`, the same download-to-temp-then-
+   atomic-rename pattern `refresh_trackerdb()` already uses for TrackerDB.
+   A failure at any earlier step leaves the previously working database
+   completely untouched -- the map keeps using last month's data rather than
+   losing coverage.
+6. **Reloads in place.** `_reload_geoip_providers()` reconstructs the
+   in-process `GeoIPProvider`/`CityGeoIPProvider` from the file that was
+   just written and clears their lookup caches, so the new data is live
+   immediately -- no container restart needed.
+
+This all happens in a background thread: a multi-hundred-thousand-row City
+Lite conversion never blocks DNS ingestion or a browser request, and GeoIP
+lookups themselves remain a purely local/offline table scan exactly as
+before -- the updater changes *which file* backs that table, never how
+lookups happen.
+
+**On the download URL.** The default URL templates
+(`GEOIP_UPDATE_COUNTRY_URL_TEMPLATE` / `GEOIP_UPDATE_CITY_URL_TEMPLATE`)
+follow DB-IP's long-documented Lite distribution convention
+(`https://download.db-ip.com/free/dbip-<product>-lite-<year>-<month>.csv.gz`).
+This implementation's build environment had no outbound network access to
+re-fetch https://db-ip.com/db/download/ip-to-country-lite /
+ip-to-city-lite and confirm the exact current pattern live, so **please
+verify it against those pages before relying on unattended updates in
+production**, and override the template env var if DB-IP has changed it --
+no code change is required. A wrong or stale template is treated exactly
+like "no release published this month" (see `no_release_found` in the
+diagnostics below): it never corrupts, blocks use of, or silently degrades
+the database currently in use, it just means the automatic check keeps
+failing safely until the template is corrected.
+
+**Manual one-shot CLI.** `scripts/geoip_updater.py` is the same code path
+the background worker uses, runnable by hand:
+
+```bash
+python scripts/geoip_updater.py              # one check/update pass, exits
+python scripts/geoip_updater.py --force      # re-download even if already current
+python scripts/geoip_updater.py --dry-run    # download/validate/convert for real, but
+                                              # never replace the active database or
+                                              # persist state -- for CI/troubleshooting
+python scripts/geoip_updater.py --status     # print persisted state, no network call
+python scripts/geoip_updater.py --country-only   # or --city-only
+```
+
+It reads the same `GEOIP_*`/`GEOIP_UPDATE_*` environment variables as the
+background worker, so a manual run and the automatic one behave identically.
+
+**Diagnostics.** `/api/observability`'s `geoip_update` field reports
+`auto_update_enabled`, `interval_days`, an in-memory `in_progress` flag set
+only while a check/update is actively running, and per-database
+`current_release`/`last_checked_at`/`last_success_at`/`last_error`/
+`last_error_at`/`next_check_at`. The worker and CLI also log every check,
+download, success and failure.
+
+**Disabling it.** Set `GEOIP_AUTO_UPDATE=false` to fall back entirely to the
+manual "Quick setup" workflow above -- the background worker logs that it's
+disabled and returns immediately without ever making a network request.
 
 ## Configuration
 
@@ -295,6 +384,19 @@ startup.
 | `GEOIP_CITY_DB_PATH` | `/data/geoip_city_ranges.csv` | Path to the optional coordinate/city CSV database (Destinations mode). |
 | `GEOIP_CITY_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP city lookup results. |
 | `GEOIP_MAP_DESTINATION_POINTS_LIMIT` | `600` | Upper bound on individual coordinate points returned to the browser per map payload (a rendering-size cap only -- `coverage` is always computed over every observed destination regardless of this cap). |
+| `GEOIP_AUTO_UPDATE` | `true` | Enables the automatic monthly updater described above. Set to `false` to manage both files by hand. |
+| `GEOIP_UPDATE_INTERVAL_DAYS` | `30` | How often (in days) each database independently checks for a newer release. |
+| `GEOIP_UPDATE_LOOKBACK_MONTHS` | `2` | How many prior months to probe if the current month's release hasn't been published yet. |
+| `GEOIP_UPDATE_COUNTRY_URL_TEMPLATE` | `https://download.db-ip.com/free/dbip-country-lite-{year:04d}-{month:02d}.csv.gz` | `str.format`-style template for the Country Lite download URL. Verify against DB-IP's download page before relying on it (see above). |
+| `GEOIP_UPDATE_CITY_URL_TEMPLATE` | `https://download.db-ip.com/free/dbip-city-lite-{year:04d}-{month:02d}.csv.gz` | Same, for City Lite. |
+| `GEOIP_UPDATE_COUNTRY_CHECKSUM_URL_TEMPLATE` | *(empty)* | Optional sidecar checksum URL template (SHA-256, bare digest or `sha256sum` output). Skipped when empty -- structural/row-count validation still applies regardless. |
+| `GEOIP_UPDATE_CITY_CHECKSUM_URL_TEMPLATE` | *(empty)* | Same, for City Lite. |
+| `GEOIP_UPDATE_MIN_COUNTRY_RANGES` | `10000` | Safety floor: a converted country release with fewer ranges than this is rejected rather than installed. |
+| `GEOIP_UPDATE_MIN_CITY_RANGES` | `100000` | Same, for City Lite. |
+| `GEOIP_UPDATE_STATE_PATH` | `/data/geoip_update_state.json` | Where the updater persists last-checked/current-release/last-error state per database. |
+| `GEOIP_UPDATE_CONNECT_TIMEOUT_SECONDS` / `GEOIP_UPDATE_READ_TIMEOUT_SECONDS` | `10` / `300` | Network timeouts for the updater's own requests. |
+| `GEOIP_UPDATE_CHUNK_SIZE` | `1048576` (1 MiB) | Streaming download chunk size. |
+| `GEOIP_AUTO_UPDATE_POLL_SECONDS` | `3600` | How often the background worker wakes up to re-evaluate whether a check is due (a local, no-network read) -- independent of `GEOIP_UPDATE_INTERVAL_DAYS`, which controls how often an update actually happens. |
 
 **0.8.5.4:** `GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` used to default under
 `BASE_DIR/data/...` (`/app/data/...` inside the container) -- a directory the

@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.4` (the `VERSION` file
+- Foundation version: `0.8.0`, current release: `0.8.5.5` (the `VERSION` file
   is authoritative; a prior hand-off left this line reading `0.8.6` after the
   `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
   "fix: keep map visual build in 0.8.5.x series" commit -- without this line
@@ -137,6 +137,49 @@ the bundled offline world-landmass silhouette gained extra vertices on its
 longest, flattest edges (still a stylized hand-authored outline, not
 survey-accurate coastline data) plus a soft blurred depth layer behind the
 crisp coastline on the glow-capable styles.
+
+0.8.5.5 (Issue #42) makes the GeoIP databases the 0.8.5.1-0.8.5.4 destination
+map depends on self-maintaining, without changing the map's data model,
+`/api/analytics/map`'s existing fields, or the observed-DNS-destination
+semantics. A new background worker (`geoip_auto_update_worker()` in `app.py`,
+registered in `BACKGROUND_WORKERS`) and its supporting module,
+`scripts/geoip_updater.py` (no `app.py`/Flask dependency, so it also runs as
+a standalone CLI), check DB-IP Lite for a newer monthly Country/City Lite
+release on a configurable cadence (`GEOIP_UPDATE_INTERVAL_DAYS`, default 30
+days; `GEOIP_AUTO_UPDATE=true` by default), download and validate it
+(HTTP status, gzip integrity, an optional checksum when a source for one is
+configured, and a minimum converted-row-count floor), convert it with the
+*same* converters `docs/GEOIP.md`'s manual setup already used
+(`scripts/convert_dbip_country_lite.py` / `convert_dbip_city_lite.py` --
+no duplicated conversion logic), and atomically replace
+`GEOIP_DB_PATH`/`GEOIP_CITY_DB_PATH` only once the replacement is fully
+validated -- a failed or incomplete check/download/conversion always leaves
+the previously working database untouched, using the same
+download-to-temp-then-`os.replace()` pattern `refresh_trackerdb()` already
+used. `_reload_geoip_providers()` swaps the in-process
+`GeoIPProvider`/`CityGeoIPProvider` and clears their lookup caches
+immediately after a successful replacement, so an update takes effect
+without a container restart. Per-database updater state (current release,
+last checked/succeeded, last error) persists at `GEOIP_UPDATE_STATE_PATH`
+(default `/data/geoip_update_state.json`) and is exposed via
+`/api/observability`'s new `geoip_update` field alongside an in-memory-only
+`in_progress` flag. `scripts/geoip_updater.py` also provides a manual
+one-shot CLI (`--force`, `--dry-run` for CI/troubleshooting verification
+without mutating anything, `--status`, `--country-only`/`--city-only`).
+**This implementation's build environment had no outbound network access to
+re-verify DB-IP's exact current download URL pattern against
+https://db-ip.com/db/download/ip-to-country-lite live** -- the default
+templates (`download.db-ip.com/free/dbip-<product>-lite-<year>-<month>.csv.gz`)
+follow DB-IP's long-documented Lite convention and are fully overridable via
+`GEOIP_UPDATE_COUNTRY_URL_TEMPLATE`/`GEOIP_UPDATE_CITY_URL_TEMPLATE`; an
+operator should confirm the pattern before relying on unattended updates in
+production. A mismatch fails safe (treated as "no release found this
+check", never as a reason to touch the existing database). DB-IP attribution
+("IP Geolocation by DB-IP", linking to db-ip.com) was added to the Settings
+> About panel and the destination map widget footer to satisfy DB-IP Lite's
+CC BY 4.0 attribution requirement. The Dockerfile now also copies `scripts/`
+into the image, since `app.py` imports `scripts.geoip_updater` directly and
+previously only `app.py`/`VERSION`/`static/` shipped.
 
 ## How to update this file
 

@@ -2,6 +2,86 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.5]
+
+Automatic DB-IP Lite GeoIP updates (Issue #42): the destination map's GeoIP
+databases (`docs/GEOIP.md`) no longer require an operator to manually
+download, convert and restart every month. A new background worker
+(`geoip_auto_update_worker()` in `app.py`, backed by `scripts/geoip_updater.py`)
+checks DB-IP Lite for a newer monthly Country/City Lite release on a
+configurable cadence (`GEOIP_UPDATE_INTERVAL_DAYS`, default 30 days),
+downloads and validates it, converts it with the *same* existing converters
+(`scripts/convert_dbip_country_lite.py` / `convert_dbip_city_lite.py` --
+no duplicated conversion logic), and atomically replaces
+`/data/geoip_country_ranges.csv` / `/data/geoip_city_ranges.csv` only once
+the replacement is fully validated. A failed or incomplete check, download or
+conversion always leaves the previously working database completely
+untouched, and the whole pipeline runs in its own background thread so a
+large City Lite download/conversion never blocks DNS ingestion or request
+handling. Once a database is replaced, `_reload_geoip_providers()` swaps the
+in-process `GeoIPProvider`/`CityGeoIPProvider` and clears their lookup
+caches, so the update takes effect immediately -- no container restart
+required.
+
+- **Release discovery.** `scripts/geoip_updater.find_latest_release()`
+  probes DB-IP's Lite distribution convention
+  (`download.db-ip.com/free/dbip-<product>-lite-<year>-<month>.csv.gz`) with
+  a cheap `HEAD` (falling back to a closed streamed `GET` if the host
+  doesn't support `HEAD`), trying the current month and a bounded number of
+  prior months (`GEOIP_UPDATE_LOOKBACK_MONTHS`, default 2) so a release
+  published a few days late is still found. Both URL templates are fully
+  configurable (`GEOIP_UPDATE_COUNTRY_URL_TEMPLATE` /
+  `GEOIP_UPDATE_CITY_URL_TEMPLATE`) -- **this build's environment had no
+  outbound network access to re-verify the exact current pattern against
+  https://db-ip.com/db/download/ip-to-country-lite /
+  ip-to-city-lite live, so an operator should confirm it before relying on
+  unattended updates**; a wrong or since-changed pattern is treated the same
+  as "no release published this month" (see "Diagnostics" below), never as
+  a reason to corrupt or block use of the existing database.
+- **Validation before replacing anything.** Every download is checked for a
+  successful HTTP status, a real gzip magic-byte header, an optional
+  checksum (`GEOIP_UPDATE_COUNTRY_CHECKSUM_URL_TEMPLATE` /
+  `..._CITY_CHECKSUM_URL_TEMPLATE`, honoring a bare SHA-256 digest or
+  `sha256sum`-style output when a source is configured for one -- DB-IP's
+  free Lite tier is not confirmed to publish one, so this is opt-in rather
+  than assumed), and a minimum converted row-count floor
+  (`GEOIP_UPDATE_MIN_COUNTRY_RANGES`/`GEOIP_UPDATE_MIN_CITY_RANGES`) before
+  `download_and_convert()` ever calls `os.replace()` -- the same
+  download-to-temp-then-atomic-rename pattern `refresh_trackerdb()` already
+  used for TrackerDB.
+- **Persistent updater state.** `geoip_updater.load_state()`/`save_state()`
+  track, per database, the current release, last checked/succeeded
+  timestamps and last error at `GEOIP_UPDATE_STATE_PATH`
+  (default `/data/geoip_update_state.json`) -- enough to avoid redundant
+  downloads across restarts and to answer "when did this last actually
+  update" without container log access.
+- **Diagnostics.** `/api/observability`'s new `geoip_update` field reports
+  `auto_update_enabled`, `interval_days`, an in-memory-only `in_progress`
+  flag, and each target's current release/last check/last success/last
+  error/next check. The background worker and `scripts/geoip_updater.py`'s
+  CLI both log every check/download/failure.
+- **Configuration.** `GEOIP_AUTO_UPDATE` (default `true`),
+  `GEOIP_UPDATE_INTERVAL_DAYS` (default `30`), plus the URL/checksum
+  templates, row-count floors, state path and timeouts above -- see
+  `docs/GEOIP.md` for the full list and defaults.
+- **Manual one-shot CLI + dry run.** `python scripts/geoip_updater.py` runs
+  a single check/update pass and exits (no-op if already current unless
+  `--force`); `--dry-run` exercises the full download/validate/convert
+  pipeline without ever replacing the active database or persisting state
+  (for CI/troubleshooting); `--status` prints the persisted state without
+  making any network call; `--country-only`/`--city-only` scope a run to one
+  database.
+- **Attribution.** The Settings > About panel and the DNS Destinations map
+  widget footer now both show "IP Geolocation by DB-IP" linking to
+  https://db-ip.com, satisfying DB-IP Lite's CC BY 4.0 attribution
+  requirement for web applications.
+- New tests (`tests/test_geoip_updater.py`, `tests/test_geoip_auto_update.py`)
+  cover release discovery/fallback, no-op-when-current, download/validation
+  failures leaving the active database untouched, atomic replacement,
+  checksum verification, state persistence, disabled mode, the hot-reload,
+  and manual CLI invocation -- all against a fake HTTP session, never the
+  real network.
+
 ## [0.8.5.4]
 
 Destination Map Visual 2.1 (Issue #39): fixes the real root cause of the

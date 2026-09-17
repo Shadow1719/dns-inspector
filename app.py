@@ -29,6 +29,7 @@ from flask import Flask, jsonify, render_template_string, request, send_file
 
 from pathlib import Path
 from contextlib import closing
+from scripts import geoip_updater
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     with open(os.path.join(BASE_DIR, "VERSION"), "r", encoding="utf-8") as f:
@@ -135,6 +136,24 @@ GEOIP_CITY_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CITY_CACHE_MAX_ENTR
 # regardless of this cap (see geoip_map_payload()).
 GEOIP_MAP_DESTINATION_POINTS_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DESTINATION_POINTS_LIMIT", "600")))
 
+# Automatic DB-IP Lite updates (Issue #42 / 0.8.5.5): a background worker
+# checks for a newer monthly DB-IP Country/City Lite release on this cadence
+# and, if found, downloads/validates/converts it via `scripts/geoip_updater.py`
+# (which reuses the same converters `docs/GEOIP.md`'s manual setup already
+# used) and atomically replaces the file(s) above -- see `geoip_auto_update_worker()`
+# and `_reload_geoip_providers()`. `GEOIP_UPDATE_*` env vars are read once,
+# together, by `geoip_updater.build_config_from_env()` so the CLI and this
+# background worker can never drift out of sync with each other.
+GEOIP_AUTO_UPDATE = geoip_updater.is_auto_update_enabled()
+_GEOIP_UPDATE_CONFIG = geoip_updater.build_config_from_env()
+# How often the background worker *wakes up to check* whether an update is
+# due -- independent of GEOIP_UPDATE_INTERVAL_DAYS (how often an update
+# actually happens). Waking up hourly keeps the "due" check (a cheap local
+# state-file read, no network) responsive to a changed interval/forced state
+# without needing a restart, while the real network probe only ever happens
+# once the configured interval has actually elapsed.
+GEOIP_AUTO_UPDATE_POLL_SECONDS = max(60, int(os.getenv("GEOIP_AUTO_UPDATE_POLL_SECONDS", "3600")))
+
 app = Flask(__name__)
 db_lock = threading.Lock()
 session = requests.Session()
@@ -144,6 +163,14 @@ neighbors_cache = {}
 neighbors_mtime = None
 enrichment_lock = threading.Lock()
 enrichment_refreshing = set()
+
+# In-memory only (deliberately not persisted to the updater state file, so a
+# crash mid-update can never leave a stuck "in progress" flag on disk) --
+# `/api/observability` reports this alongside the durable per-target state
+# `geoip_updater.load_state()` tracks (last check, current release, last
+# success/error). See `geoip_auto_update_worker()`.
+_geoip_update_lock = threading.Lock()
+_geoip_update_in_progress = False
 
 # Background AdGuard status refreshes are deliberately bounded.
 _status_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="agh-status")
@@ -720,6 +747,7 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
           <b>Version</b><span>v{{version}}</span>
           <b>Environment</b><span>{% if is_dev_environment %}Development{% else %}Production{% endif %}</span>
           <b>Uptime</b><span id="about-uptime">—</span>
+          <b>GeoIP data</b><span>IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0)</span>
         </div>
       </section>
     </div>
@@ -1063,6 +1091,7 @@ function renderInstrumentGauges(data){
         <div class="stats-note" style="margin-top:0">Drag to pan, scroll/pinch to zoom, or use the buttons above. Arrow keys pan and +/- zoom when the map is focused.</div>
         <div id="destination-map"></div>
         <div id="destination-map-detail" class="map-detail" hidden></div>
+        <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
       </div>
     </div>
     <div class="dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" data-w="half" data-h="normal">
@@ -3891,6 +3920,83 @@ def _log_geoip_status():
         )
 
 
+def _reload_geoip_providers():
+    """Reconstruct the country/city GeoIP providers from whatever is on disk
+    right now and swap them in, so a completed auto-update (or a manually
+    replaced file) takes effect without restarting the process. Also clears
+    the per-IP lookup caches, since they may hold answers resolved against
+    the previous database. Safe to call at any time -- the previous provider
+    instances simply become unreferenced once every in-flight lookup that
+    already grabbed them returns."""
+    global _geoip_provider, _geoip_city_provider
+    new_country = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if os.path.exists(GEOIP_DB_PATH) else NullGeoIPProvider()
+    new_city = CsvCityGeoIPProvider(GEOIP_CITY_DB_PATH) if os.path.exists(GEOIP_CITY_DB_PATH) else NullCityGeoIPProvider()
+    with _geoip_cache_lock:
+        _geoip_provider = new_country
+        _geoip_cache.clear()
+        _geoip_cache_order.clear()
+    with _geoip_city_cache_lock:
+        _geoip_city_provider = new_city
+        _geoip_city_cache.clear()
+        _geoip_city_cache_order.clear()
+    _log_geoip_status()
+
+
+def _geoip_update_diagnostics():
+    """Operator-facing snapshot of the automatic updater's state, used by
+    `/api/observability` -- the durable, per-target facts (last check,
+    current release, last success/error) come straight from
+    `geoip_updater.load_state()`; `in_progress` is the in-memory-only flag
+    set around each `run_update()` call below."""
+    state = geoip_updater.load_state(_GEOIP_UPDATE_CONFIG.state_path)
+    targets = {}
+    for target in ("country", "city"):
+        entry = dict(state[target])
+        entry["next_check_at"] = geoip_updater.next_check_iso(entry.get("last_checked_at"), _GEOIP_UPDATE_CONFIG.interval_days)
+        targets[target] = entry
+    return {
+        "auto_update_enabled": GEOIP_AUTO_UPDATE,
+        "interval_days": _GEOIP_UPDATE_CONFIG.interval_days,
+        "in_progress": _geoip_update_in_progress,
+        **targets,
+    }
+
+
+def geoip_auto_update_worker():
+    """Background worker (Issue #42 / 0.8.5.5): periodically checks DB-IP
+    Lite for a newer monthly release and, if one is found and validated,
+    atomically replaces the active database and reloads the in-process
+    providers -- see `geoip_updater.run_update()` for the download/validate/
+    convert/atomic-replace pipeline and `_reload_geoip_providers()` for the
+    hot-reload. Runs entirely in its own daemon thread: a large City Lite
+    download/conversion never blocks DNS ingestion or request handling, and
+    `geoip_updater`'s own atomicity guarantees mean a failed check never
+    disturbs the database currently in use.
+
+    Wakes up every `GEOIP_AUTO_UPDATE_POLL_SECONDS` to re-evaluate whether an
+    update is due (a cheap local state-file read); the actual network check
+    against DB-IP only happens once `GEOIP_UPDATE_INTERVAL_DAYS` has elapsed
+    per target (see `geoip_updater._is_check_due()`).
+    """
+    global _geoip_update_in_progress
+    if not GEOIP_AUTO_UPDATE:
+        print("GeoIP auto-update: disabled (GEOIP_AUTO_UPDATE=false). Enable it or run scripts/geoip_updater.py manually. See docs/GEOIP.md.", flush=True)
+        return
+    while True:
+        with _geoip_update_lock:
+            _geoip_update_in_progress = True
+        try:
+            results = geoip_updater.run_update(_GEOIP_UPDATE_CONFIG, logger=lambda msg: print(msg, flush=True))
+            if any(r["action"] == "updated" for r in results):
+                _reload_geoip_providers()
+        except Exception as e:
+            print(f"GeoIP auto-update error: {e!r}", flush=True)
+        finally:
+            with _geoip_update_lock:
+                _geoip_update_in_progress = False
+        time.sleep(GEOIP_AUTO_UPDATE_POLL_SECONDS)
+
+
 # GeoIP diagnostic state machine (Issue #39 / 0.8.5.4): a single map-payload
 # diagnostic must let an operator tell "nothing is configured" apart from
 # "it's configured but broken" apart from "it's working but there's nothing to
@@ -5774,6 +5880,7 @@ def _observability_payload():
         'db_counts': _observability_db_counts(),
         'geoip': _geoip_diagnostics(),
         'geoip_city': _geoip_city_diagnostics(),
+        'geoip_update': _geoip_update_diagnostics(),
     }
 
 
@@ -5960,6 +6067,7 @@ BACKGROUND_WORKERS = (
     ("enrichment-queue", _enrichment_worker),
     ("device-ip-cleanup", _device_ip_cleanup_worker),
     ("ip-ping", _ip_ping_worker),
+    ("geoip-auto-update", geoip_auto_update_worker),
 )
 
 

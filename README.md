@@ -114,6 +114,13 @@ All configuration is environment variables, read once at startup.
 | `GEOIP_CITY_DB_PATH` | `/data/geoip_city_ranges.csv` | Optional local/offline coordinate/city GeoIP CSV database for the map's Destinations mode. No database ships by default -- see [`docs/GEOIP.md`](docs/GEOIP.md) |
 | `GEOIP_CITY_CACHE_MAX_ENTRIES` | `8192` | Bounded per-IP city GeoIP lookup cache size |
 | `GEOIP_MAP_DESTINATION_POINTS_LIMIT` | `600` | Max individual coordinate points returned per map payload (rendering-size cap only) |
+| `GEOIP_AUTO_UPDATE` | `true` | Automatically check DB-IP Lite for a newer monthly GeoIP release and update both databases in place -- see [`docs/GEOIP.md`](docs/GEOIP.md#automatic-updates) |
+| `GEOIP_UPDATE_INTERVAL_DAYS` | `30` | How often each GeoIP database checks for a newer DB-IP Lite release |
+
+GeoIP data, when configured, is provided by [DB-IP](https://db-ip.com) (DB-IP
+Lite, CC BY 4.0) -- see [`docs/GEOIP.md`](docs/GEOIP.md) for the full setup
+guide, the automatic updater's configuration knobs, and the manual
+`scripts/geoip_updater.py` CLI.
 
 ## Tests
 

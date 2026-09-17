@@ -27,7 +27,7 @@ def test_background_workers_are_declared(app_module):
     """Every long-lived thread is declared in one place rather than inline."""
     declared = dict(app_module.BACKGROUND_WORKERS)
     assert set(declared) == {
-        "agh-ingest", "enrichment-queue", "device-ip-cleanup", "ip-ping",
+        "agh-ingest", "enrichment-queue", "device-ip-cleanup", "ip-ping", "geoip-auto-update",
     }
     for name, target in declared.items():
         assert callable(target), f"worker {name} has no callable target"
@@ -52,11 +52,11 @@ def test_start_background_workers_starts_daemon_threads(app_module, monkeypatch)
 
     threads = app_module.start_background_workers()
     try:
-        assert len(threads) == 4
+        assert len(threads) == 5
         assert all(t.daemon for t in threads)
         assert all(t.is_alive() for t in threads)
         assert {t.name for t in threads} == {
-            "agh-ingest", "enrichment-queue", "device-ip-cleanup", "ip-ping",
+            "agh-ingest", "enrichment-queue", "device-ip-cleanup", "ip-ping", "geoip-auto-update",
         }
     finally:
         stopped.set()

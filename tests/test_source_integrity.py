@@ -69,6 +69,18 @@ def test_application_source_is_importable_without_preprocessing():
     ast.parse(source)
 
 
+def test_dockerfile_ships_the_scripts_package_app_py_imports():
+    """`app.py` imports `scripts.geoip_updater` (Issue #42 / 0.8.5.5) for the
+    automatic GeoIP updater -- the image must actually contain that package,
+    not just the repository checkout used to build it, or the container
+    fails at import time."""
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    instructions = [line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")]
+    assert any(line.strip().startswith("COPY scripts ") for line in instructions), (
+        "Dockerfile no longer copies scripts/ into the image"
+    )
+
+
 def test_version_file_has_a_recognised_format():
     """`MAJOR.MINOR.PATCH`, optionally with one extra `.N` sub-release
     component and/or an explicit `-dev.N` suffix.
