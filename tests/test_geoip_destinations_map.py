@@ -15,6 +15,7 @@ not from `dns_records_cache` (an independently, asynchronously
 DNS-over-HTTPS-re-resolved snapshot used only by the domain detail page).
 """
 
+import array
 import json
 import re
 import sqlite3
@@ -239,18 +240,40 @@ def test_csv_range_provider_skips_malformed_rows_without_failing(tmp_path, app_m
 
 
 def test_csv_range_provider_precomputes_start_key_arrays_for_bisect(tmp_path, app_module):
-    """lookup() must bisect a precomputed start-key array (built once at load
-    time) rather than rebuilding `[r[0] for r in bucket]` on every call --
-    otherwise each lookup does O(n) work despite the binary search."""
+    """lookup() must bisect a precomputed, sorted start-key column (built
+    once at load time, packed as `array.array` -- see `CsvRangeGeoIPProvider`
+    -- rather than rebuilding `[r[0] for r in bucket]` on every call), so each
+    lookup does real O(log n) work and IPv4 ranges never sit in a plain
+    Python list of per-row tuples (Issue #45)."""
     csv_path = tmp_path / "geoip.csv"
     csv_path.write_text(
         "203.0.113.0,203.0.113.63,US,United States\n"
         "198.51.100.0,198.51.100.63,DE,Germany\n"
     )
     provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
-    assert provider._v4_starts == [r[0] for r in provider._v4]
+    assert isinstance(provider._v4_start, array.array)
+    assert list(provider._v4_start) == sorted(provider._v4_start)
+    assert len(provider._v4_start) == len(provider._v4_end) == len(provider._v4_country_idx) == 2
     assert provider.lookup("198.51.100.10") == ("DE", "Germany")
     assert provider.lookup("203.0.113.10") == ("US", "United States")
+
+
+def test_csv_range_provider_handles_out_of_order_input(tmp_path, app_module):
+    """A real DB-IP export is already sorted ascending by start address, so
+    `_load()` streams straight into the final columns in that case -- but
+    out-of-order input must still sort correctly via the index-permutation
+    fallback (Issue #45)."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "198.51.100.0,198.51.100.63,DE,Germany\n"
+        "203.0.113.0,203.0.113.63,US,United States\n"
+        "10.0.0.0,10.0.0.63,ZZ,Nowhereland\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert list(provider._v4_start) == sorted(provider._v4_start)
+    assert provider.lookup("198.51.100.10") == ("DE", "Germany")
+    assert provider.lookup("203.0.113.10") == ("US", "United States")
+    assert provider.lookup("10.0.0.10") == ("ZZ", "Nowhereland")
 
 
 def test_geoip_lookup_is_cached_and_bounded(app_module, monkeypatch):

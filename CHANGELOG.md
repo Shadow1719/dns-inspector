@@ -2,6 +2,63 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.7]
+
+GeoIP/map memory optimization (Issue #45): a real TrueNAS deployment
+observed ~1.4 GiB RSS once the GeoIP-backed destination map became
+populated, from ~210 MB before. Investigation found the dominant transient
+cost was in `_load()`, not in the final in-memory representation.
+
+- **Removed the per-row tuple-list load spike.** `CsvCityGeoIPProvider`
+  already stored its final IPv4 ranges as packed `array.array` columns
+  (added in 0.8.6/Issue #37), but `_load()` still built a plain Python list
+  of one 6-element tuple per CSV row, sorted it, and only then copied it
+  into those columns. For a multi-million-row City Lite import, that
+  temporary list -- not the final packed columns -- was the dominant
+  transient allocation (a boxed 6-tuple costs on the order of 250+
+  bytes/row versus ~22 bytes/row once packed), and CPython/glibc do not
+  reliably return that freed memory to the OS once the list is dropped,
+  producing exactly the "loaded fine, RSS never came back down" symptom
+  that was observed. `_load()` now streams rows directly into the final
+  columns (a real DB-IP export is already sorted ascending by start
+  address, verified while streaming rather than assumed); a one-time
+  index-permutation sort is paid only for genuinely out-of-order input.
+- **`CsvRangeGeoIPProvider` (the country-only provider) gets the same
+  treatment.** It previously kept a permanent plain Python list of
+  `(start, end, code, name)` 4-tuples for every IPv4 range -- hundreds of
+  thousands of rows for a real DB-IP Country Lite import. It now uses the
+  same packed-`array.array`-columns-plus-interned-country-table approach as
+  the city provider, removing that permanent per-row object overhead too.
+- **Narrower integer columns.** Both providers' IPv4 start/end columns were
+  `array('Q')` (8-byte) even though an IPv4 address always fits a 32-bit
+  unsigned int; both now use `array('I')` (4-byte), cutting the packed
+  columns' own footprint further.
+- **New `scripts/geoip_memory_benchmark.py`**, a standalone, dependency-free
+  diagnostic (not part of the default test run) that generates synthetic
+  country/city CSVs at real-world scale and reports RSS at each stage of the
+  real pipeline (import, country load, city load, repeated
+  `geoip_map_payload()` calls, provider drop after a simulated reload) plus
+  lookup latency, so the effect of a change like this one can be measured
+  directly rather than asserted -- run it against a pre-change and
+  post-change checkout to compare.
+- **New tests** (`tests/test_geoip_memory.py`) pin the packed representation
+  itself (so a future change can't silently reintroduce a per-row tuple
+  list), out-of-order-input correctness for both providers, bounded FIFO
+  cache growth across many distinct IP lookups, a single (non-growing)
+  cached map payload across repeated requests, and that a hot-reload
+  (`_reload_geoip_providers()`) leaves no reachable reference to the old
+  provider (checked with `weakref`, not just "the module attribute now
+  points elsewhere").
+- No change to the map's data model, `/api/analytics/map`'s fields, lookup
+  semantics, coverage/accuracy, or the DB-IP attribution requirement --
+  `CsvRangeGeoIPProvider.lookup()`/`CsvCityGeoIPProvider.lookup_city()`'s
+  public behavior for a given database is unchanged; only how the database
+  is loaded and stored changed. `GEOIP_AUTO_UPDATE`'s existing default
+  behavior (installing both the country and city releases unless
+  `--country-only`/`--city-only` is used) is unchanged by this task; see the
+  PR description for that as a separately-flagged, non-implemented
+  observation.
+
 ## [0.8.5.6]
 
 Dashboard widget layout fix, a functional restart control, and a GeoIP

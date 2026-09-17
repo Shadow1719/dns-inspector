@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.6` (the `VERSION` file
+- Foundation version: `0.8.0`, current release: `0.8.5.7` (the `VERSION` file
   is authoritative; a prior hand-off left this line reading `0.8.6` after the
   `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
   "fix: keep map visual build in 0.8.5.x series" commit -- without this line
@@ -211,6 +211,50 @@ independent of `geoip_updater`'s own per-request timeouts; on timeout, a new
 `geoip_updater.mark_stuck_checks_as_timed_out()` records an explicit error
 for whichever target never recorded its own outcome and `in_progress` is
 cleared so the next poll can retry.
+
+0.8.5.7 (Issue #45) is a memory-optimization pass over the 0.8.5.1-0.8.5.6
+GeoIP/destination-map pipeline, prompted by a real TrueNAS deployment
+observing ~1.4 GiB RSS once the GeoIP-backed map became populated (from
+~210 MB before). No data model, route, payload shape, lookup semantics, or
+DB-IP attribution changed -- only how `CsvRangeGeoIPProvider`/
+`CsvCityGeoIPProvider` (`app.py`) load and store their IPv4 range tables.
+`CsvCityGeoIPProvider` already stored its final ranges as packed
+`array.array` columns (0.8.6/Issue #37), but `_load()` still built a
+temporary plain Python list of one tuple per CSV row to sort before copying
+it into those columns; for a multi-million-row City Lite import that
+temporary list, not the final columns, was the dominant transient
+allocation, and CPython/glibc do not reliably return memory freed that way
+back to the OS -- explaining the observed "loaded fine, RSS stayed high"
+symptom. `_load()` in both providers now streams rows directly into the
+final columns (verifying, not assuming, that a real DB-IP export arrives
+pre-sorted by start address; a one-time index-permutation sort covers
+genuinely out-of-order input). `CsvRangeGeoIPProvider` (country-only) also
+moved from a permanent plain Python list of per-row 4-tuples to the same
+packed-columns-plus-interned-country-table representation the city provider
+already used, and both providers' IPv4 start/end columns moved from 8-byte
+`array('Q')` to 4-byte `array('I')` (an IPv4 address always fits a 32-bit
+unsigned int). A new standalone diagnostic, `scripts/geoip_memory_benchmark.py`,
+generates synthetic country/city CSVs at real-world scale and reports RSS at
+each pipeline stage (import, country load, city load, repeated
+`geoip_map_payload()` calls, provider drop after a simulated reload) plus
+lookup latency, so this kind of change can be measured directly against a
+before/after checkout rather than asserted; it is a manual tool, not part of
+the default `pytest` run. New tests (`tests/test_geoip_memory.py`) pin the
+packed representation, out-of-order-input correctness, bounded FIFO cache
+growth, a non-growing cached map payload across repeated requests, and that
+`_reload_geoip_providers()` leaves no reachable reference to the old
+provider (checked with `weakref`).
+
+**Reported but not implemented, out of this task's scope:** `GEOIP_AUTO_UPDATE`
+(0.8.5.5/Issue #42) installs both the Country and City Lite releases by
+default unless `--country-only`/`--city-only` is passed, which is a
+deliberate, already-recorded architectural decision (see the 0.8.5.5 entry
+above), not a bug this task's contract covered. In practice this means a
+deployment that only ever uses Countries mode still ends up with the (now
+much cheaper, but still real) city database resident once the updater runs,
+even though nothing requires it. Flagging this per AGENTS.md's "report
+conflicts rather than guessing/silently deciding" rule rather than changing
+that default here.
 
 ## How to update this file
 

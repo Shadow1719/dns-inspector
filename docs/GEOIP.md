@@ -266,14 +266,39 @@ has additional documentation of its own that should mention it too.
 A real city-level database can have several million IPv4 rows. Rather than
 loading that into a plain Python list of per-row tuples/strings,
 `CsvCityGeoIPProvider` (`app.py`) stores IPv4 ranges as parallel fixed-width
-`array.array` columns (8-byte integer start/end keys, 4-byte float
-latitude/longitude) plus small integer indices into interned country/city
-string tables -- the actual set of distinct country/city names in a real
-database is a few hundred to a few thousand, shared across millions of
-rows, not re-allocated per row. IPv6 ranges are far fewer in a real city
-export, so they stay a plain sorted list, matching the existing country
-provider's approach. Lookup is the same `bisect` binary search the country
-provider uses.
+`array.array` columns (4-byte integer start/end keys -- an IPv4 address
+always fits a 32-bit unsigned int -- and 4-byte float latitude/longitude)
+plus small integer indices into interned country/city string tables -- the
+actual set of distinct country/city names in a real database is a few
+hundred to a few thousand, shared across millions of rows, not re-allocated
+per row. `CsvRangeGeoIPProvider` (the country-only provider) uses the same
+packed-columns-plus-interned-strings approach for its own (smaller, but
+still hundreds-of-thousands-of-rows) IPv4 table. IPv6 ranges are far fewer in
+a real export for either provider, so they stay a plain sorted list of
+tuples. Lookup is a `bisect` binary search against a precomputed start-key
+column for both providers.
+
+**Issue #45 (memory optimization):** a real deployment observed ~1.4 GiB RSS
+once the GeoIP-backed map became populated. The packed columns above were
+already in place for `CsvCityGeoIPProvider`, but `_load()` in both providers
+still built a plain Python list of one tuple per CSV row, sorted it, and only
+then copied it into the final `array.array` columns -- for a multi-million-
+row city import, that temporary list (not the final packed columns) was the
+dominant transient allocation: each 6-element tuple with boxed int/float
+members costs on the order of 250+ bytes once accounted for the tuple header
+and every individually-boxed element, versus roughly 22 bytes/row once
+packed. CPython/glibc do not reliably return that freed memory to the OS
+once the list is dropped, which produces exactly the "loaded fine, RSS never
+came back down" symptom that was observed. Both providers' `_load()` now
+stream rows directly into the final columns (a real DB-IP export is already
+sorted ascending by start address, and this is verified while streaming, not
+assumed); a one-time index-permutation sort is only paid for genuinely
+out-of-order input. Separately, `_v4_start`/`_v4_end` were stored as 8-byte
+`array('Q')` although an IPv4 address always fits a 32-bit unsigned int --
+both providers now use `array('I')` (4 bytes) for those two columns, cutting
+the packed columns' own footprint further. See
+`scripts/geoip_memory_benchmark.py` for a synthetic-scale reproduction of
+this load path with before/after RSS reporting.
 
 ### MaxMind for Destinations mode
 

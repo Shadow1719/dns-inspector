@@ -3722,21 +3722,56 @@ class NullGeoIPProvider(GeoIPProvider):
 
 class CsvRangeGeoIPProvider(GeoIPProvider):
     """Loads `start_ip,end_ip,country_code,country_name` rows (one optional
-    header row) into sorted per-address-family range tables and answers
-    lookups with a binary search. See docs/GEOIP.md for the schema and how to
-    build this file from a licensed offline GeoIP database.
+    header row) and answers lookups with a binary search. See docs/GEOIP.md
+    for the schema and how to build this file from a licensed offline GeoIP
+    database.
+
+    IPv4 ranges (the large majority of rows in a real country-level export,
+    on the order of hundreds of thousands) are stored as parallel fixed-width
+    `array.array` columns -- 4-byte integer start/end keys (an IPv4 address
+    always fits a 32-bit unsigned int) plus a small integer index into an
+    interned country table -- rather than a plain Python list of per-row
+    4-tuples (Issue #45): the country/country-name strings are only stored
+    once each no matter how many ranges share them, and there is no per-row
+    tuple/boxed-int object overhead. IPv6 ranges are far fewer in a real
+    export, so they stay a plain sorted list of tuples, matching
+    `CsvCityGeoIPProvider`'s approach for the same reason.
+
+    `_load()` streams rows directly into these columns (see
+    `CsvCityGeoIPProvider._load()` for why this matters: a temporary list of
+    millions of per-row tuples, built only to be sorted and copied out, is
+    the dominant transient allocation during load, not a "remains
+    referenced" leak in the usual sense -- it is briefly enormous, and
+    CPython/glibc do not reliably hand that memory back to the OS once it is
+    freed).
     """
 
     def __init__(self, path):
         self._path = path
-        self._v4 = []  # sorted [(start_int, end_int, country_code, country_name), ...]
-        self._v6 = []
-        self._v4_starts = []  # r[0] for each entry in self._v4, precomputed for bisect
+        self._v4_start = array.array('I')
+        self._v4_end = array.array('I')
+        self._v4_country_idx = array.array('H')
+        self._v6 = []  # sorted [(start_int, end_int, country_code, country_name), ...]
         self._v6_starts = []
+        self._countries = []  # [(country_code, country_name), ...], interned
+        self._country_index = {}
         self._loaded = False
         self._load()
 
+    def _intern_country(self, code, name):
+        idx = self._country_index.get(code)
+        if idx is None:
+            idx = len(self._countries)
+            self._countries.append((code, name))
+            self._country_index[code] = idx
+        return idx
+
     def _load(self):
+        stage_start = array.array('I')
+        stage_end = array.array('I')
+        stage_country_idx = array.array('H')
+        is_sorted = True
+        last_start = -1
         try:
             with open(self._path, "r", encoding="utf-8", newline="") as f:
                 for row in csv.reader(f):
@@ -3752,15 +3787,26 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
                         continue
                     if start_addr.version != end_addr.version or not code:
                         continue
-                    bucket = self._v4 if start_addr.version == 4 else self._v6
-                    bucket.append((int(start_addr), int(end_addr), code, name or code))
-            self._v4.sort(key=lambda r: r[0])
+                    if start_addr.version == 4:
+                        start_int = int(start_addr)
+                        if start_int < last_start:
+                            is_sorted = False
+                        last_start = start_int
+                        stage_start.append(start_int)
+                        stage_end.append(int(end_addr))
+                        stage_country_idx.append(self._intern_country(code, name or code))
+                    else:
+                        self._v6.append((int(start_addr), int(end_addr), code, name or code))
+            if is_sorted:
+                self._v4_start, self._v4_end, self._v4_country_idx = stage_start, stage_end, stage_country_idx
+            else:
+                order = sorted(range(len(stage_start)), key=stage_start.__getitem__)
+                self._v4_start = array.array('I', (stage_start[i] for i in order))
+                self._v4_end = array.array('I', (stage_end[i] for i in order))
+                self._v4_country_idx = array.array('H', (stage_country_idx[i] for i in order))
             self._v6.sort(key=lambda r: r[0])
-            # Precomputed once at load time so `lookup()` can bisect directly
-            # instead of rebuilding this list on every call.
-            self._v4_starts = [r[0] for r in self._v4]
             self._v6_starts = [r[0] for r in self._v6]
-            self._loaded = bool(self._v4 or self._v6)
+            self._loaded = bool(len(self._v4_start) or self._v6)
         except (OSError, csv.Error):
             self._loaded = False
 
@@ -3770,7 +3816,7 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
 
     @property
     def range_count(self):
-        return len(self._v4) + len(self._v6)
+        return len(self._v4_start) + len(self._v6)
 
     @property
     def path(self):
@@ -3781,17 +3827,21 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
             addr = ipaddress.ip_address(ip)
         except ValueError:
             return None, None
-        if addr.version == 4:
-            bucket, starts = self._v4, self._v4_starts
-        else:
-            bucket, starts = self._v6, self._v6_starts
-        if not bucket:
-            return None, None
         value = int(addr)
-        idx = bisect.bisect_right(starts, value) - 1
+        if addr.version == 4:
+            starts = self._v4_start
+            if not starts:
+                return None, None
+            idx = bisect.bisect_right(starts, value) - 1
+            if idx < 0 or not (starts[idx] <= value <= self._v4_end[idx]):
+                return None, None
+            return self._countries[self._v4_country_idx[idx]]
+        if not self._v6:
+            return None, None
+        idx = bisect.bisect_right(self._v6_starts, value) - 1
         if idx < 0:
             return None, None
-        start, end, code, name = bucket[idx]
+        start, end, code, name = self._v6[idx]
         if start <= value <= end:
             return code, name
         return None, None
@@ -3845,14 +3895,31 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
 
     - IPv4 ranges (the overwhelming majority of rows in a real city-level
       database, potentially several million) are stored as parallel
-      fixed-width `array.array` columns -- 8-byte integer start/end keys,
-      4-byte float lat/lon -- plus small integer indices into interned
-      country/city string tables, so the (much smaller) set of distinct
-      country/city names is only ever stored once each, not once per range
-      row.
+      fixed-width `array.array` columns -- 4-byte integer start/end keys (an
+      IPv4 address always fits a 32-bit unsigned int, so `Q`'s 8 bytes here
+      was wasted width), 4-byte float lat/lon -- plus small integer indices
+      into interned country/city string tables, so the (much smaller) set of
+      distinct country/city names is only ever stored once each, not once
+      per range row.
     - IPv6 ranges are far fewer in a real city export, so they stay a plain
-      sorted list of tuples -- splitting a 128-bit range key across two
-      64-bit array slots isn't worth the complexity at that row count.
+      sorted list of tuples -- splitting a 128-bit range key across array
+      slots isn't worth the complexity at that row count.
+
+    `_load()` parses each row straight into these columns as it streams the
+    file (Issue #45) rather than first collecting a plain Python list of
+    millions of per-row tuples to sort and then copy into the columns: that
+    intermediate list was the actual dominant transient allocation during
+    load (each 6-element tuple with boxed int/float members costs on the
+    order of 250+ bytes once accounted for the tuple header and every boxed
+    element, versus ~22 bytes/row once packed) -- a spike that, freed only
+    after `_load()` returns, is exactly the kind of allocation-then-drop
+    pattern that leaves a Python process's heap fragmented (RSS doesn't
+    shrink back to the OS even though the objects are logically dead) rather
+    than genuinely released. A DB-IP export is already sorted ascending by
+    start address in practice, so the common case appends straight into the
+    final columns with no extra copy; genuinely out-of-order input falls
+    back to a one-time index-permutation sort, which still only reorders
+    small ints/array slots rather than rebuilding a tuple list.
 
     Lookup is a binary search (`bisect`) against a precomputed start-key
     sequence, the same approach `CsvRangeGeoIPProvider` uses for country
@@ -3863,8 +3930,8 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
 
     def __init__(self, path):
         self._path = path
-        self._v4_start = array.array('Q')
-        self._v4_end = array.array('Q')
+        self._v4_start = array.array('I')
+        self._v4_end = array.array('I')
         self._v4_lat = array.array('f')
         self._v4_lon = array.array('f')
         self._v4_country_idx = array.array('H')
@@ -3895,7 +3962,18 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
         return idx
 
     def _load(self):
-        v4_rows = []
+        # Unsorted staging columns, appended to directly while streaming the
+        # file -- see the class docstring for why this replaces a temporary
+        # list of per-row tuples. In the (expected) already-sorted case these
+        # staging columns become the final columns with no further copy.
+        stage_start = array.array('I')
+        stage_end = array.array('I')
+        stage_country_idx = array.array('H')
+        stage_city_idx = array.array('I')
+        stage_lat = array.array('f')
+        stage_lon = array.array('f')
+        is_sorted = True
+        last_start = -1
         try:
             with open(self._path, "r", encoding="utf-8", newline="") as f:
                 for row in csv.reader(f):
@@ -3923,17 +4001,30 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
                     country_idx = self._intern_country(code, name or code)
                     city_idx = self._intern_city(city)
                     if start_addr.version == 4:
-                        v4_rows.append((int(start_addr), int(end_addr), country_idx, city_idx, lat, lon))
+                        start_int = int(start_addr)
+                        if start_int < last_start:
+                            is_sorted = False
+                        last_start = start_int
+                        stage_start.append(start_int)
+                        stage_end.append(int(end_addr))
+                        stage_country_idx.append(country_idx)
+                        stage_city_idx.append(city_idx)
+                        stage_lat.append(lat)
+                        stage_lon.append(lon)
                     else:
                         self._v6.append((int(start_addr), int(end_addr), code, name or code, city, lat, lon))
-            v4_rows.sort(key=lambda r: r[0])
-            for start, end, country_idx, city_idx, lat, lon in v4_rows:
-                self._v4_start.append(start)
-                self._v4_end.append(end)
-                self._v4_country_idx.append(country_idx)
-                self._v4_city_idx.append(city_idx)
-                self._v4_lat.append(lat)
-                self._v4_lon.append(lon)
+            if is_sorted:
+                self._v4_start, self._v4_end = stage_start, stage_end
+                self._v4_country_idx, self._v4_city_idx = stage_country_idx, stage_city_idx
+                self._v4_lat, self._v4_lon = stage_lat, stage_lon
+            else:
+                order = sorted(range(len(stage_start)), key=stage_start.__getitem__)
+                self._v4_start = array.array('I', (stage_start[i] for i in order))
+                self._v4_end = array.array('I', (stage_end[i] for i in order))
+                self._v4_country_idx = array.array('H', (stage_country_idx[i] for i in order))
+                self._v4_city_idx = array.array('I', (stage_city_idx[i] for i in order))
+                self._v4_lat = array.array('f', (stage_lat[i] for i in order))
+                self._v4_lon = array.array('f', (stage_lon[i] for i in order))
             self._v6.sort(key=lambda r: r[0])
             self._v6_starts = [r[0] for r in self._v6]
             self._loaded = bool(len(self._v4_start) or self._v6)
