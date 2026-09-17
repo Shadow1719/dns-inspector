@@ -1,3 +1,4 @@
+import array
 import bisect
 import csv
 import hashlib
@@ -108,6 +109,20 @@ GEOIP_MAP_DOMAIN_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DOMAIN_LIMIT", "1500")
 # `domain_destination_ips` / `_record_domain_destination_ips()`) -- keeps a
 # single high-rotation multi-CDN domain from growing the table unboundedly.
 GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT = max(4, int(os.getenv("GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT", "32")))
+
+# Optional coordinate/city-level GeoIP provider (Issue #37 / 0.8.6). Entirely
+# separate from and additive to the country provider above -- when unset (the
+# default), Destinations mode honestly reports coordinate data as unavailable
+# instead of inventing a city/IP location from a country centroid. See
+# docs/GEOIP.md for the supported schema (DB-IP City Lite, converted) and its
+# CC BY 4.0 attribution requirement.
+GEOIP_CITY_DB_PATH = os.getenv("GEOIP_CITY_DB_PATH", os.path.join(BASE_DIR, "data", "geoip_city_ranges.csv"))
+GEOIP_CITY_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CITY_CACHE_MAX_ENTRIES", "8192")))
+# Upper bound on individual coordinate points returned to the browser per map
+# payload -- a rendering/payload-size bound only; country aggregation and the
+# `coverage` figures above are computed over every observed destination
+# regardless of this cap (see geoip_map_payload()).
+GEOIP_MAP_DESTINATION_POINTS_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DESTINATION_POINTS_LIMIT", "600")))
 
 app = Flask(__name__)
 db_lock = threading.Lock()
@@ -489,26 +504,68 @@ html[data-motion="reduced"] .metric-sweep,html[data-motion="reduced"] .radar-swe
 .gauge-face{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:180px}
 html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:transform .5s ease}
 
-/* ---- DNS Destinations map (Issue #33): a bundled/offline-safe stylized
-   world-landmass silhouette (WORLD_LAND_D below), a graticule and a
-   country-bubble overlay. The landmass path is a simplified, hand-authored
-   equirectangular outline -- not survey-accurate coastline data -- so the
-   map always renders something recognizable even with no GeoIP database
-   configured and no network access. Bubble size/position is entirely
-   data-driven; only the top country's pulse ring animates, and only when
-   motion isn't reduced. ---- */
-.destination-map-wrap{position:relative}
-.destination-map-svg{width:100%;height:auto;aspect-ratio:2/1;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-md)}
-.map-landmass{fill:var(--surface-3);stroke:var(--border-strong);stroke-width:.75;opacity:.9}
-.map-graticule .map-grid-line{stroke:var(--border);stroke-width:1;opacity:.5}
-.map-graticule .map-grid-equator{opacity:.85;stroke:var(--border-strong)}
+/* ---- DNS Destinations map (Issue #33; Visual 2.0 in Issue #37/0.8.6): a
+   bundled/offline-safe stylized world-landmass silhouette (WORLD_LAND_D
+   below), a graticule and either a country-bubble or clustered-destination
+   overlay. The landmass path is a simplified, hand-authored equirectangular
+   outline -- not survey-accurate coastline data -- so the map always renders
+   something recognizable even with no GeoIP database configured and no
+   network access. Bubble/cluster size/position is entirely data-driven; only
+   the top country's pulse ring animates, and only when motion isn't
+   reduced. Map appearance (BEMO Dark/Aurora/White/Minimal) is a
+   `dnsInspectorPrefs.mapStyle` preference, independent of the application
+   theme -- it is expressed entirely through the `--map-*` custom properties
+   below, scoped under `[data-map-style]` on the wrap element, rather than
+   `html[data-theme]`. ---- */
+.destination-map-wrap{
+  position:relative;
+  --map-bg:var(--surface-2); --map-land:var(--surface-3); --map-land-stroke:var(--border-strong);
+  --map-border:var(--border); --map-grid:var(--border); --map-grid-strong:var(--border-strong);
+  --map-point:var(--accent); --map-point-2:var(--accent); --map-point-opacity:.45; --map-point-glow:none;
+}
+.destination-map-wrap[data-map-style="bemo-dark"]{
+  --map-bg:#060b14; --map-land:#0f1b2d; --map-land-stroke:#1c3350;
+  --map-border:#132338; --map-grid:#132338; --map-grid-strong:#1c3350;
+  --map-point:#2dd4c8; --map-point-2:#5eead4; --map-point-opacity:.55;
+  --map-point-glow:drop-shadow(0 0 4px rgba(45,212,200,.85));
+}
+.destination-map-wrap[data-map-style="aurora"]{
+  --map-bg:#0a0620; --map-land:#161034; --map-land-stroke:#2c2160;
+  --map-border:#1c1440; --map-grid:#1c1440; --map-grid-strong:#2c2160;
+  --map-point:#a78bfa; --map-point-2:#22d3ee; --map-point-opacity:.6;
+  --map-point-glow:drop-shadow(0 0 5px rgba(167,139,250,.85));
+}
+.destination-map-wrap[data-map-style="white"]{
+  --map-bg:#f4f6f9; --map-land:#e2e8f0; --map-land-stroke:#cbd5e1;
+  --map-border:#dbe2ea; --map-grid:#e9edf2; --map-grid-strong:#cbd5e1;
+  --map-point:#2563eb; --map-point-2:#0891b2; --map-point-opacity:.5; --map-point-glow:none;
+}
+.destination-map-wrap[data-map-style="minimal"]{
+  --map-bg:#111318; --map-land:#181b22; --map-land-stroke:#20242c;
+  --map-border:#1a1d24; --map-grid:transparent; --map-grid-strong:#20242c;
+  --map-point:#e2e8f0; --map-point-2:#e2e8f0; --map-point-opacity:.5; --map-point-glow:none;
+}
+.destination-map-svg{width:100%;height:auto;aspect-ratio:2/1;background:var(--map-bg);border:1px solid var(--map-border);border-radius:var(--radius-md)}
+html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s ease}
+.map-landmass{fill:var(--map-land);stroke:var(--map-land-stroke);stroke-width:.75;opacity:.9}
+.map-graticule .map-grid-line{stroke:var(--map-grid);stroke-width:1;opacity:.5}
+.map-graticule .map-grid-equator{opacity:.85;stroke:var(--map-grid-strong)}
 .map-status-banner{position:absolute;top:10px;left:10px;right:10px;margin:0 auto;padding:8px 12px;background:var(--surface-1);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:.8rem;text-align:center;pointer-events:none;box-shadow:var(--shadow-sm,0 1px 4px rgba(0,0,0,.15))}
-.map-bubble{fill:var(--accent);fill-opacity:.45;stroke:var(--accent);stroke-width:1;cursor:pointer;transition:fill-opacity .3s ease,stroke-width .3s ease}
+.map-status-banner .map-status-action{margin-top:6px;pointer-events:auto}
+.map-bubble{fill:var(--map-point);fill-opacity:var(--map-point-opacity);stroke:var(--map-point);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease}
 .map-bubble:hover,.map-bubble-selected{fill-opacity:.85;stroke-width:2}
-.map-bubble-pulse-ring{fill:none;stroke:var(--accent);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none}
+.map-bubble-pulse-ring{fill:none;stroke:var(--map-point);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none}
 html:not([data-motion="reduced"]) .map-bubble-pulse-ring{animation:dnsInspectorMapPulse 2.4s ease-out infinite}
 html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 @keyframes dnsInspectorMapPulse{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.4);opacity:0}}
+.map-cluster{fill:var(--map-point-2);fill-opacity:var(--map-point-opacity);stroke:var(--map-point-2);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease}
+.map-cluster:hover,.map-cluster-selected{fill-opacity:.9;stroke-width:2}
+.map-cluster-count{font-size:7px;fill:var(--map-bg);pointer-events:none;text-anchor:middle;dominant-baseline:central}
+.map-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
+.map-controls .settings-select{padding:6px 8px;font-size:.78rem}
+.map-zoom-group{display:inline-flex;gap:4px}
+.map-zoom-btn{padding:5px 10px;font-size:.78rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
+.map-zoom-btn:hover{background:var(--surface-3)}
 .map-detail{margin-top:10px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm)}
 .map-detail h3{margin:0 0 4px;font-size:.95rem}
 .map-detail-row{margin-top:6px;font-size:.82rem}
@@ -662,7 +719,7 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
-const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital'};
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapStyle:'bemo-dark'};
 function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
 let prefs = loadPrefs();
@@ -952,7 +1009,29 @@ function renderInstrumentGauges(data){
     <div class="dash-widget" data-widget-id="destination-map" data-title="DNS Destinations (observed)" data-w="full" data-h="normal">
       <div class="card">
         <h2>DNS Destinations <span class="sub">(observed)</span></h2>
-        <div class="stats-note" style="margin-top:0">Country-level aggregate of resolved DNS response IPs &mdash; not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.</div>
+        <div class="stats-note" style="margin-top:0" id="destination-map-subtitle">Country-level aggregate of resolved DNS response IPs &mdash; not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.</div>
+        <div class="map-controls">
+          <select class="settings-select" id="map-mode-select" aria-label="Map mode">
+            <option value="countries">Countries</option>
+            <option value="destinations">Destinations</option>
+          </select>
+          <select class="settings-select" id="map-metric-select" aria-label="Map metric">
+            <option value="observations">Observations</option>
+            <option value="unique_ips">Unique IPs</option>
+            <option value="domains">Domains</option>
+          </select>
+          <select class="settings-select" id="map-style-select" aria-label="Map style">
+            <option value="bemo-dark">BEMO Dark</option>
+            <option value="aurora">Aurora</option>
+            <option value="white">White</option>
+            <option value="minimal">Minimal</option>
+          </select>
+          <span class="map-zoom-group" role="group" aria-label="Map zoom">
+            <button type="button" class="map-zoom-btn" id="map-zoom-out-btn" aria-label="Zoom out">&minus;</button>
+            <button type="button" class="map-zoom-btn" id="map-zoom-in-btn" aria-label="Zoom in">+</button>
+            <button type="button" class="map-zoom-btn" id="map-reset-btn" aria-label="Reset map view">Reset</button>
+          </span>
+        </div>
         <div id="destination-map"></div>
         <div id="destination-map-detail" class="map-detail" hidden></div>
       </div>
@@ -1190,11 +1269,25 @@ async function fetchAnalyticsFull(){
     fetchDestinationMap();
   }catch(e){ console.debug('analytics refresh failed', e); }
 }
-/* DNS Destinations map (0.8.5.1): aggregated GeoIP-by-country data, its own
-   endpoint/cache (see `/api/analytics/map`) so it can be recomputed on a
-   different, server-bounded cadence than the rest of the Analytics payload. */
+/* DNS Destinations map (0.8.5.1; Visual 2.0 in Issue #37/0.8.6): aggregated
+   GeoIP data from its own endpoint/cache (see `/api/analytics/map`) so it
+   can be recomputed on a different, server-bounded cadence than the rest of
+   the Analytics payload. Two modes share the same bundled offline basemap:
+   Countries (country-level bubbles -- works with only a country GeoIP
+   database) and Destinations (real per-IP coordinates from an optional
+   city/coordinate GeoIP database, grid-clustered client-side so nearby
+   points stay readable and separate again on zoom -- never an invented
+   coordinate for a country-only address). Map appearance and the bubble/
+   cluster sizing metric are `dnsInspectorPrefs` preferences, independent of
+   the application theme/Analytics visual style. */
 const MAP_W = 720, MAP_H = 360;
+const MAP_STYLES = ['bemo-dark', 'aurora', 'white', 'minimal'];
+const MAP_METRICS = ['observations', 'unique_ips', 'domains'];
 let mapSelectedCountry = null;
+let mapSelectedDestinationKey = null;
+let mapZoom = 1;
+let mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
+let mapLastPayload = null;
 function mapProject(lat, lon){ return { x: (lon+180)/360*MAP_W, y: (90-lat)/180*MAP_H }; }
 /* Bundled/offline-safe world-landmass silhouette (Issue #33): a simplified,
    hand-authored equirectangular outline of the seven continents plus a few
@@ -1220,9 +1313,19 @@ const WORLD_LAND_D = [
 ].join(' ');
 function mapLandmassSvg(){ return `<path class="map-landmass" d="${WORLD_LAND_D}"/>`; }
 function mapBaseLayers(){ return `${mapLandmassSvg()}${mapGraticule()}`; }
-function mapStatusBanner(text){ return text ? `<div class="map-status-banner">${text}</div>` : ''; }
+function mapStatusBanner(text, actionHtml){
+  if (!text) return '';
+  return `<div class="map-status-banner">${text}${actionHtml ? `<div class="map-status-action">${actionHtml}</div>` : ''}</div>`;
+}
+function mapViewBoxAttr(){
+  const vw = MAP_W / mapZoom, vh = MAP_H / mapZoom;
+  const vx = Math.min(Math.max(mapViewCenter.cx - vw / 2, 0), MAP_W - vw);
+  const vy = Math.min(Math.max(mapViewCenter.cy - vh / 2, 0), MAP_H - vh);
+  return `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`;
+}
 function mapBaseSvg(label, inner){
-  return `<div class="destination-map-wrap"><svg viewBox="0 0 ${MAP_W} ${MAP_H}" class="destination-map-svg" role="img" aria-label="${esc(label)}">${mapBaseLayers()}${inner || ''}</svg></div>`;
+  const style = MAP_STYLES.includes(prefs.mapStyle) ? prefs.mapStyle : 'bemo-dark';
+  return `<div class="destination-map-wrap" data-map-style="${esc(style)}"><svg viewBox="${mapViewBoxAttr()}" class="destination-map-svg" role="img" aria-label="${esc(label)}">${mapBaseLayers()}${inner || ''}</svg></div>`;
 }
 function mapGraticule(){
   let lines = '';
@@ -1231,30 +1334,75 @@ function mapGraticule(){
   const eqY = (MAP_H/2).toFixed(1);
   return `<g class="map-graticule">${lines}<line class="map-grid-line map-grid-equator" x1="0" y1="${eqY}" x2="${MAP_W}" y2="${eqY}"/></g>`;
 }
-function renderMapDetail(country){
+/* Bubble/cluster sizing metric (Issue #37): one of Observations (default),
+   Unique IPs or Domains -- the same selected metric drives both Countries
+   mode bubbles and Destinations mode clusters, via each entity's own
+   already-aggregated field, never a client-recomputed guess. */
+function mapMetricValue(entity){
+  const metric = MAP_METRICS.includes(prefs.mapMetric) ? prefs.mapMetric : 'observations';
+  if (metric === 'unique_ips') return entity.unique_ip_count ?? 0;
+  if (metric === 'domains') return entity.domain_count ?? 0;
+  return entity.observation_count ?? 0;
+}
+function renderMapDetail(entity, kind){
   const el = document.getElementById('destination-map-detail'); if (!el) return;
-  if (!country){ el.hidden = true; el.innerHTML = ''; return; }
+  if (!entity){ el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
-  const domains = (country.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
-  const devices = (country.sample_devices||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No associated devices</span>';
-  el.innerHTML = `<h3>${esc(country.country_name)} <span class="sub">${esc(country.country_code)}</span></h3>`
-    + `<div class="stats-note">${esc(country.observation_count)} destination observation${country.observation_count===1?'':'s'} &middot; ${esc(country.domain_count)} domain${country.domain_count===1?'':'s'} &middot; ${esc(country.device_count)} device${country.device_count===1?'':'s'}</div>`
+  if (kind === 'destination'){
+    const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
+    const ipCount = entity.unique_ip_count || 1;
+    const where = entity.city ? `${entity.city}, ${entity.country_name || entity.country_code || 'unknown location'}` : (entity.country_name || entity.country_code || 'Unknown location');
+    el.innerHTML = `<h3>${esc(where)} <span class="sub">${esc(ipCount)} IP${ipCount===1?'':'s'}</span></h3>`
+      + `<div class="stats-note">${esc(entity.observation_count)} observed destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; approximate coordinates from observed DNS destinations, not a verified physical location</div>`
+      + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`;
+    return;
+  }
+  const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
+  const devices = (entity.sample_devices||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No associated devices</span>';
+  el.innerHTML = `<h3>${esc(entity.country_name)} <span class="sub">${esc(entity.country_code)}</span></h3>`
+    + `<div class="stats-note">${esc(entity.observation_count)} destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; ${esc(entity.device_count)} device${entity.device_count===1?'':'s'}</div>`
     + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`
     + `<div class="map-detail-row"><b>Devices</b><div class="chip-row">${devices}</div></div>`;
 }
-function renderDestinationMap(data){
+/* Bounded client-side grid clustering (Issue #37): nearby real destination
+   coordinates merge into one cluster bubble whose observation/domain counts
+   are the real sum of its members -- no observation is lost, just visually
+   grouped. The grid cell shrinks as `mapZoom` increases, so zooming into a
+   cluster reveals smaller clusters/individual points instead of one giant
+   blob; this is a bounded analytics-widget heuristic, not a general
+   quad-tree/supercluster implementation. */
+function clusterDestinationPoints(points, zoom){
+  const cell = Math.max(3, 26 / zoom);
+  const cells = new Map();
+  points.forEach(p => {
+    if (p.lat == null || p.lon == null) return;
+    const {x, y} = mapProject(p.lat, p.lon);
+    const key = Math.floor(x / cell) + ':' + Math.floor(y / cell);
+    let bucket = cells.get(key);
+    if (!bucket){ bucket = { key, sumX: 0, sumY: 0, points: [], observation_count: 0, domain_count: 0 }; cells.set(key, bucket); }
+    bucket.points.push(p);
+    bucket.sumX += x; bucket.sumY += y;
+    bucket.observation_count += (p.observation_count || 0);
+    bucket.domain_count += (p.domain_count || 0);
+  });
+  return Array.from(cells.values()).map(b => ({
+    key: b.key,
+    x: b.sumX / b.points.length,
+    y: b.sumY / b.points.length,
+    points: b.points,
+    unique_ip_count: b.points.length,
+    observation_count: b.observation_count,
+    domain_count: b.domain_count,
+    country_code: b.points[0].country_code,
+    country_name: b.points[0].country_name,
+    city: b.points.length === 1 ? b.points[0].city : null,
+    sample_domains: Array.from(new Set(b.points.flatMap(p => p.sample_domains || []))).slice(0, 5),
+  }));
+}
+function renderCountriesMode(data){
   const el = document.getElementById('destination-map'); if (!el) return;
-  const provider = data?.provider || {};
   const cov = data?.coverage || {};
   const unknownDomains = data?.unknown?.domain_count || 0;
-  if (!provider.configured){
-    el.innerHTML = mapBaseSvg(
-      'World map; GeoIP not configured, destinations unmapped',
-      mapStatusBanner('No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.')
-    );
-    renderMapDetail(null);
-    return;
-  }
   const allCountries = data?.countries || [];
   if (!allCountries.length){
     el.innerHTML = mapBaseSvg(
@@ -1282,12 +1430,12 @@ function renderDestinationMap(data){
     renderMapDetail(null);
     return;
   }
-  const maxCount = Math.max(1, ...countries.map(c => c.observation_count));
+  const maxVal = Math.max(1, ...countries.map(c => mapMetricValue(c)));
   const topCode = countries[0].country_code;
   const bubbles = countries.map(c => {
     const [lat, lon] = c.centroid;
     const {x, y} = mapProject(lat, lon);
-    const r = (3 + Math.sqrt(c.observation_count / maxCount) * 14).toFixed(1);
+    const r = (3 + Math.sqrt(mapMetricValue(c) / maxVal) * 14).toFixed(1);
     const selected = mapSelectedCountry === c.country_code ? ' map-bubble-selected' : '';
     const pulse = c.country_code === topCode ? `<circle class="map-bubble-pulse-ring" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>` : '';
     return `${pulse}<circle class="map-bubble${selected}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"><title>${esc(c.country_name)}: ${esc(c.observation_count)} destination observations, ${esc(c.domain_count)} domains</title></circle>`;
@@ -1296,10 +1444,134 @@ function renderDestinationMap(data){
   el.querySelectorAll('[data-country]').forEach(node => node.addEventListener('click', () => {
     const code = node.getAttribute('data-country');
     mapSelectedCountry = (mapSelectedCountry === code) ? null : code;
-    renderDestinationMap(data);
+    renderCountriesMode(data);
     renderMapDetail(mapSelectedCountry ? countries.find(c => c.country_code === mapSelectedCountry) : null);
   }));
 }
+function renderDestinationsMode(data, capabilities){
+  const el = document.getElementById('destination-map'); if (!el) return;
+  if (!capabilities.coordinates){
+    el.innerHTML = mapBaseSvg(
+      'World map; coordinate-level destination data unavailable',
+      mapStatusBanner(
+        'Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database to enable Destinations mode, or switch to Countries. See docs/GEOIP.md.',
+        '<button type="button" class="map-zoom-btn" id="map-switch-countries-btn">Switch to Countries</button>'
+      )
+    );
+    renderMapDetail(null);
+    const switchBtn = document.getElementById('map-switch-countries-btn');
+    if (switchBtn) switchBtn.addEventListener('click', () => {
+      prefs.mapMode = 'countries'; savePrefs(); syncMapControls();
+      if (mapLastPayload) renderDestinationMap(mapLastPayload);
+    });
+    return;
+  }
+  const points = (data?.destinations || []).filter(p => p.lat != null && p.lon != null);
+  if (!points.length){
+    el.innerHTML = mapBaseSvg(
+      'World map; no geolocated destination coordinates yet',
+      mapStatusBanner('No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate GeoIP database.')
+    );
+    renderMapDetail(null);
+    return;
+  }
+  const clusters = clusterDestinationPoints(points, mapZoom);
+  const maxVal = Math.max(1, ...clusters.map(c => mapMetricValue(c)));
+  const cov = data?.coverage || {};
+  const coverageNote = `<div class="stats-note">${esc(cov.geolocated_pct ?? 0)}% of observed destinations geolocated &middot; ${esc(clusters.length)} cluster${clusters.length===1?'':'s'} &middot; ${esc(points.length)} destination point${points.length===1?'':'s'} plotted (bounded)</div>`;
+  const bubbles = clusters.map(c => {
+    const r = (3 + Math.sqrt(mapMetricValue(c) / maxVal) * 12).toFixed(1);
+    const selected = mapSelectedDestinationKey === c.key ? ' map-cluster-selected' : '';
+    const label = c.unique_ip_count > 1
+      ? `${esc(c.unique_ip_count)} destinations: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`
+      : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`;
+    const badge = c.unique_ip_count > 1
+      ? `<text class="map-cluster-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${c.unique_ip_count > 99 ? '99+' : c.unique_ip_count}</text>`
+      : '';
+    return `<circle class="map-cluster${selected}" data-cluster="${esc(c.key)}" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${r}"><title>${label}</title></circle>${badge}`;
+  }).join('');
+  el.innerHTML = mapBaseSvg('Observed DNS destinations by coordinate, clustered', bubbles) + coverageNote;
+  el.querySelectorAll('[data-cluster]').forEach(node => node.addEventListener('click', () => {
+    const key = node.getAttribute('data-cluster');
+    const cluster = clusters.find(c => c.key === key);
+    if (!cluster) return;
+    if (cluster.unique_ip_count > 1 && mapZoom < 8){
+      mapZoom = Math.min(8, mapZoom * 2);
+      mapViewCenter = { cx: cluster.x, cy: cluster.y };
+      if (mapLastPayload) renderDestinationMap(mapLastPayload);
+      return;
+    }
+    mapSelectedDestinationKey = (mapSelectedDestinationKey === key) ? null : key;
+    renderDestinationsMode(data, capabilities);
+    renderMapDetail(mapSelectedDestinationKey ? cluster : null, 'destination');
+  }));
+}
+function renderDestinationMap(data){
+  const el = document.getElementById('destination-map'); if (!el) return;
+  mapLastPayload = data;
+  const provider = data?.provider || {};
+  const capabilities = data?.capabilities || {};
+  const subtitleEl = document.getElementById('destination-map-subtitle');
+  const mode = prefs.mapMode === 'destinations' ? 'destinations' : 'countries';
+  if (subtitleEl){
+    subtitleEl.textContent = mode === 'destinations'
+      ? 'Real observed DNS destination IPs plotted by coordinate and clustered when nearby — not verified physical server locations.'
+      : 'Country-level aggregate of resolved DNS response IPs — not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.';
+  }
+  if (!provider.configured && !capabilities.coordinates){
+    el.innerHTML = mapBaseSvg(
+      'World map; GeoIP not configured, destinations unmapped',
+      mapStatusBanner('No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.')
+    );
+    renderMapDetail(null);
+    return;
+  }
+  if (mode === 'destinations'){
+    renderDestinationsMode(data, capabilities);
+    return;
+  }
+  renderCountriesMode(data);
+}
+function syncMapControls(){
+  const modeSel = document.getElementById('map-mode-select');
+  const metricSel = document.getElementById('map-metric-select');
+  const styleSel = document.getElementById('map-style-select');
+  if (modeSel) modeSel.value = prefs.mapMode || 'countries';
+  if (metricSel) metricSel.value = prefs.mapMetric || 'observations';
+  if (styleSel) styleSel.value = prefs.mapStyle || 'bemo-dark';
+}
+syncMapControls();
+document.getElementById('map-mode-select')?.addEventListener('change', (e) => {
+  prefs.mapMode = e.target.value === 'destinations' ? 'destinations' : 'countries';
+  savePrefs();
+  mapSelectedCountry = null; mapSelectedDestinationKey = null;
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-metric-select')?.addEventListener('change', (e) => {
+  prefs.mapMetric = MAP_METRICS.includes(e.target.value) ? e.target.value : 'observations';
+  savePrefs();
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-style-select')?.addEventListener('change', (e) => {
+  prefs.mapStyle = MAP_STYLES.includes(e.target.value) ? e.target.value : 'bemo-dark';
+  savePrefs();
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-zoom-in-btn')?.addEventListener('click', () => {
+  mapZoom = Math.min(8, mapZoom * 2);
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-zoom-out-btn')?.addEventListener('click', () => {
+  mapZoom = Math.max(1, mapZoom / 2);
+  if (mapZoom === 1) mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-reset-btn')?.addEventListener('click', () => {
+  mapZoom = 1; mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
+  mapSelectedCountry = null; mapSelectedDestinationKey = null;
+  renderMapDetail(null);
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
 async function fetchDestinationMap(){
   try{
     const r = await fetch('/api/analytics/map', {cache:'no-store'});
@@ -3170,10 +3442,200 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
         return None, None
 
 
+class CityGeoIPProvider:
+    """Abstraction over an optional local/offline IP -> city/coordinate lookup
+    source (Issue #37 / 0.8.6). Entirely additive to and independent of
+    `GeoIPProvider` above (the country-only lookup, which keeps working on
+    its own regardless of whether a city database is configured)."""
+
+    def lookup_city(self, ip):
+        """Return a dict with country_code/country_name/city/lat/lon, or
+        `None` when the address is unmapped. Must never invent a location --
+        an address outside every loaded range returns `None`, not a country
+        centroid standing in for a real coordinate."""
+        raise NotImplementedError
+
+    @property
+    def available(self):
+        return False
+
+    @property
+    def range_count(self):
+        return 0
+
+    @property
+    def path(self):
+        return None
+
+
+class NullCityGeoIPProvider(CityGeoIPProvider):
+    """No city-level database configured: Destinations mode must say
+    coordinate data is unavailable rather than falling back to a country
+    centroid pretending to be a city/IP location."""
+
+    def lookup_city(self, ip):
+        return None
+
+    @property
+    def available(self):
+        return False
+
+
+class CsvCityGeoIPProvider(CityGeoIPProvider):
+    """Loads `start_ip,end_ip,country_code,country_name,city,latitude,longitude`
+    rows (see docs/GEOIP.md -- the shape `scripts/convert_dbip_city_lite.py`
+    produces from a DB-IP City Lite export) into a bounded, indexed runtime
+    representation instead of a plain Python list of millions of per-row
+    tuples/strings:
+
+    - IPv4 ranges (the overwhelming majority of rows in a real city-level
+      database, potentially several million) are stored as parallel
+      fixed-width `array.array` columns -- 8-byte integer start/end keys,
+      4-byte float lat/lon -- plus small integer indices into interned
+      country/city string tables, so the (much smaller) set of distinct
+      country/city names is only ever stored once each, not once per range
+      row.
+    - IPv6 ranges are far fewer in a real city export, so they stay a plain
+      sorted list of tuples -- splitting a 128-bit range key across two
+      64-bit array slots isn't worth the complexity at that row count.
+
+    Lookup is a binary search (`bisect`) against a precomputed start-key
+    sequence, the same approach `CsvRangeGeoIPProvider` uses for country
+    ranges.
+    """
+
+    _HEADER_FIRST_COLUMNS = ("start_ip", "start", "network_start", "ip_start")
+
+    def __init__(self, path):
+        self._path = path
+        self._v4_start = array.array('Q')
+        self._v4_end = array.array('Q')
+        self._v4_lat = array.array('f')
+        self._v4_lon = array.array('f')
+        self._v4_country_idx = array.array('H')
+        self._v4_city_idx = array.array('I')
+        self._v6 = []  # sorted [(start_int, end_int, country_code, country_name, city, lat, lon), ...]
+        self._v6_starts = []
+        self._countries = []  # [(country_code, country_name), ...], interned
+        self._cities = []  # [city_name, ...], interned
+        self._country_index = {}
+        self._city_index = {}
+        self._loaded = False
+        self._load()
+
+    def _intern_country(self, code, name):
+        idx = self._country_index.get(code)
+        if idx is None:
+            idx = len(self._countries)
+            self._countries.append((code, name))
+            self._country_index[code] = idx
+        return idx
+
+    def _intern_city(self, city):
+        idx = self._city_index.get(city)
+        if idx is None:
+            idx = len(self._cities)
+            self._cities.append(city)
+            self._city_index[city] = idx
+        return idx
+
+    def _load(self):
+        v4_rows = []
+        try:
+            with open(self._path, "r", encoding="utf-8", newline="") as f:
+                for row in csv.reader(f):
+                    if not row or len(row) < 7:
+                        continue
+                    start_raw, end_raw = row[0].strip(), row[1].strip()
+                    if start_raw.lower() in self._HEADER_FIRST_COLUMNS:
+                        continue  # header row
+                    code = row[2].strip().upper()
+                    name = row[3].strip()
+                    city = row[4].strip()
+                    if not code:
+                        continue
+                    try:
+                        start_addr = ipaddress.ip_address(start_raw)
+                        end_addr = ipaddress.ip_address(end_raw)
+                        lat = float(row[5])
+                        lon = float(row[6])
+                    except ValueError:
+                        continue
+                    if start_addr.version != end_addr.version:
+                        continue
+                    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                        continue
+                    country_idx = self._intern_country(code, name or code)
+                    city_idx = self._intern_city(city)
+                    if start_addr.version == 4:
+                        v4_rows.append((int(start_addr), int(end_addr), country_idx, city_idx, lat, lon))
+                    else:
+                        self._v6.append((int(start_addr), int(end_addr), code, name or code, city, lat, lon))
+            v4_rows.sort(key=lambda r: r[0])
+            for start, end, country_idx, city_idx, lat, lon in v4_rows:
+                self._v4_start.append(start)
+                self._v4_end.append(end)
+                self._v4_country_idx.append(country_idx)
+                self._v4_city_idx.append(city_idx)
+                self._v4_lat.append(lat)
+                self._v4_lon.append(lon)
+            self._v6.sort(key=lambda r: r[0])
+            self._v6_starts = [r[0] for r in self._v6]
+            self._loaded = bool(len(self._v4_start) or self._v6)
+        except (OSError, csv.Error):
+            self._loaded = False
+
+    @property
+    def available(self):
+        return self._loaded
+
+    @property
+    def range_count(self):
+        return len(self._v4_start) + len(self._v6)
+
+    @property
+    def path(self):
+        return self._path
+
+    def lookup_city(self, ip):
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return None
+        value = int(addr)
+        if addr.version == 4:
+            starts = self._v4_start
+            if not starts:
+                return None
+            idx = bisect.bisect_right(starts, value) - 1
+            if idx < 0 or not (starts[idx] <= value <= self._v4_end[idx]):
+                return None
+            code, name = self._countries[self._v4_country_idx[idx]]
+            city = self._cities[self._v4_city_idx[idx]]
+            return {
+                "country_code": code, "country_name": name, "city": city or None,
+                "lat": self._v4_lat[idx], "lon": self._v4_lon[idx],
+            }
+        if not self._v6:
+            return None
+        idx = bisect.bisect_right(self._v6_starts, value) - 1
+        if idx < 0:
+            return None
+        start, end, code, name, city, lat, lon = self._v6[idx]
+        if not (start <= value <= end):
+            return None
+        return {"country_code": code, "country_name": name, "city": city or None, "lat": lat, "lon": lon}
+
+
 _geoip_provider = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if os.path.exists(GEOIP_DB_PATH) else NullGeoIPProvider()
 _geoip_cache = {}
 _geoip_cache_order = deque()
 _geoip_cache_lock = threading.Lock()
+
+_geoip_city_provider = CsvCityGeoIPProvider(GEOIP_CITY_DB_PATH) if os.path.exists(GEOIP_CITY_DB_PATH) else NullCityGeoIPProvider()
+_geoip_city_cache = {}
+_geoip_city_cache_order = deque()
+_geoip_city_cache_lock = threading.Lock()
 
 
 def _geoip_diagnostics():
@@ -3182,6 +3644,21 @@ def _geoip_diagnostics():
     `_log_geoip_status`). Deliberately excludes the full configured path so a
     debug bundle/observability payload doesn't leak filesystem layout."""
     provider = _geoip_provider
+    configured = bool(provider.available)
+    path = provider.path
+    return {
+        "provider_type": type(provider).__name__,
+        "configured": configured,
+        "db_path_basename": os.path.basename(path) if configured and path else None,
+        "range_count": provider.range_count if configured else 0,
+    }
+
+
+def _geoip_city_diagnostics():
+    """Same shape as `_geoip_diagnostics()`, for the optional coordinate/city
+    provider -- kept as a separate snapshot since a deployment can have
+    either, both, or neither of the country and city databases configured."""
+    provider = _geoip_city_provider
     configured = bool(provider.available)
     path = provider.path
     return {
@@ -3208,6 +3685,20 @@ def _log_geoip_status():
             "a loaded CSV database. See docs/GEOIP.md.",
             flush=True,
         )
+    city_diag = _geoip_city_diagnostics()
+    if city_diag["configured"]:
+        print(
+            f"GeoIP city: {city_diag['provider_type']} loaded {city_diag['range_count']} "
+            f"ranges from {city_diag['db_path_basename']} -- Destinations mode available",
+            flush=True,
+        )
+    else:
+        print(
+            "GeoIP city: no coordinate/city database configured -- Destinations mode "
+            "will report coordinate-level data as unavailable until GEOIP_CITY_DB_PATH "
+            "points at a loaded CSV database. See docs/GEOIP.md.",
+            flush=True,
+        )
 
 
 def geoip_lookup(ip):
@@ -3226,6 +3717,26 @@ def geoip_lookup(ip):
             _geoip_cache_order.append(ip)
             while len(_geoip_cache_order) > GEOIP_CACHE_MAX_ENTRIES:
                 _geoip_cache.pop(_geoip_cache_order.popleft(), None)
+    return result
+
+
+def geoip_city_lookup(ip):
+    """Cached local city/coordinate GeoIP lookup for a single already-
+    normalized public IP. Returns `None` when unmapped or when no city
+    database is configured -- callers must not substitute a country centroid
+    for a missing result. Cache entries store `None` results too (a `None`
+    lookup is still worth remembering), so presence is checked with `in`
+    rather than truthiness."""
+    with _geoip_city_cache_lock:
+        if ip in _geoip_city_cache:
+            return _geoip_city_cache[ip]
+    result = _geoip_city_provider.lookup_city(ip)
+    with _geoip_city_cache_lock:
+        if ip not in _geoip_city_cache:
+            _geoip_city_cache[ip] = result
+            _geoip_city_cache_order.append(ip)
+            while len(_geoip_city_cache_order) > GEOIP_CITY_CACHE_MAX_ENTRIES:
+                _geoip_city_cache.pop(_geoip_city_cache_order.popleft(), None)
     return result
 
 
@@ -3278,6 +3789,15 @@ def geoip_map_payload():
         destinations_by_domain.setdefault(domain, []).append((ip, int(observations or 0)))
 
     countries = {}
+    # Coordinate destination points (Issue #37 / 0.8.6), keyed by observed IP
+    # so a domain answering the same destination IP as another domain still
+    # produces one point with a combined observation/domain count, rather
+    # than one point per (domain, ip) pair. Only populated when a city/
+    # coordinate provider is actually configured -- see `capabilities` below;
+    # a country-only deployment never reaches `geoip_city_lookup()` at all,
+    # so Destinations mode has nothing invented to show.
+    destination_points = {}
+    city_capable = bool(_geoip_city_provider.available)
     unknown_domains = unknown_observations = 0
     geolocated_domains = geolocated_observations = 0
     total_domains = len(domain_rows)
@@ -3297,18 +3817,32 @@ def geoip_map_payload():
             code, name = result["country_code"], result["country_name"]
             if not code:
                 domain_unmatched_observations += observations
-                continue
-            domain_geolocated = True
-            geolocated_observations += observations
-            bucket = countries.setdefault(code, {
-                "country_name": name or code,
-                "domain_keys": set(), "observation_count": 0,
-                "sample_domains": {}, "device_keys": set(),
-            })
-            bucket["observation_count"] += observations
-            bucket["domain_keys"].add(domain)
-            bucket["sample_domains"][domain] = bucket["sample_domains"].get(domain, 0) + observations
-            bucket["device_keys"].update(clients.keys())
+            else:
+                domain_geolocated = True
+                geolocated_observations += observations
+                bucket = countries.setdefault(code, {
+                    "country_name": name or code,
+                    "domain_keys": set(), "observation_count": 0,
+                    "sample_domains": {}, "device_keys": set(), "ip_keys": set(),
+                })
+                bucket["observation_count"] += observations
+                bucket["domain_keys"].add(domain)
+                bucket["sample_domains"][domain] = bucket["sample_domains"].get(domain, 0) + observations
+                bucket["device_keys"].update(clients.keys())
+                bucket["ip_keys"].add(ip)
+            if city_capable:
+                city_result = geoip_city_lookup(ip)
+                if city_result:
+                    point = destination_points.setdefault(ip, {
+                        "country_code": city_result["country_code"],
+                        "country_name": city_result["country_name"],
+                        "city": city_result["city"],
+                        "lat": city_result["lat"], "lon": city_result["lon"],
+                        "observation_count": 0, "domain_keys": set(), "sample_domains": {},
+                    })
+                    point["observation_count"] += observations
+                    point["domain_keys"].add(domain)
+                    point["sample_domains"][domain] = point["sample_domains"].get(domain, 0) + observations
         if domain_geolocated:
             geolocated_domains += 1
         else:
@@ -3324,21 +3858,49 @@ def geoip_map_payload():
             "domain_count": len(bucket["domain_keys"]),
             "observation_count": bucket["observation_count"],
             "device_count": len(bucket["device_keys"]),
+            "unique_ip_count": len(bucket["ip_keys"]),
             "sample_domains": [d for d, _ in top_domains],
             "sample_devices": [device_labels.get(k, k) for k in list(bucket["device_keys"])[:5]],
             "centroid": COUNTRY_CENTROIDS.get(code),
         })
     country_list.sort(key=lambda c: -c["observation_count"])
 
+    # Bounded to GEOIP_MAP_DESTINATION_POINTS_LIMIT for payload/render size --
+    # a rendering cap only; `coverage` above is computed over every observed
+    # destination regardless of how many individual points are returned here,
+    # so capping this list never distorts the honestly-reported percentages.
+    destination_list = []
+    for ip, point in destination_points.items():
+        top_domains = sorted(point["sample_domains"].items(), key=lambda kv: -kv[1])[:5]
+        destination_list.append({
+            "ip": ip,
+            "country_code": point["country_code"],
+            "country_name": point["country_name"],
+            "city": point["city"],
+            "lat": point["lat"],
+            "lon": point["lon"],
+            "observation_count": point["observation_count"],
+            "domain_count": len(point["domain_keys"]),
+            "sample_domains": [d for d, _ in top_domains],
+        })
+    destination_list.sort(key=lambda d: -d["observation_count"])
+    destination_list = destination_list[:GEOIP_MAP_DESTINATION_POINTS_LIMIT]
+
     payload = {
         "updated": utcnow(),
         "provider": {"configured": _geoip_provider.available, "path": GEOIP_DB_PATH if _geoip_provider.available else None},
         "countries": country_list,
+        "destinations": destination_list,
         "unknown": {"domain_count": unknown_domains, "observation_count": unknown_observations},
         "coverage": {
             "total_domains": total_domains, "geolocated_domains": geolocated_domains,
             "total_observations": total_observations, "geolocated_observations": geolocated_observations,
             "geolocated_pct": round((geolocated_observations / total_observations) * 100, 1) if total_observations else 0.0,
+        },
+        "capabilities": {
+            "country": bool(_geoip_provider.available),
+            "coordinates": city_capable,
+            "heatmap": False,
         },
     }
     with _geoip_map_cache_lock:
@@ -4934,6 +5496,7 @@ def _observability_payload():
         'db_size_bytes': db_size,
         'db_counts': _observability_db_counts(),
         'geoip': _geoip_diagnostics(),
+        'geoip_city': _geoip_city_diagnostics(),
     }
 
 

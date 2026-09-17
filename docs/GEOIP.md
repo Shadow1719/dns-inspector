@@ -4,7 +4,12 @@ This document covers the destination map added in 0.8.5.1: what data it is
 built from, how the GeoIP lookup works, why no database ships in the
 repository by default, and how to supply one. 0.8.5.2 adds the operator
 setup guide, conversion utility and end-to-end verification steps below --
-the data model and semantics are unchanged from 0.8.5.1.
+the data model and semantics are unchanged from 0.8.5.1. 0.8.6 (Issue #37)
+adds an optional, independent coordinate/city provider that powers the
+map's Destinations mode -- see
+["Destinations mode: optional coordinate/city GeoIP"](#destinations-mode-optional-coordinatecity-geoip)
+below; the country-only provider and Countries mode described in the rest of
+this document are completely unchanged.
 
 If you just want to get the map populated, skip to
 ["Quick setup: DB-IP Country Lite"](#quick-setup-db-ip-country-lite).
@@ -173,22 +178,116 @@ to its first/last address, and write the same four columns
 (`start_ip,end_ip,country_code,country_name`) by hand or with your own short
 script.
 
+## Destinations mode: optional coordinate/city GeoIP
+
+The map's Countries mode (everything above) only ever needs a country-level
+database. 0.8.6 (Issue #37) adds an entirely separate, optional Destinations
+mode that plots real observed destination IPs by coordinate -- it needs a
+city/coordinate-capable database, configured independently via
+`GEOIP_CITY_DB_PATH`.
+
+This is additive, not a replacement: a deployment can have the country
+database, the city database, both, or neither configured. The country
+provider and Countries mode behave exactly as documented above regardless of
+whether a city database is present. If no city database is configured,
+Destinations mode says so explicitly in the UI and offers to switch back to
+Countries -- it never substitutes a country centroid for a missing
+city/IP coordinate, because that would misrepresent approximate country-level
+data as a specific location.
+
+### CSV schema
+
+```text
+start_ip,end_ip,country_code,country_name,city,latitude,longitude
+1.2.3.0,1.2.3.255,US,United States,Mountain View,37.386,-122.0838
+2001:db8::,2001:db8:ffff:ffff:ffff:ffff:ffff:ffff,DE,Germany,Berlin,52.52,13.405
+```
+
+Same range-per-row shape as the country schema, with `city`, `latitude` and
+`longitude` appended. A header row (`start_ip`/`start`/`network_start`/
+`ip_start` in the first column) is tolerated. Rows with an out-of-range
+latitude/longitude (outside -90..90 / -180..180) or an unparsable
+coordinate are skipped individually rather than failing the whole load.
+
+### Quick setup: DB-IP City Lite
+
+[DB-IP City Lite](https://db-ip.com/db/lite.php) is the documented source
+for this provider -- free, no account/license key, licensed **CC BY 4.0**.
+**If you use it, follow the attribution instructions on that download page
+in your own deployment's documentation/about page** -- DNS Inspector does
+not ship or embed the database, and does not automate that attribution for
+you.
+
+1. **Download** the current month's IP to City Lite CSV (IPv4/IPv6 are
+   separate downloads). As of the September 2026 release this ships as
+   unheadered `ip_start,ip_end,continent,country,stateprov,city,latitude,
+   longitude` rows.
+2. **Convert** it with the bundled utility, which drops the
+   `continent`/`stateprov` columns DNS Inspector doesn't use and reshapes
+   the rest into the schema above:
+
+   ```bash
+   python scripts/convert_dbip_city_lite.py dbip-city-lite.csv -o data/geoip_city_ranges.csv
+   # or, concatenating separate IPv4 + IPv6 exports:
+   cat dbip-city-lite-ipv4.csv dbip-city-lite-ipv6.csv | python scripts/convert_dbip_city_lite.py /dev/stdin -o data/geoip_city_ranges.csv
+   ```
+
+   Like the country converter, this streams the input row by row (never
+   loads the whole file into memory), makes no network request of its own,
+   and skips malformed/out-of-range/header rows individually.
+3. **Configure `GEOIP_CITY_DB_PATH`** to point at the converted file, the
+   same way `GEOIP_DB_PATH` is configured above (mount a persistent volume,
+   set the env var to the in-container path).
+4. **Restart** the Inspector -- `CsvCityGeoIPProvider` also loads once, at
+   startup; there is no hot-reload.
+5. **Verify** via `/api/observability`'s new `geoip_city` field (same shape
+   as the existing `geoip` field) or the startup log line
+   (`GeoIP city: CsvCityGeoIPProvider loaded <N> ranges ... -- Destinations
+   mode available`, or the honest `no coordinate/city database configured`
+   line if it didn't load).
+
+### Runtime representation
+
+A real city-level database can have several million IPv4 rows. Rather than
+loading that into a plain Python list of per-row tuples/strings,
+`CsvCityGeoIPProvider` (`app.py`) stores IPv4 ranges as parallel fixed-width
+`array.array` columns (8-byte integer start/end keys, 4-byte float
+latitude/longitude) plus small integer indices into interned country/city
+string tables -- the actual set of distinct country/city names in a real
+database is a few hundred to a few thousand, shared across millions of
+rows, not re-allocated per row. IPv6 ranges are far fewer in a real city
+export, so they stay a plain sorted list, matching the existing country
+provider's approach. Lookup is the same `bisect` binary search the country
+provider uses.
+
+### MaxMind for Destinations mode
+
+The same caution from "Building a database from another source" above
+applies here: MaxMind GeoLite2-City requires a free account/license key and
+its own EULA/redistribution terms. `scripts/convert_dbip_city_lite.py` does
+not support MaxMind's CIDR+`geoname_id` join format; build the seven-column
+schema above yourself if you choose MaxMind instead of DB-IP.
+
 ## Update mechanism
 
 There is no in-app updater. Regenerate the CSV from your chosen source on
 whatever cadence you're comfortable with (the underlying allocations change
-slowly) and replace the file at `GEOIP_DB_PATH`, then restart the
-container/process -- the provider loads the file once at startup.
+slowly) and replace the file at `GEOIP_DB_PATH` (and/or `GEOIP_CITY_DB_PATH`),
+then restart the container/process -- each provider loads its file once at
+startup.
 
 ## Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `GEOIP_DB_PATH` | `data/geoip_country_ranges.csv` next to `app.py` | Path to the CSV database above. |
-| `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP lookup results. |
+| `GEOIP_DB_PATH` | `data/geoip_country_ranges.csv` next to `app.py` | Path to the country CSV database above. |
+| `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP country lookup results. |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | How long an aggregated map payload is reused before recomputing. |
 | `GEOIP_MAP_DOMAIN_LIMIT` | `1500` | Upper bound on domains scanned per aggregation pass (most-recently-active first). |
 | `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` | `32` | Upper bound on distinct observed destination IPs retained per domain. |
+| `GEOIP_CITY_DB_PATH` | `data/geoip_city_ranges.csv` next to `app.py` | Path to the optional coordinate/city CSV database (Destinations mode). |
+| `GEOIP_CITY_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP city lookup results. |
+| `GEOIP_MAP_DESTINATION_POINTS_LIMIT` | `600` | Upper bound on individual coordinate points returned to the browser per map payload (a rendering-size cap only -- `coverage` is always computed over every observed destination regardless of this cap). |
 
 ## Verifying the provider loaded
 
@@ -236,10 +335,15 @@ curl -s http://<inspector-host>:8080/api/analytics/map | python3 -m json.tool
   observed destination IP falls inside your loaded database's ranges.
 - `countries` should be a non-empty list, each with a `country_code`,
   `observation_count` and `sample_domains`.
+- `capabilities.country` should be `true`; `capabilities.coordinates` is
+  only `true` once a city database is also configured (see "Destinations
+  mode" above) -- until then `destinations` is honestly an empty list.
 
 Then open Analytics in the UI -- the DNS Destinations widget should show
 country bubbles instead of the "No GeoIP database configured" banner, with
-the same `% geolocated` figure the API reports.
+the same `% geolocated` figure the API reports. If you've also configured a
+city database, switch the widget to Destinations mode to see individual/
+clustered coordinate points instead.
 
 ## End-to-end smoke test
 
