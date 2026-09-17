@@ -14,8 +14,16 @@ completely untouched.
 
 This module has no dependency on `app.py` (no Flask) so it can run
 standalone as a CLI (`python scripts/geoip_updater.py --help`) for a manual
-one-shot update or a CI/troubleshooting dry run, and is imported by `app.py`
-for the background auto-update worker.
+one-shot update or a CI/troubleshooting dry run. `app.py`'s background
+worker (Issue #44 / 0.8.5.7) runs this exact CLI as a *subprocess* on a
+daily schedule (default 03:00 local time, `GEOIP_AUTO_UPDATE_HOUR`/
+`GEOIP_AUTO_UPDATE_MINUTE`/`GEOIP_AUTO_UPDATE_TIMEZONE`) rather than calling
+`run_update()` in-process: a multi-hundred-thousand-row City Lite conversion
+never contends with Flask's own threads for the GIL, and a child that hangs
+past the watchdog timeout can actually be killed, not just abandoned.
+`_is_check_due()` below still independently gates each target's real network
+check on `GEOIP_UPDATE_INTERVAL_DAYS`, so the daily wake is cheap and mostly
+a no-op.
 
 ## On the DB-IP Lite download URL
 
@@ -50,6 +58,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -65,9 +74,24 @@ except ImportError:  # running as a standalone script, not as part of the `scrip
 DEFAULT_COUNTRY_URL_TEMPLATE = "https://download.db-ip.com/free/dbip-country-lite-{year:04d}-{month:02d}.csv.gz"
 DEFAULT_CITY_URL_TEMPLATE = "https://download.db-ip.com/free/dbip-city-lite-{year:04d}-{month:02d}.csv.gz"
 DEFAULT_STATE_PATH = "/data/geoip_update_state.json"
+DEFAULT_AUTO_UPDATE_HOUR = 3
+DEFAULT_AUTO_UPDATE_MINUTE = 0
+DEFAULT_AUTO_UPDATE_TIMEZONE = "UTC"
 
 _STATE_TARGETS = ("country", "city")
-_STATE_FIELDS = ("current_release", "last_checked_at", "last_success_at", "last_error", "last_error_at")
+# `last_checked_ok_at` (Issue #44) is distinct from `last_checked_at`: the
+# latter is stamped at the *start* of every attempt (used by
+# `mark_stuck_checks_as_timed_out` to detect an attempt that never settled),
+# while the former only advances on an attempt that did not end in an error
+# (an actual new install, or confirming the current release is still the
+# latest). `_is_check_due` gates the 30-day cadence on `last_checked_ok_at`
+# specifically so a failed check (bad URL template, transient network error,
+# no release published yet) gets retried at the *next* scheduled window
+# instead of silently locking the target out for another full interval.
+_STATE_FIELDS = (
+    "current_release", "last_checked_at", "last_checked_ok_at",
+    "last_success_at", "last_error", "last_error_at",
+)
 
 
 class GeoIPUpdateError(Exception):
@@ -97,6 +121,13 @@ class UpdaterConfig:
     connect_timeout: int = 10
     read_timeout: int = 300
     chunk_size: int = 1024 * 1024
+    # Daily maintenance window (Issue #44): the background worker never
+    # checks/downloads at process startup, only at this local time each day.
+    # `_is_check_due` (gated on `interval_days`, above) still decides whether
+    # that daily wake turns into an actual network check.
+    auto_update_hour: int = DEFAULT_AUTO_UPDATE_HOUR
+    auto_update_minute: int = DEFAULT_AUTO_UPDATE_MINUTE
+    auto_update_timezone: str = DEFAULT_AUTO_UPDATE_TIMEZONE
 
 
 def _int_env(name, default):
@@ -125,11 +156,55 @@ def build_config_from_env():
         connect_timeout=max(1, _int_env("GEOIP_UPDATE_CONNECT_TIMEOUT_SECONDS", 10)),
         read_timeout=max(1, _int_env("GEOIP_UPDATE_READ_TIMEOUT_SECONDS", 300)),
         chunk_size=max(64 * 1024, _int_env("GEOIP_UPDATE_CHUNK_SIZE", 1024 * 1024)),
+        auto_update_hour=max(0, min(23, _int_env("GEOIP_AUTO_UPDATE_HOUR", DEFAULT_AUTO_UPDATE_HOUR))),
+        auto_update_minute=max(0, min(59, _int_env("GEOIP_AUTO_UPDATE_MINUTE", DEFAULT_AUTO_UPDATE_MINUTE))),
+        auto_update_timezone=os.getenv("GEOIP_AUTO_UPDATE_TIMEZONE", DEFAULT_AUTO_UPDATE_TIMEZONE),
     )
 
 
 def is_auto_update_enabled():
     return os.getenv("GEOIP_AUTO_UPDATE", "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+# --- scheduling (Issue #44) ---------------------------------------------------
+#
+# A missing/empty state file must never mean "download now": the background
+# worker (`app.py`'s `geoip_auto_update_worker()`) never runs a check/update
+# pass at thread startup, only at the next occurrence of this daily local
+# window. Whether that daily wake actually turns into a network check is
+# still gated by `_is_check_due()`/`interval_days` below -- the schedule only
+# controls *when* that cheap local gate gets re-evaluated.
+
+
+def resolve_auto_update_timezone(name):
+    """Resolve `GEOIP_AUTO_UPDATE_TIMEZONE` to a tzinfo. Never raises: an
+    empty name falls back to UTC silently, and an unknown zone name or a
+    platform missing IANA tzdata falls back to UTC with a warning message
+    for the caller to log -- a bad timezone must never crash the background
+    worker or block startup. Returns `(tzinfo, warning_or_None)`."""
+    requested = (name or "").strip() or DEFAULT_AUTO_UPDATE_TIMEZONE
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo(requested), None
+    except Exception as e:
+        if requested == DEFAULT_AUTO_UPDATE_TIMEZONE:
+            return timezone.utc, None
+        return timezone.utc, f"unknown or unavailable GEOIP_AUTO_UPDATE_TIMEZONE {requested!r} ({e}) -- falling back to UTC"
+
+
+def next_scheduled_run(now, hour, minute):
+    """Return the next datetime >= `now` (same tzinfo as `now`) that falls at
+    `hour:minute:00` local time: today's occurrence if it hasn't passed yet,
+    otherwise tomorrow's. Pure and deterministic (no I/O, no real sleeping)
+    so scheduling math -- including midnight and DST-transition edge cases --
+    is directly testable. `now`'s tzinfo should be a real IANA zone
+    (`resolve_auto_update_timezone()`) rather than a fixed offset so a
+    24-hour-wall-clock day that is actually 23 or 25 hours around a DST
+    transition is handled correctly by simple `timedelta(days=1)` arithmetic."""
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate < now:
+        candidate = candidate + timedelta(days=1)
+    return candidate
 
 
 # --- release discovery --------------------------------------------------------
@@ -240,6 +315,31 @@ def _convert_gz_csv(gz_path, convert_rows_fn, out_path):
     return count
 
 
+_STALE_TEMP_PREFIXES = (".geoip-download-", ".geoip-convert-")
+_STALE_TEMP_MAX_AGE_SECONDS = 3600
+
+
+def _cleanup_stale_temp_files(workdir, max_age_seconds=_STALE_TEMP_MAX_AGE_SECONDS):
+    """Best-effort removal of leftover `.geoip-download-*`/`.geoip-convert-*`
+    temp files older than `max_age_seconds` -- never touches `dest_path`
+    itself, only this function's own temp-file naming convention. Errors are
+    swallowed: this is opportunistic housekeeping, not a correctness
+    requirement, and must never fail or block a real update pass."""
+    try:
+        now = time.time()
+        for name in os.listdir(workdir):
+            if not name.startswith(_STALE_TEMP_PREFIXES):
+                continue
+            path = os.path.join(workdir, name)
+            try:
+                if now - os.path.getmtime(path) >= max_age_seconds:
+                    os.remove(path)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
 def download_and_convert(session, url, convert_rows_fn, dest_path, min_rows, config, checksum_url=None, replace=True):
     """Download, verify and convert a DB-IP Lite CSV export, replacing
     `dest_path` atomically only once every validation step has passed.
@@ -259,6 +359,15 @@ def download_and_convert(session, url, convert_rows_fn, dest_path, min_rows, con
     """
     workdir = os.path.dirname(os.path.abspath(dest_path)) or "."
     os.makedirs(workdir, exist_ok=True)
+    # Issue #44: the background worker now runs this as a subprocess it can
+    # SIGTERM/SIGKILL on a watchdog timeout, which (unlike the previous
+    # same-process daemon thread) never gets the chance to run this
+    # function's own `finally` cleanup below -- so a killed pass can leave a
+    # `.geoip-download-*`/`.geoip-convert-*` temp file behind. Sweep any
+    # stale ones (from a prior killed pass) before adding new ones, bounded
+    # by age so a temp file from a pass that is still genuinely in flight is
+    # never touched.
+    _cleanup_stale_temp_files(workdir)
     fd_gz, tmp_gz = tempfile.mkstemp(prefix=".geoip-download-", suffix=".csv.gz", dir=workdir)
     os.close(fd_gz)
     fd_csv, tmp_csv = tempfile.mkstemp(prefix=".geoip-convert-", suffix=".csv", dir=workdir)
@@ -361,9 +470,19 @@ def _seconds_since(iso_ts):
 
 
 def _is_check_due(target_state, interval_days, force):
+    """Gated on `last_checked_ok_at` (Issue #44), not `last_checked_at`:
+    the latter is stamped at the start of *every* attempt, including a
+    failed one, so gating on it would have a single failed check (a stale
+    URL template, a transient network error, no release published yet)
+    silently lock the target out of retrying for another full
+    `interval_days` -- exactly the "database can never update again"
+    failure mode the previous 0.8.5.5/0.8.5.6 behaviour risked. A missing
+    `last_checked_ok_at` (no state file, or never yet had a clean check)
+    is due -- but a fresh install only ever reaches this function from the
+    scheduled daily window, never at process startup."""
     if force:
         return True
-    elapsed = _seconds_since(target_state.get("last_checked_at"))
+    elapsed = _seconds_since(target_state.get("last_checked_ok_at"))
     return elapsed is None or elapsed >= interval_days * 86400
 
 
@@ -414,6 +533,7 @@ def _update_one(target, config, state, session, dry_run, force, logger, today=No
 
     if not effective_force and release == target_state.get("current_release"):
         target_state["last_error"] = None
+        target_state["last_checked_ok_at"] = now
         return {"target": target, "action": "skipped_up_to_date", "release": release}
 
     year, month = (int(p) for p in release.split("-"))
@@ -440,6 +560,7 @@ def _update_one(target, config, state, session, dry_run, force, logger, today=No
 
     target_state["current_release"] = release
     target_state["last_success_at"] = now
+    target_state["last_checked_ok_at"] = now
     logger(f"GeoIP updater [{target}]: updated to release {release} ({rows} rows)")
     return {"target": target, "action": "updated", "release": release, "rows": rows}
 
@@ -542,10 +663,18 @@ def main(argv=None):
 
     if args.status:
         state = load_state(config.state_path)
-        report = {"auto_update_enabled": is_auto_update_enabled(), "interval_days": config.interval_days}
+        report = {
+            "auto_update_enabled": is_auto_update_enabled(),
+            "interval_days": config.interval_days,
+            "schedule": {
+                "hour": config.auto_update_hour,
+                "minute": config.auto_update_minute,
+                "timezone": config.auto_update_timezone,
+            },
+        }
         for target in _STATE_TARGETS:
             entry = dict(state[target])
-            entry["next_check_at"] = next_check_iso(entry.get("last_checked_at"), config.interval_days)
+            entry["next_check_at"] = next_check_iso(entry.get("last_checked_ok_at"), config.interval_days)
             report[target] = entry
         print(json.dumps(report, indent=2, sort_keys=True))
         return 0

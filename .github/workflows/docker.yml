@@ -155,6 +155,49 @@ jobs:
           docker rm -f dns-inspector-ci
           exit 1
 
+      # Issue #44: on a fresh deployment (empty /data, so no
+      # geoip_update_state.json) the automatic GeoIP updater must never
+      # perform a network/download pass at startup -- it only wakes at its
+      # daily scheduled window (default 03:00). A container never mounts a
+      # volume here, so /data starts genuinely empty on every run, exactly
+      # like a brand-new install. This reuses the image already built above.
+      - name: Verify GeoIP auto-update does not block startup on a fresh /data
+        run: |
+          set -e
+          docker run -d --name dns-inspector-geoip-ci -p 8080:8080 \
+            -e DB_PATH=/data/inspector.db \
+            -e TRACKERDB_URL=http://127.0.0.1:9/trackerdb.sql \
+            -e GEOIP_AUTO_UPDATE=true \
+            dns-inspector:ci
+          healthy=0
+          for i in $(seq 1 15); do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null; then
+              healthy=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "health check never succeeded with a fresh /data + GEOIP_AUTO_UPDATE=true"
+            docker logs dns-inspector-geoip-ci
+            docker rm -f dns-inspector-geoip-ci
+            exit 1
+          fi
+          echo "health check passed within 15s of starting with an empty GeoIP state"
+          logs="$(docker logs dns-inspector-geoip-ci 2>&1)"
+          if echo "$logs" | grep -q "GeoIP auto-update: starting scheduled check/update pass"; then
+            echo "the GeoIP auto-updater ran a check/update pass during startup -- it must only run at its scheduled window, never at process startup"
+            docker rm -f dns-inspector-geoip-ci
+            exit 1
+          fi
+          if ! echo "$logs" | grep -q "GeoIP auto-update: scheduled for"; then
+            echo "the GeoIP auto-update worker never logged its schedule -- it may not be wired up"
+            docker rm -f dns-inspector-geoip-ci
+            exit 1
+          fi
+          echo "confirmed: no GeoIP check/update pass ran at startup, and the worker logged its next scheduled window"
+          docker rm -f dns-inspector-geoip-ci
+
       - name: Package source archive and create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         env:

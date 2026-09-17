@@ -146,26 +146,35 @@ GEOIP_MAP_DESTINATION_POINTS_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DESTINATIO
 # background worker can never drift out of sync with each other.
 GEOIP_AUTO_UPDATE = geoip_updater.is_auto_update_enabled()
 _GEOIP_UPDATE_CONFIG = geoip_updater.build_config_from_env()
-# How often the background worker *wakes up to check* whether an update is
-# due -- independent of GEOIP_UPDATE_INTERVAL_DAYS (how often an update
-# actually happens). Waking up hourly keeps the "due" check (a cheap local
-# state-file read, no network) responsive to a changed interval/forced state
-# without needing a restart, while the real network probe only ever happens
-# once the configured interval has actually elapsed.
-GEOIP_AUTO_UPDATE_POLL_SECONDS = max(60, int(os.getenv("GEOIP_AUTO_UPDATE_POLL_SECONDS", "3600")))
+# Issue #44 / 0.8.5.7: the previous 0.8.5.5/0.8.5.6 worker woke up every
+# GEOIP_AUTO_UPDATE_POLL_SECONDS *and ran its first check/update pass
+# immediately at thread startup* -- on a fresh deployment with no state
+# file, that meant a multi-hundred-megabyte DB-IP Lite Country/City Lite
+# download and Python CSV conversion could start competing with the
+# application for network/CPU/disk before it ever finished becoming
+# healthy. The worker now never runs a pass at startup: it only wakes at
+# this daily local-time window (`geoip_updater.next_scheduled_run()`), and
+# `_is_check_due()`/GEOIP_UPDATE_INTERVAL_DAYS still independently decides
+# whether that wake actually turns into a real network check per target.
+GEOIP_AUTO_UPDATE_HOUR = max(0, min(23, int(os.getenv("GEOIP_AUTO_UPDATE_HOUR", "3"))))
+GEOIP_AUTO_UPDATE_MINUTE = max(0, min(59, int(os.getenv("GEOIP_AUTO_UPDATE_MINUTE", "0"))))
+GEOIP_AUTO_UPDATE_TIMEZONE_NAME = os.getenv("GEOIP_AUTO_UPDATE_TIMEZONE", "UTC")
 # Issue #43: a real-world run was observed with `in_progress=true` and both
 # targets' `last_checked_at=null` for several minutes with no success/error.
 # `geoip_updater.run_update()` now persists state incrementally per target
 # (see its own change log), but this is a second, independent safety net in
-# `geoip_auto_update_worker()` itself -- `run_update()` is bounded by its own
+# `_run_geoip_update_pass()` -- `run_update()` is bounded by its own
 # per-request connect/read timeouts, yet nothing previously bounded the
 # *whole* check/download/convert pass, so a run stuck on something those
 # per-request timeouts don't cover (e.g. a hung DNS resolution, an
 # unexpectedly slow decompress/convert of a huge file) could hold
-# `_geoip_update_in_progress` at `true` indefinitely. Once this many seconds
-# elapse the worker gives up waiting on that pass, records a timeout error
-# and clears the flag so the *next* poll can try again -- it deliberately
-# does not try to kill the stuck pass (see `geoip_auto_update_worker()`).
+# `_geoip_update_in_progress` at `true` indefinitely. Issue #44 / 0.8.5.7
+# additionally moved the actual check/update pass into a *subprocess*
+# (`_geoip_updater_cli_command()`), so once this many seconds elapse the
+# parent now actually terminates the hung child (`_terminate_geoip_subprocess()`)
+# instead of merely abandoning an in-process daemon thread it had no way to
+# stop -- either way, an explicit timeout error is recorded and the flag is
+# cleared so the *next* scheduled window can retry.
 GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS = max(60, int(os.getenv("GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS", "1800")))
 
 app = Flask(__name__)
@@ -185,6 +194,10 @@ enrichment_refreshing = set()
 # success/error). See `geoip_auto_update_worker()`.
 _geoip_update_lock = threading.Lock()
 _geoip_update_in_progress = False
+# In-memory only, set by `geoip_auto_update_worker()` each time it computes
+# the next daily window -- lets `/api/observability` distinguish "scheduled,
+# waiting for its window" from "in_progress" (Issue #44).
+_geoip_next_scheduled_run_at = None
 
 # Background AdGuard status refreshes are deliberately bounded.
 _status_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="agh-status")
@@ -4082,95 +4095,179 @@ def _geoip_update_diagnostics():
     """Operator-facing snapshot of the automatic updater's state, used by
     `/api/observability` -- the durable, per-target facts (last check,
     current release, last success/error) come straight from
-    `geoip_updater.load_state()`; `in_progress` is the in-memory-only flag
-    set around each `run_update()` call below."""
+    `geoip_updater.load_state()`; `in_progress`/`next_scheduled_run_at` are
+    in-memory-only, set by `_run_geoip_update_pass()`/`geoip_auto_update_worker()`.
+    `status` (Issue #44) gives a single at-a-glance value distinguishing
+    "disabled", "scheduled" (waiting for its next window) and "in_progress"
+    -- `in_progress` itself is guaranteed to clear again (see
+    `_run_geoip_update_pass()`'s `finally`), so it can never be stuck at
+    `true` forever."""
     state = geoip_updater.load_state(_GEOIP_UPDATE_CONFIG.state_path)
     targets = {}
     for target in ("country", "city"):
         entry = dict(state[target])
-        entry["next_check_at"] = geoip_updater.next_check_iso(entry.get("last_checked_at"), _GEOIP_UPDATE_CONFIG.interval_days)
+        entry["next_check_at"] = geoip_updater.next_check_iso(entry.get("last_checked_ok_at"), _GEOIP_UPDATE_CONFIG.interval_days)
         targets[target] = entry
+    status = "in_progress" if _geoip_update_in_progress else ("scheduled" if GEOIP_AUTO_UPDATE else "disabled")
     return {
         "auto_update_enabled": GEOIP_AUTO_UPDATE,
         "interval_days": _GEOIP_UPDATE_CONFIG.interval_days,
+        "schedule": {
+            "hour": GEOIP_AUTO_UPDATE_HOUR,
+            "minute": GEOIP_AUTO_UPDATE_MINUTE,
+            "timezone": GEOIP_AUTO_UPDATE_TIMEZONE_NAME,
+        },
+        "status": status,
         "in_progress": _geoip_update_in_progress,
+        "next_scheduled_run_at": _geoip_next_scheduled_run_at,
         **targets,
     }
 
 
-def _run_geoip_update_pass():
+def _geoip_updater_cli_command():
+    """The subprocess command `_run_geoip_update_pass()` runs for one
+    check/update pass (Issue #44). Isolating the heavy download/convert work
+    in a child process means a multi-hundred-thousand-row City Lite
+    conversion can never contend with Flask's own request-handling threads
+    for the GIL, and -- unlike the previous same-process daemon thread
+    (0.8.5.5/0.8.5.6), which the watchdog could time out but never actually
+    stop -- a child that hangs past the watchdog timeout can be terminated
+    outright (`_terminate_geoip_subprocess()`). This runs the exact same CLI
+    entry point (`scripts/geoip_updater.py`) the manual one-shot workflow
+    already uses, so it reads the identical `GEOIP_*`/`GEOIP_UPDATE_*`
+    environment variables (inherited automatically -- this is a plain
+    subprocess, not a shell) via `geoip_updater.build_config_from_env()`;
+    there is no second, drifting configuration path."""
+    return [sys.executable, os.path.join(BASE_DIR, "scripts", "geoip_updater.py")]
+
+
+def _terminate_geoip_subprocess(proc):
+    """Best-effort clean shutdown of a hung updater child: SIGTERM, then
+    SIGKILL if it hasn't exited after a short grace period. Always reaps the
+    process (via `communicate()`) afterwards so it never becomes a zombie."""
+    try:
+        proc.terminate()
+        proc.communicate(timeout=10)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except Exception:
+        return
+    try:
+        proc.kill()
+        proc.communicate(timeout=5)
+    except Exception:
+        pass
+
+
+def _run_geoip_update_pass(command=None, timeout=None):
     """Run exactly one watchdog-guarded check/update pass and update
     `_geoip_update_in_progress` accordingly. Split out from
-    `geoip_auto_update_worker()`'s infinite loop so a single pass is directly
-    callable from tests (Issue #43) without looping forever.
+    `geoip_auto_update_worker()`'s scheduling loop so a single pass is
+    directly callable from tests (Issue #43) without looping or sleeping.
 
-    The actual `geoip_updater.run_update()` call runs in its own daemon
-    thread so this can enforce `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS` as a
-    whole-pass deadline via `Thread.join(timeout)` -- `run_update()`'s own
-    per-request connect/read timeouts bound each individual network call,
-    but nothing previously bounded the *entire* pass, and a real deployment
-    was observed with `in_progress=true` and both targets' `last_checked_at`
-    stuck at `null` for several minutes. If the deadline is hit, the run
-    thread is left to finish on its own (daemon, so it never blocks process
-    exit) while this returns immediately, records an explicit timeout error
-    via `geoip_updater.mark_stuck_checks_as_timed_out()`, and clears
-    `_geoip_update_in_progress` so the next poll can try again.
+    Issue #44: the actual check/download/convert work now runs in a
+    subprocess (`_geoip_updater_cli_command()`) rather than an in-process
+    daemon thread, so `GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS` is enforced via
+    `Popen.communicate(timeout=...)` and a hung child is actually killed
+    (`_terminate_geoip_subprocess()`) -- the parent Flask process can never
+    be starved by a stuck decompress/convert, and no leaked thread
+    accumulates inside it across repeated timeouts. `command`/`timeout` are
+    overridable so tests can exercise a deliberately hanging or failing
+    child without a real network-backed run.
     """
     global _geoip_update_in_progress
+    command = list(command) if command is not None else _geoip_updater_cli_command()
+    if timeout is None:
+        timeout = GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS
     with _geoip_update_lock:
         _geoip_update_in_progress = True
-    outcome = {}
-
-    def _run():
-        try:
-            outcome["results"] = geoip_updater.run_update(_GEOIP_UPDATE_CONFIG, logger=lambda msg: print(msg, flush=True))
-        except Exception as e:
-            outcome["error"] = e
-
-    run_thread = threading.Thread(target=_run, daemon=True, name="geoip-auto-update-run")
-    run_thread.start()
-    run_thread.join(GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS)
+    print("GeoIP auto-update: starting scheduled check/update pass", flush=True)
+    before_state = geoip_updater.load_state(_GEOIP_UPDATE_CONFIG.state_path)
     try:
-        if run_thread.is_alive():
-            print(
-                f"GeoIP auto-update error: check/update pass exceeded "
-                f"GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS={GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS}s -- "
-                f"giving up on this pass, will retry next poll", flush=True,
+        try:
+            proc = subprocess.Popen(
+                command, cwd=BASE_DIR, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
             )
+        except OSError as e:
+            print(f"GeoIP auto-update error: failed to launch updater subprocess: {e}", flush=True)
+            return
+        try:
+            stdout, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print(
+                f"GeoIP auto-update error: child pid={proc.pid} exceeded "
+                f"GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS={timeout}s -- terminating it so the "
+                f"parent stays healthy; will retry at the next scheduled window", flush=True,
+            )
+            _terminate_geoip_subprocess(proc)
             geoip_updater.mark_stuck_checks_as_timed_out(_GEOIP_UPDATE_CONFIG.state_path)
-        elif "error" in outcome:
-            print(f"GeoIP auto-update error: {outcome['error']!r}", flush=True)
-        else:
-            results = outcome.get("results", [])
-            if any(r["action"] == "updated" for r in results):
-                _reload_geoip_providers()
+            return
+        for line in (stdout or "").splitlines():
+            print(f"GeoIP auto-update: {line}", flush=True)
+        if proc.returncode != 0:
+            print(f"GeoIP auto-update: child exited with status {proc.returncode}", flush=True)
+        print("GeoIP auto-update: scheduled check/update pass complete", flush=True)
+        after_state = geoip_updater.load_state(_GEOIP_UPDATE_CONFIG.state_path)
+        if any(
+            after_state[t].get("current_release") != before_state[t].get("current_release")
+            for t in ("country", "city")
+        ):
+            _reload_geoip_providers()
     finally:
         with _geoip_update_lock:
             _geoip_update_in_progress = False
 
 
-def geoip_auto_update_worker():
-    """Background worker (Issue #42 / 0.8.5.5): periodically checks DB-IP
-    Lite for a newer monthly release and, if one is found and validated,
-    atomically replaces the active database and reloads the in-process
-    providers -- see `_run_geoip_update_pass()` for a single watchdog-guarded
-    pass and `_reload_geoip_providers()` for the hot-reload. Runs entirely in
-    its own daemon thread: a large City Lite download/conversion never
-    blocks DNS ingestion or request handling, and `geoip_updater`'s own
-    atomicity guarantees mean a failed check never disturbs the database
-    currently in use.
+def _geoip_sleep(seconds):
+    """Thin wrapper around `time.sleep` so tests can intercept the
+    scheduler's wait for the next window without a real multi-hour sleep."""
+    time.sleep(seconds)
 
-    Wakes up every `GEOIP_AUTO_UPDATE_POLL_SECONDS` to re-evaluate whether an
-    update is due (a cheap local state-file read); the actual network check
-    against DB-IP only happens once `GEOIP_UPDATE_INTERVAL_DAYS` has elapsed
-    per target (see `geoip_updater._is_check_due()`).
+
+def geoip_auto_update_worker():
+    """Background worker (Issue #42/0.8.5.5; rescheduled in Issue #44/0.8.5.7):
+    sleeps until the next configured daily maintenance window
+    (`GEOIP_AUTO_UPDATE_HOUR`:`GEOIP_AUTO_UPDATE_MINUTE` in
+    `GEOIP_AUTO_UPDATE_TIMEZONE`, default 03:00 UTC) and only then runs a
+    single watchdog-guarded check/update pass (`_run_geoip_update_pass()`).
+    It deliberately never runs a pass at thread startup -- a missing state
+    file must not mean "download now" -- so a fresh deployment's first-ever
+    DB-IP Lite Country/City Lite download (hundreds of megabytes, ~7.75M
+    City Lite rows) never competes with the application becoming healthy.
+
+    A real network check against DB-IP still only happens once
+    `GEOIP_UPDATE_INTERVAL_DAYS` (default 30) has elapsed since a target's
+    last non-error check (`geoip_updater._is_check_due()`); this schedule
+    only controls *when* that cheap, local, no-network gate gets
+    re-evaluated -- once a day, not hourly, and with no network polling at
+    all in between.
     """
+    global _geoip_next_scheduled_run_at
     if not GEOIP_AUTO_UPDATE:
         print("GeoIP auto-update: disabled (GEOIP_AUTO_UPDATE=false). Enable it or run scripts/geoip_updater.py manually. See docs/GEOIP.md.", flush=True)
         return
+    tz, tz_warning = geoip_updater.resolve_auto_update_timezone(GEOIP_AUTO_UPDATE_TIMEZONE_NAME)
+    if tz_warning:
+        print(f"GeoIP auto-update: {tz_warning}", flush=True)
+    print(
+        f"GeoIP auto-update: scheduled for {GEOIP_AUTO_UPDATE_HOUR:02d}:{GEOIP_AUTO_UPDATE_MINUTE:02d} "
+        f"{GEOIP_AUTO_UPDATE_TIMEZONE_NAME} daily -- a real DB-IP check only happens per target once "
+        f"GEOIP_UPDATE_INTERVAL_DAYS={_GEOIP_UPDATE_CONFIG.interval_days} have elapsed since its last "
+        f"non-error check.", flush=True,
+    )
     while True:
+        now = datetime.now(tz)
+        next_run = geoip_updater.next_scheduled_run(now, GEOIP_AUTO_UPDATE_HOUR, GEOIP_AUTO_UPDATE_MINUTE)
+        sleep_seconds = max(0.0, (next_run - now).total_seconds())
+        with _geoip_update_lock:
+            _geoip_next_scheduled_run_at = next_run.isoformat()
+        print(
+            f"GeoIP auto-update: next scheduled window at {next_run.isoformat()} "
+            f"(sleeping ~{sleep_seconds:.0f}s)", flush=True,
+        )
+        _geoip_sleep(sleep_seconds)
         _run_geoip_update_pass()
-        time.sleep(GEOIP_AUTO_UPDATE_POLL_SECONDS)
 
 
 # GeoIP diagnostic state machine (Issue #39 / 0.8.5.4): a single map-payload
