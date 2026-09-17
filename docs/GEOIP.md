@@ -275,6 +275,62 @@ export, so they stay a plain sorted list, matching the existing country
 provider's approach. Lookup is the same `bisect` binary search the country
 provider uses.
 
+### Memory footprint and the container RSS regression (Issue #45)
+
+A real DEV deployment observed container RSS reach ~1.4 GiB, then ~2.687 GiB,
+then ~3.26 GiB across successive checks after the GeoIP-backed map became
+populated -- growth that kept happening across observations, not a single
+one-time jump. Investigation (static code review; this environment could not
+execute the benchmark below or reach the live container, see the Issue #45
+PR discussion) found the runtime representations above already reasonably
+compact, but identified real contributors to the *reported RSS not settling
+back down*:
+
+- **Parse-time allocator high-water-mark.** Loading (or hot-reloading) a
+  real multi-million-row database means millions of short-lived
+  `ipaddress.ip_address()` objects, CSV row lists, and (for the city
+  provider) an intermediate `v4_rows` list are all created and discarded
+  before settling into the compact representation above. glibc's arena
+  allocator does not always hand that freed space back to the OS on its own,
+  so process RSS can stay at the transient parse-time peak indefinitely even
+  though nothing is still referenced -- this looks exactly like a stepped
+  RSS increase after every load/reload. `_release_memory_to_os()` (`app.py`)
+  runs `gc.collect()` plus a best-effort glibc `malloc_trim(3)` call after
+  every provider load and after `_reload_geoip_providers()`'s swap (once the
+  *old* provider is actually unreferenced, since a load's own trim call runs
+  before that point and can only reclaim its own parse garbage). This is a
+  no-op on non-glibc platforms; the shipped image (`python:3.12-slim`) is
+  glibc-based.
+- **Un-interned repeated strings.** `CsvRangeGeoIPProvider` (country) and
+  the IPv6 side of `CsvCityGeoIPProvider` previously allocated a fresh
+  `country_code`/`country_name`/`city` string per row even though a real
+  database repeats the same handful of values across tens of thousands of
+  ranges. Both now `sys.intern()` those strings at load time, so repeated
+  values share one object.
+- **`approx_bytes`.** Both provider classes now compute (once, at load
+  time) an approximate byte accounting of their own loaded range data,
+  exposed as `approx_bytes` alongside the existing `range_count` in
+  `/api/observability`'s `geoip`/`geoip_city` fields. This lets an operator
+  compare GeoIP's own reported data size directly against real container
+  RSS, instead of guessing whether GeoIP is the dominant consumer.
+
+`scripts/benchmark_geoip_memory.py` reproduces this workload end-to-end
+against synthetic (no network/no real DB-IP export needed) country/city
+CSVs at a configurable scale, reporting RSS and `approx_bytes` at each
+stage (load, repeated lookups, repeated hot-reloads):
+
+```bash
+python scripts/benchmark_geoip_memory.py --scale large --reloads 3
+```
+
+For confirming the actual root cause against a real, already-affected
+deployment, `/debug/bundle` (Settings > Diagnostics, or `GET /debug/bundle`)
+already produces a `memory-deep.json` with glibc `mallinfo2` stats (the gap
+between `arena` and `uordblks` is exactly allocator fragmentation), a
+Python object type census, and `tracemalloc` top-allocation tracebacks --
+the most direct way to attribute real container RSS to a specific
+structure/call site without guessing.
+
 ### MaxMind for Destinations mode
 
 The same caution from "Building a database from another source" above

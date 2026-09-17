@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.6` (the `VERSION` file
+- Foundation version: `0.8.0`, current release: `0.8.5.7` (the `VERSION` file
   is authoritative; a prior hand-off left this line reading `0.8.6` after the
   `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
   "fix: keep map visual build in 0.8.5.x series" commit -- without this line
@@ -211,6 +211,47 @@ independent of `geoip_updater`'s own per-request timeouts; on timeout, a new
 `geoip_updater.mark_stuck_checks_as_timed_out()` records an explicit error
 for whichever target never recorded its own outcome and `in_progress` is
 cleared so the next poll can retry.
+
+0.8.5.7 (Issue #45) investigates and mitigates the container RSS growth
+reported against a real TrueNAS DEV deployment running 0.8.5.5/0.8.5.6:
+~1.4 GiB, then ~2.687 GiB, then ~3.26 GiB across successive observations
+after the GeoIP-backed destination map became populated, with no sign of
+settling back down. **This implementation's sandboxed build environment
+could not execute Python (`python3`/`pytest` were both rejected by the Bash
+tool as requiring approval unavailable in this headless run) and had no
+access to the live deployment** -- the analysis and changes below come from
+static review of the actual provider/cache/reload implementation (already
+fairly disciplined: bounded FIFO lookup caches, a single overwritten not
+accumulating map-payload cache, an atomic hot-reload, and the City provider
+already using `array.array` + interned strings since 0.8.6), not a confirmed
+before/after RSS measurement; the new `scripts/benchmark_geoip_memory.py`
+and `/debug/bundle`'s pre-existing `mallinfo2`/`tracemalloc` deep-memory
+diagnostics are how that confirmation should happen next, ideally against
+the real container. Two concrete, code-provable contributors were addressed:
+a new `_release_memory_to_os()` (`app.py`) runs `gc.collect()` plus a
+best-effort glibc `malloc_trim(3)` after every GeoIP provider load and after
+`_reload_geoip_providers()`'s swap, because loading a real multi-million-row
+database creates and discards millions of short-lived `ipaddress`/CSV-row
+objects that glibc's arena allocator does not always hand back to the OS on
+its own -- this reads as RSS stepping up after every load/reload and staying
+there, matching the reported symptom, even though nothing is actually still
+referenced (no-op on non-glibc platforms; the shipped image is glibc-based);
+and `CsvRangeGeoIPProvider` (country) plus the IPv6 side of
+`CsvCityGeoIPProvider` now `sys.intern()` their repeated country/city
+strings at load time instead of allocating a fresh one per row, matching
+what the city provider's IPv4 side already did via its index-table design.
+Both provider classes also gain `approx_bytes`, an approximate one-time byte
+accounting of their own loaded range data exposed alongside the existing
+`range_count` in `/api/observability`'s `geoip`/`geoip_city` fields, so an
+operator can compare GeoIP's own reported data size directly against real
+container RSS; it falls back to `0` for any duck-typed provider (several
+pre-existing test doubles included) that doesn't implement the new surface.
+`geoip_map_payload()` and its caches were reviewed and found already
+correctly bounded (`GEOIP_MAP_CACHE_SECONDS`, `GEOIP_MAP_DOMAIN_LIMIT`,
+`GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT`,
+`GEOIP_MAP_DESTINATION_POINTS_LIMIT`) -- no change was made there. See
+docs/GEOIP.md's new "Memory footprint and the container RSS regression"
+section for the full writeup.
 
 ## How to update this file
 

@@ -2,6 +2,62 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.7]
+
+GeoIP/map memory investigation and mitigation for the real-deployment
+container RSS growth reported against 0.8.5.5/0.8.5.6 (Issue #45): ~1.4 GiB,
+then ~2.687 GiB, then ~3.26 GiB across successive observations after the
+GeoIP-backed destination map became populated, with no sign of settling back
+down. **This environment could not execute the new benchmark/test suite or
+reach the live deployment** (see the Issue #45 PR discussion) -- the changes
+below are evidence-based from static review of the actual provider/cache/
+reload implementation, not a confirmed before/after measurement against the
+real container; `/debug/bundle`'s existing `mallinfo2`/`tracemalloc`
+diagnostics and the new `scripts/benchmark_geoip_memory.py` are how that
+should be confirmed next.
+
+- **`_release_memory_to_os()`:** a new best-effort helper (`app.py`) that
+  runs `gc.collect()` plus glibc's `malloc_trim(3)` after every GeoIP
+  provider load and after `_reload_geoip_providers()`'s hot-reload swap.
+  Loading a real multi-million-row database creates and discards millions
+  of short-lived `ipaddress`/CSV-row objects before settling into the much
+  smaller final representation; glibc's arena allocator does not always
+  return that freed space to the OS on its own, so reported container RSS
+  can stay at the transient parse-time peak indefinitely -- this reads as a
+  stepped RSS increase after every load/reload rather than a real leak. A
+  no-op on non-glibc platforms; the shipped image is glibc-based.
+- **String interning:** `CsvRangeGeoIPProvider` (country) and the IPv6 side
+  of `CsvCityGeoIPProvider` now `sys.intern()` their `country_code`/
+  `country_name`/`city` strings at load time, so the same repeated value
+  across many ranges shares one string object instead of a fresh allocation
+  per row (the IPv4 side of the city provider already interned via its
+  index-table design).
+- **`approx_bytes`:** both provider classes now compute an approximate byte
+  accounting of their own loaded range data once at load time, exposed
+  alongside the existing `range_count` in `/api/observability`'s `geoip`/
+  `geoip_city` fields -- lets an operator compare GeoIP's own reported data
+  size directly against real container RSS. Falls back to `0` for any
+  duck-typed provider (including several pre-existing test doubles) that
+  doesn't implement the new surface, rather than raising.
+- **`scripts/benchmark_geoip_memory.py`:** a new reproducible diagnostic
+  that builds synthetic country/city CSVs at a configurable scale (no
+  network access or real DB-IP export required) and reports RSS/
+  `approx_bytes` before load, after country load, after city load, after
+  repeated lookup passes (simulating Analytics-tab polling), and after
+  repeated hot-reloads (simulating GeoIP auto-updates) -- run it with
+  `python scripts/benchmark_geoip_memory.py --scale large --reloads 3`.
+- **`tests/test_geoip_memory_lifecycle.py`:** new coverage for
+  `approx_bytes` accounting, string interning (object-identity assertions),
+  `_release_memory_to_os()` safety (including when `malloc_trim`/`libc` are
+  unavailable), and the hot-reload lifecycle actually releasing the
+  previous provider (`weakref` + `gc.collect()`), plus a regression guard
+  that repeated reloads of an unchanged database settle at the same
+  `approx_bytes` rather than accumulating.
+- See docs/GEOIP.md's new "Memory footprint and the container RSS
+  regression" section for the full investigation writeup, including what
+  `/debug/bundle`'s existing `mallinfo2`/`tracemalloc` diagnostics already
+  offer for confirming this against a real deployment.
+
 ## [0.8.5.6]
 
 Dashboard widget layout fix, a functional restart control, and a GeoIP

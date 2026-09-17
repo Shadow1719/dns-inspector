@@ -3685,6 +3685,52 @@ COUNTRY_CENTROIDS = {
 }
 
 
+def _approx_container_bytes(rows):
+    """Cheap, approximate (not exact -- shared/interned objects can be
+    double-counted) shallow-plus-one-level `sys.getsizeof` estimate of a
+    list of small tuples, used once at provider load time (Issue #45) to
+    report roughly how many bytes a provider's Python-object-based storage
+    (the plain-tuple IPv6 list, or the whole list for the country provider)
+    actually costs -- so an operator comparing this against real container
+    RSS can tell whether GeoIP's own data is the dominant consumer or not,
+    instead of guessing."""
+    total = sys.getsizeof(rows)
+    for row in rows:
+        total += sys.getsizeof(row)
+        for item in row:
+            total += sys.getsizeof(item)
+    return total
+
+
+def _release_memory_to_os():
+    """Best-effort: ask glibc to return freed heap arenas back to the OS via
+    `malloc_trim(3)` (Issue #45). Loading or reloading a GeoIP provider
+    parses millions of short-lived CSV rows / `ipaddress` objects before
+    settling into a much smaller final representation (see
+    `CsvCityGeoIPProvider`/`CsvRangeGeoIPProvider` below); glibc's arena
+    allocator does not always hand that freed space back to the OS on its
+    own once the transient parse garbage is collected, so container RSS can
+    stay at the peak parse-time high-water-mark indefinitely even though
+    nothing is still referenced. That shows up as container RSS stepping up
+    after every load/reload rather than settling back down -- exactly what
+    was reported against the real deployment. This is a no-op (never
+    raises) on non-glibc platforms (e.g. Alpine/musl) or when unavailable;
+    the container image is `python:3.12-slim` (Debian/glibc), so it is
+    expected to actually run there."""
+    gc.collect()
+    try:
+        import ctypes
+        import ctypes.util
+        libc_path = ctypes.util.find_library("c")
+        if not libc_path:
+            return
+        libc = ctypes.CDLL(libc_path)
+        if hasattr(libc, "malloc_trim"):
+            libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
 class GeoIPProvider:
     """Abstraction over a local/offline IP -> country lookup source, so the
     backing database can be swapped later without touching call sites."""
@@ -3706,6 +3752,16 @@ class GeoIPProvider:
     def path(self):
         """Configured backing file path, when the provider has one."""
         return None
+
+    @property
+    def approx_bytes(self):
+        """Approximate resident bytes of this provider's own loaded range
+        data (Issue #45), computed once at load time. Not exact for a
+        plain-Python-object representation (interned/shared objects can be
+        double-counted), but load-bearing enough to tell an operator whether
+        GeoIP's own data is the dominant consumer of reported container
+        memory growth."""
+        return 0
 
 
 class NullGeoIPProvider(GeoIPProvider):
@@ -3734,6 +3790,7 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
         self._v4_starts = []  # r[0] for each entry in self._v4, precomputed for bisect
         self._v6_starts = []
         self._loaded = False
+        self._approx_bytes = 0
         self._load()
 
     def _load(self):
@@ -3753,7 +3810,13 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
                     if start_addr.version != end_addr.version or not code:
                         continue
                     bucket = self._v4 if start_addr.version == 4 else self._v6
-                    bucket.append((int(start_addr), int(end_addr), code, name or code))
+                    # `sys.intern()` (Issue #45): a country CSV is overwhelmingly
+                    # repeated `code`/`name` values (every US range shares the
+                    # same two strings) -- interning means every row with the
+                    # same country shares one string object instead of a fresh
+                    # small-string allocation per row, at essentially zero cost
+                    # since interning is itself a dict lookup.
+                    bucket.append((int(start_addr), int(end_addr), sys.intern(code), sys.intern(name or code)))
             self._v4.sort(key=lambda r: r[0])
             self._v6.sort(key=lambda r: r[0])
             # Precomputed once at load time so `lookup()` can bisect directly
@@ -3761,8 +3824,14 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
             self._v4_starts = [r[0] for r in self._v4]
             self._v6_starts = [r[0] for r in self._v6]
             self._loaded = bool(self._v4 or self._v6)
+            self._approx_bytes = _approx_container_bytes(self._v4) + _approx_container_bytes(self._v6)
         except (OSError, csv.Error):
             self._loaded = False
+        finally:
+            # A load/reload parses every row through `ipaddress.ip_address()`
+            # -- millions of short-lived objects for a real database -- before
+            # settling into the much smaller table above (Issue #45).
+            _release_memory_to_os()
 
     @property
     def available(self):
@@ -3775,6 +3844,10 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
     @property
     def path(self):
         return self._path
+
+    @property
+    def approx_bytes(self):
+        return self._approx_bytes if self._loaded else 0
 
     def lookup(self, ip):
         try:
@@ -3821,6 +3894,11 @@ class CityGeoIPProvider:
     @property
     def path(self):
         return None
+
+    @property
+    def approx_bytes(self):
+        """See `GeoIPProvider.approx_bytes` (Issue #45)."""
+        return 0
 
 
 class NullCityGeoIPProvider(CityGeoIPProvider):
@@ -3876,6 +3954,7 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
         self._country_index = {}
         self._city_index = {}
         self._loaded = False
+        self._approx_bytes = 0
         self._load()
 
     def _intern_country(self, code, name):
@@ -3925,7 +4004,11 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
                     if start_addr.version == 4:
                         v4_rows.append((int(start_addr), int(end_addr), country_idx, city_idx, lat, lon))
                     else:
-                        self._v6.append((int(start_addr), int(end_addr), code, name or code, city, lat, lon))
+                        # `sys.intern()` (Issue #45): IPv6 rows keep the plain-
+                        # tuple representation (see the class docstring), but
+                        # still don't need a fresh string object per row for
+                        # values that repeat across many ranges.
+                        self._v6.append((int(start_addr), int(end_addr), sys.intern(code), sys.intern(name or code), sys.intern(city), lat, lon))
             v4_rows.sort(key=lambda r: r[0])
             for start, end, country_idx, city_idx, lat, lon in v4_rows:
                 self._v4_start.append(start)
@@ -3934,11 +4017,33 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
                 self._v4_city_idx.append(city_idx)
                 self._v4_lat.append(lat)
                 self._v4_lon.append(lon)
+            # `v4_rows` (a plain Python list of millions of tuples, for a real
+            # city database) has now been fully copied into the compact
+            # `array.array` columns above and is never used again -- drop the
+            # reference now rather than letting it stay live until `_load()`
+            # returns, so it's eligible for collection before the
+            # `_release_memory_to_os()` call below (Issue #45).
+            del v4_rows
             self._v6.sort(key=lambda r: r[0])
             self._v6_starts = [r[0] for r in self._v6]
             self._loaded = bool(len(self._v4_start) or self._v6)
+            self._approx_bytes = (
+                len(self._v4_start) * self._v4_start.itemsize
+                + len(self._v4_end) * self._v4_end.itemsize
+                + len(self._v4_lat) * self._v4_lat.itemsize
+                + len(self._v4_lon) * self._v4_lon.itemsize
+                + len(self._v4_country_idx) * self._v4_country_idx.itemsize
+                + len(self._v4_city_idx) * self._v4_city_idx.itemsize
+                + _approx_container_bytes(self._v6)
+                + sys.getsizeof(self._countries) + sys.getsizeof(self._cities)
+            )
         except (OSError, csv.Error):
             self._loaded = False
+        finally:
+            # See `CsvRangeGeoIPProvider._load()` -- a real city database is
+            # several million rows of parse-time garbage before settling into
+            # the representation above (Issue #45).
+            _release_memory_to_os()
 
     @property
     def available(self):
@@ -3947,6 +4052,10 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
     @property
     def range_count(self):
         return len(self._v4_start) + len(self._v6)
+
+    @property
+    def approx_bytes(self):
+        return self._approx_bytes if self._loaded else 0
 
     @property
     def path(self):
@@ -4006,6 +4115,14 @@ def _geoip_diagnostics():
         "configured": configured,
         "db_path_basename": os.path.basename(path) if configured and path else None,
         "range_count": provider.range_count if configured else 0,
+        # Issue #45: approximate resident bytes of the provider's own loaded
+        # range data, so an operator can compare this against real container
+        # RSS instead of guessing whether GeoIP's own data is the dominant
+        # consumer. `getattr` with a default: `approx_bytes` is a new
+        # optional surface on the provider abstraction -- a duck-typed test
+        # double that predates it and doesn't implement it should still
+        # work, not raise.
+        "approx_bytes": getattr(provider, "approx_bytes", 0) if configured else 0,
     }
 
 
@@ -4021,6 +4138,7 @@ def _geoip_city_diagnostics():
         "configured": configured,
         "db_path_basename": os.path.basename(path) if configured and path else None,
         "range_count": provider.range_count if configured else 0,
+        "approx_bytes": getattr(provider, "approx_bytes", 0) if configured else 0,
     }
 
 
@@ -4075,6 +4193,15 @@ def _reload_geoip_providers():
         _geoip_city_provider = new_city
         _geoip_city_cache.clear()
         _geoip_city_cache_order.clear()
+    # The old providers are unreferenced as of the reassignments above, but
+    # each `new_*` provider's own `_load()` already ran `malloc_trim` *before*
+    # this swap, while the old provider was still alive -- that call could
+    # only reclaim that load's own parse-time garbage, not the now-dead old
+    # provider. Run it again now that the old provider is actually
+    # unreferenced, so a hot reload is the point where its memory is visibly
+    # returned to the OS rather than staying at the old+new combined
+    # high-water-mark (Issue #45).
+    _release_memory_to_os()
     _log_geoip_status()
 
 
