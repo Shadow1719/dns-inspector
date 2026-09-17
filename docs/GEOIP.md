@@ -266,14 +266,59 @@ has additional documentation of its own that should mention it too.
 A real city-level database can have several million IPv4 rows. Rather than
 loading that into a plain Python list of per-row tuples/strings,
 `CsvCityGeoIPProvider` (`app.py`) stores IPv4 ranges as parallel fixed-width
-`array.array` columns (8-byte integer start/end keys, 4-byte float
-latitude/longitude) plus small integer indices into interned country/city
-string tables -- the actual set of distinct country/city names in a real
-database is a few hundred to a few thousand, shared across millions of
-rows, not re-allocated per row. IPv6 ranges are far fewer in a real city
-export, so they stay a plain sorted list, matching the existing country
-provider's approach. Lookup is the same `bisect` binary search the country
-provider uses.
+`array.array` columns (4-byte integer start/end keys -- an IPv4 address
+always fits an unsigned 32-bit int -- and 4-byte float latitude/longitude)
+plus small integer indices into interned country/city string tables -- the
+actual set of distinct country/city names in a real database is a few
+hundred to a few thousand, shared across millions of rows, not re-allocated
+per row. IPv6 ranges are far fewer in a real city export, so they stay a
+plain sorted list, matching the existing country provider's approach (its
+`country_code`/`country_name`/`city` values are still interned the same
+way). Lookup is the same `bisect` binary search the country provider uses.
+
+**0.8.5.8 (Issue #45):** fixes a real TrueNAS deployment reporting steady-
+state container memory climbing well past 1 GiB (observed up to ~5.77 GiB)
+once the GeoIP-backed map became populated. Code review found
+`CsvCityGeoIPProvider._load()` building a plain Python list of one 6-element
+tuple per CSV row (`v4_rows`) before sorting and copying it into the packed
+columns above -- for a multi-million-row City Lite import, that *temporary*
+list, not the final packed columns, was the single largest transient
+allocation in the process, and CPython/glibc do not reliably return memory
+freed across many small pymalloc-arena allocations back to the OS, matching
+an "it loaded fine but RSS never came back down" symptom. `_load()` (for
+both `CsvCityGeoIPProvider` and `CsvRangeGeoIPProvider`) now streams parsed
+rows directly into the final columns, verifying while streaming that input
+arrived in the non-decreasing start-address order every real DB-IP export
+already uses; a cheap index-permutation reorder is used as a fallback only
+if genuinely out-of-order input is detected, so nothing bigger than the
+final arrays is ever materialized in the common case. `_v4_start`/`_v4_end`
+also narrowed from 8-byte (`array('Q')`) to 4-byte (`array('I')`) integers,
+and `CsvRangeGeoIPProvider` -- the country database, which never had the
+0.8.6 city provider's interning applied to it -- now interns
+`country_code`/`country_name` (`sys.intern`) the same way, so a
+250-thousand-plus-row Country Lite export shares one string object per
+distinct code/name instead of allocating a fresh pair per row. A new
+`_malloc_trim()` helper (glibc `malloc_trim(0)` via `ctypes`, best-effort and
+a no-op off glibc) runs after every provider load and after
+`_reload_geoip_providers()`'s hot-reload swap, since freeing Python objects
+and shrinking the process's *resident* memory are not the same thing without
+it -- this is the direct fix for the "loaded fine but RSS never came back
+down" pattern, independent of how compact the representation is.
+`scripts/geoip_memory_benchmark.py` is a new standalone diagnostic
+(deliberately imports `app.py`, unlike `scripts/verify_geoip.py`, because it
+has to measure the real production provider classes) that generates a
+configurable-size synthetic City-Lite-shaped CSV and reports RSS at each
+stage -- baseline, after load, after `gc.collect()`, after `malloc_trim`,
+after a lookup-latency batch, and after a simulated hot-reload -- plus
+per-lookup latency, so a before/after comparison against this fix (or a
+future change) produces an actual number instead of a guess. This
+implementation's sandbox could not execute Python (see the Issue #45 PR
+description), so these numbers still need to be measured for real, ideally
+against the actual TrueNAS deployment via both this script and the existing
+`GET /debug/bundle` deep memory snapshot's `glibc_mallinfo2`/`tracemalloc`/
+`python_object_types` fields (`_deep_debug_memory_snapshot()` in `app.py`),
+which were already in place before this fix and can directly confirm or
+refute the arena-retention explanation above.
 
 ### MaxMind for Destinations mode
 

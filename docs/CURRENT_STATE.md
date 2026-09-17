@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.7` (the `VERSION` file
+- Foundation version: `0.8.0`, current release: `0.8.5.8` (the `VERSION` file
   is authoritative; a prior hand-off left this line reading `0.8.6` after the
   `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
   "fix: keep map visual build in 0.8.5.x series" commit -- without this line
@@ -259,6 +259,35 @@ genuinely empty `/data`, assert `/health` responds within 15s, and grep the
 container's own logs for "scheduled for" without ever seeing "starting
 scheduled check/update pass") is recorded in the Issue #44 PR description
 for the repository owner to add by hand.
+
+0.8.5.8 (Issue #45) addresses real TrueNAS deployment evidence of container
+memory reaching ~1.4-5.77 GiB once the GeoIP-backed destination map became
+populated. Code review (this implementation's sandbox could not execute
+Python -- see the Issue #45 PR description) found `CsvCityGeoIPProvider.
+_load()` building a temporary plain-Python-list-of-tuples (`v4_rows`) for
+every CSV row before packing it into the documented `array.array` columns --
+for a multi-million-row City Lite import, that transient list, not the final
+packed representation, was almost certainly the dominant one-time
+allocation, and CPython/glibc do not reliably return memory freed across
+many small allocations back to the OS. `_load()` (both `CsvCityGeoIPProvider`
+and `CsvRangeGeoIPProvider`) now streams parsed rows directly into the final
+columns instead, with a cheap index-permutation reorder as a fallback only
+for genuinely out-of-order input; `_v4_start`/`_v4_end` narrowed from 8-byte
+to 4-byte packed integers; `CsvRangeGeoIPProvider` (the country database)
+now interns `country_code`/`country_name` the same way the 0.8.6 city
+provider already did, since it never had that applied to it. A new
+`_malloc_trim()` helper (glibc `malloc_trim(0)` via `ctypes`, best-effort)
+runs after every provider load and after `_reload_geoip_providers()`'s
+hot-reload swap, directly addressing "it loaded fine but RSS never came back
+down" independent of representation size. See `docs/GEOIP.md`'s "Runtime
+representation" section for the full writeup, and the new
+`scripts/geoip_memory_benchmark.py` (a standalone diagnostic that generates
+a synthetic City-Lite-shaped CSV and reports RSS at each load/reload/lookup
+stage) plus the pre-existing `GET /debug/bundle` deep memory snapshot
+(`glibc_mallinfo2`/`tracemalloc`/`python_object_types`) for how to actually
+measure this against a real deployment -- neither could be executed from
+this hand-off, so the before/after numbers this issue asks for still need to
+be captured by whoever can run them against the real TrueNAS container.
 
 ## How to update this file
 

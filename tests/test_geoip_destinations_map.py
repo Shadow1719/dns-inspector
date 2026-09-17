@@ -253,6 +253,24 @@ def test_csv_range_provider_precomputes_start_key_arrays_for_bisect(tmp_path, ap
     assert provider.lookup("203.0.113.10") == ("US", "United States")
 
 
+def test_csv_range_provider_interns_repeated_country_strings(tmp_path, app_module):
+    """A real Country Lite export repeats the same handful of country
+    codes/names across hundreds of thousands of rows (Issue #45): each row
+    must share one `country_code`/`country_name` string object rather than
+    allocating a fresh pair of strings per row."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "203.0.113.0,203.0.113.63,US,United States\n"
+        "203.0.113.64,203.0.113.127,us,United States\n"
+        "2001:db8::,2001:db8::ffff,US,United States\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    codes = [r[2] for r in provider._v4] + [r[2] for r in provider._v6]
+    names = [r[3] for r in provider._v4] + [r[3] for r in provider._v6]
+    assert all(c is codes[0] for c in codes)
+    assert all(n is names[0] for n in names)
+
+
 def test_geoip_lookup_is_cached_and_bounded(app_module, monkeypatch):
     calls = []
 

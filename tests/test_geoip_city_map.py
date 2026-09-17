@@ -220,6 +220,52 @@ def test_csv_city_provider_range_count_covers_both_families(tmp_path, app_module
     assert provider.range_count == 2
 
 
+def test_csv_city_provider_packs_ipv4_columns_into_4_byte_ints(tmp_path, app_module):
+    """Issue #45: an IPv4 address always fits an unsigned 32-bit int, so the
+    packed start/end columns must use a 4-byte array typecode (`'I'`), not
+    the previous 8-byte `'Q'` -- a real multi-million-row City Lite import
+    makes this a meaningful cut on the largest resident structure."""
+    csv_path = _write_city_csv(tmp_path, [
+        ["203.0.113.0", "203.0.113.255", "US", "United States", "Mountain View", "37.386", "-122.0838"],
+    ])
+    provider = app_module.CsvCityGeoIPProvider(str(csv_path))
+    assert provider._v4_start.itemsize == 4
+    assert provider._v4_end.itemsize == 4
+
+
+def test_csv_city_provider_sorts_out_of_order_ipv4_input(tmp_path, app_module):
+    """Real DB-IP exports are already sorted by start address, so `_load()`
+    streams straight into the final columns without ever building a
+    temporary list of row tuples (Issue #45) -- but a hand-edited/out-of-
+    order input must still end up correctly sorted and correctly looked up,
+    via the index-permutation fallback."""
+    csv_path = _write_city_csv(tmp_path, [
+        ["203.0.113.128", "203.0.113.191", "DE", "Germany", "Berlin", "52.52", "13.405"],
+        ["203.0.113.0", "203.0.113.63", "US", "United States", "Mountain View", "37.386", "-122.0838"],
+        ["203.0.113.64", "203.0.113.127", "FR", "France", "Paris", "48.8566", "2.3522"],
+    ])
+    provider = app_module.CsvCityGeoIPProvider(str(csv_path))
+    assert list(provider._v4_start) == sorted(provider._v4_start)
+    assert provider.lookup_city("203.0.113.10")["country_code"] == "US"
+    assert provider.lookup_city("203.0.113.70")["country_code"] == "FR"
+    assert provider.lookup_city("203.0.113.150")["country_code"] == "DE"
+
+
+def test_csv_city_provider_interns_v6_country_and_city_strings(tmp_path, app_module):
+    """The IPv6 path stays a plain list of tuples (far fewer real-world rows
+    than IPv4), but repeated `country_code`/`country_name`/`city` values must
+    still share one string object per distinct value (Issue #45)."""
+    csv_path = _write_city_csv(tmp_path, [
+        ["2001:db8::", "2001:db8::ffff", "DE", "Germany", "Berlin", "52.52", "13.405"],
+        ["2001:db8:1::", "2001:db8:1::ffff", "de", "Germany", "Berlin", "52.52", "13.405"],
+    ])
+    provider = app_module.CsvCityGeoIPProvider(str(csv_path))
+    assert len(provider._v6) == 2
+    assert provider._v6[0][2] is provider._v6[1][2]  # country_code
+    assert provider._v6[0][3] is provider._v6[1][3]  # country_name
+    assert provider._v6[0][4] is provider._v6[1][4]  # city
+
+
 # --- geoip_city_lookup(): local caching --------------------------------------
 
 

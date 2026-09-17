@@ -15,10 +15,12 @@ while still proving the parent's process-management (timeout, termination,
 output capture) against a genuine child process, not a mock.
 """
 
+import gc
 import importlib
 import os
 import sys
 import time
+import weakref
 
 import pytest
 
@@ -372,6 +374,35 @@ def test_reload_geoip_providers_swaps_the_provider_and_clears_the_cache(app_modu
     finally:
         app_module._geoip_provider = original_provider
         app_module._geoip_city_provider = original_city_provider
+        app_module._geoip_cache.clear()
+        app_module._geoip_cache_order.clear()
+        app_module._geoip_city_cache.clear()
+        app_module._geoip_city_cache_order.clear()
+
+
+def test_reload_geoip_providers_releases_the_previous_provider(app_module, monkeypatch, tmp_path):
+    """Issue #45 acceptance criterion: a hot reload must not leave the
+    previous provider/database resident. Once `_reload_geoip_providers()`
+    swaps the global reference and this test drops its own, nothing in
+    `app.py` may still hold the stale provider alive -- CPython's refcounting
+    (no reference cycle is involved here) must free it immediately, which a
+    dead `weakref` proves directly rather than inferring it from RSS."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text("203.0.113.0,203.0.113.255,US,United States\n")
+    monkeypatch.setattr(app_module, "GEOIP_DB_PATH", str(csv_path))
+    monkeypatch.setattr(app_module, "GEOIP_CITY_DB_PATH", str(tmp_path / "missing-city.csv"))
+
+    stale_provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    stale_ref = weakref.ref(stale_provider)
+    app_module._geoip_provider = stale_provider
+    del stale_provider
+    try:
+        app_module._reload_geoip_providers()
+        gc.collect()
+        assert stale_ref() is None, "previous GeoIP provider is still resident after a reload"
+    finally:
+        app_module._geoip_provider = app_module.NullGeoIPProvider()
+        app_module._geoip_city_provider = app_module.NullCityGeoIPProvider()
         app_module._geoip_cache.clear()
         app_module._geoip_cache_order.clear()
         app_module._geoip_city_cache.clear()
