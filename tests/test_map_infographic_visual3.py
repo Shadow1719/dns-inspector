@@ -102,9 +102,12 @@ def test_markers_are_keyboard_focusable_with_a_button_role(client):
 def test_markers_wire_both_click_and_enter_space_keydown_activation(client):
     """Click/tap is primary; Enter/Space must trigger the identical action,
     not a separate/weaker code path, per the issue's keyboard-access
-    requirement."""
+    requirement. Country markers now call the shared top-level
+    mapSelectCountry() (Issue #63, so a country-breakdown row can reuse the
+    exact same selection path) instead of a local activateCountry() closure;
+    destination clusters are unaffected and keep their own closure."""
     body = client.get("/").data.decode("utf-8")
-    assert "const activateCountry = (code) => {" in body
+    assert "mapSelectCountry(node.getAttribute('data-country'));" in body
     assert "const activateCluster = (key) => {" in body
     assert body.count("if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;") == 2
 

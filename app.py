@@ -595,15 +595,16 @@ html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:tra
    preferences: `mapBasemap` (Satellite Heat / Satellite Density / Real Map
    + Pins / Dark NOC -- structural rendering: background treatment plus how
    observed activity is drawn) and `mapTheme` (Indigo + Gold / Cyan / BEMO
-   Dark Accent -- color ramp/palette only). Every combination renders the
-   same offline dot-matrix world (see mapWorldDots() below, sampled from the
-   bundled WORLD_LAND_D vector rings) instead of one flat filled silhouette
-   -- there is no bundled satellite/street raster asset, so "Satellite"/
-   "Real Map" are stylistic approximations rather than literal imagery,
-   which keeps the map fully offline/self-contained. Bubble/particle size
-   and position are entirely data-driven and deterministic (seeded, never
-   Math.random()); only markers at/above a high intensity ratio pulse, and
-   only when motion isn't reduced. ---- */
+   Dark Accent -- color ramp/palette only). Satellite Heat/Density and Real
+   Map + Pins now attempt to load a real photographic/cartographic tile
+   image for their background (Issue #63; see MAP_TILE_PROVIDERS/
+   mapEnsureTileLayer() below); the bundled offline dot-matrix world (see
+   mapWorldDots() below, sampled from the bundled WORLD_LAND_D vector rings)
+   remains the graceful fallback whenever that image hasn't loaded (or
+   fails to), and is Dark NOC's permanent, intentionally-stylized
+   background. Bubble/particle size and position are entirely data-driven
+   and deterministic (seeded, never Math.random()); only markers at/above a
+   high intensity ratio pulse, and only when motion isn't reduced. ---- */
 .destination-map-wrap{
   position:relative;
   --map-bg-a:var(--surface-2); --map-bg-b:var(--surface-1);
@@ -647,8 +648,11 @@ html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:tra
 .destination-map-wrap[data-map-theme="indigo-gold"]{ --map-dot:#4c3f8a; --map-dot-opacity:.5; }
 .destination-map-wrap[data-map-theme="cyan"]{ --map-dot:#0f5a68; --map-dot-opacity:.55; }
 .destination-map-wrap[data-map-theme="bemo-accent"]{ --map-dot:#2a4a70; --map-dot-opacity:.5; }
-.destination-map-svg{width:100%;height:auto;aspect-ratio:2/1;background:radial-gradient(ellipse at 50% 40%,var(--map-bg-a),var(--map-bg-b));box-shadow:var(--map-vignette);border:1px solid var(--map-border);border-radius:var(--radius-md);cursor:grab}
+.destination-map-svg{position:relative;z-index:1;width:100%;height:auto;aspect-ratio:2/1;background:radial-gradient(ellipse at 50% 40%,var(--map-bg-a),var(--map-bg-b));box-shadow:var(--map-vignette);border:1px solid var(--map-border);border-radius:var(--radius-md);cursor:grab}
 .destination-map-svg.map-dragging{cursor:grabbing}
+/* Issue #63: once a real tile image is actually showing, let it show through
+   instead of the synthetic background gradient above. */
+.map-tiles-active .destination-map-svg{background:transparent}
 html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s ease}
 .map-world-dot{fill:var(--map-dot);opacity:var(--map-dot-opacity)}
 .map-world-dot-active{opacity:.95}
@@ -657,7 +661,16 @@ html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s
 .map-status-banner{position:absolute;top:10px;left:10px;right:10px;margin:0 auto;padding:8px 12px;background:var(--map-banner-bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:.8rem;text-align:center;pointer-events:none;box-shadow:var(--shadow-sm,0 1px 4px rgba(0,0,0,.15))}
 .map-status-banner .map-status-action{margin-top:6px;pointer-events:auto}
 .map-entity{cursor:pointer}
-.map-entity:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Issue #63: an SVG <g> gets the browser's default focus-visible outline
+   drawn as a rectangle around its whole bounding box (hit-area + spread-out
+   particles + pulse ring), not around the visible marker -- this is exactly
+   the "rectangular focus box around the circle/group" the issue reports.
+   The group itself is never outlined; keyboard focus and click-selection
+   both instead ring the real anchor circle (.map-bubble), same as
+   .map-bubble-selected below, so the highlighted marker is always the
+   marker the user actually sees. */
+.map-entity:focus-visible{outline:none}
+.map-entity:focus-visible .map-bubble{stroke:var(--accent);stroke-width:3;fill-opacity:1}
 .map-hit-area{fill:transparent;pointer-events:all}
 /* Issue #56: marker fill/stroke is set inline per-entity from
    mapThemeColor() (the same relative-to-max ratio that already sizes the
@@ -665,6 +678,7 @@ html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s
    be readable from color alone, independent of the chosen basemap/theme. */
 .map-bubble{fill-opacity:.85;stroke-width:1;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
 .map-entity:hover .map-bubble,.map-bubble-selected{fill-opacity:1;stroke-width:2}
+.map-bubble-selected{stroke:var(--accent)!important;stroke-width:3!important}
 .map-bubble-pulse-ring{fill:none;stroke:var(--accent);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none;display:var(--map-pulse-display)}
 html:not([data-motion="reduced"]) .map-bubble-pulse-ring{animation:dnsInspectorMapPulse 2.4s ease-out infinite}
 html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
@@ -707,6 +721,45 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .map-detail-close:hover{background:var(--surface-3);color:var(--text-primary)}
 .chip-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .chip{background:var(--surface-3);border:1px solid var(--border);border-radius:var(--radius-pill);padding:2px 8px;font-size:.72rem}
+/* Issue #63: country breakdown/ranking beside the map on desktop, below it
+   on narrower widgets -- same payload as the map itself (data.countries),
+   no second backend query. */
+.destination-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:12px;align-items:start}
+@media(max-width:900px){.destination-map-layout{grid-template-columns:minmax(0,1fr)}}
+.map-breakdown{display:flex;flex-direction:column;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.map-breakdown-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)}
+.map-breakdown-title{font-size:.78rem;font-weight:600;color:var(--text-primary)}
+.map-breakdown-sort-btn{padding:3px 8px;font-size:.72rem;border-radius:var(--radius-sm);background:var(--surface-3);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
+.map-breakdown-sort-btn:hover{background:var(--surface-1)}
+.map-breakdown-list{list-style:none;margin:0;padding:0;max-height:340px;overflow-y:auto}
+.map-breakdown-row{display:block;width:100%;text-align:left;padding:7px 10px;border:none;border-bottom:1px solid var(--border);background:transparent;color:var(--text-primary);cursor:pointer;font:inherit}
+.map-breakdown-row:last-child{border-bottom:none}
+.map-breakdown-row:hover{background:var(--surface-3)}
+.map-breakdown-row:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;background:var(--surface-3)}
+.map-breakdown-row.map-breakdown-row-selected{background:var(--surface-3);box-shadow:inset 3px 0 0 var(--accent)}
+.map-breakdown-row-top{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:.82rem;font-weight:600}
+.map-breakdown-row-metric{font-variant-numeric:tabular-nums;color:var(--text-secondary);font-weight:500}
+.map-breakdown-row-sub{margin-top:2px;font-size:.72rem;color:var(--text-secondary)}
+.map-breakdown-empty{padding:14px 10px;font-size:.78rem;color:var(--text-secondary)}
+/* Issue #63: real raster tile/imagery basemap layer, additive to and
+   independent of the always-available offline dot-matrix world -- see
+   mapEnsureTileLayer()/MAP_TILE_PROVIDERS in the script. Tiles sit behind
+   the existing SVG overlay (.destination-map-wrap is already
+   position:relative above; world dots stay hidden while a photographic/
+   cartographic basemap is actually showing, see .map-tiles-active) so
+   marker/particle placement is unchanged and traffic rendering always
+   reads as a layer drawn over the geography, never mixed into it. */
+.map-tile-layer{position:absolute;inset:0;z-index:0;overflow:hidden;border-radius:var(--radius-md);background:var(--map-bg-b)}
+/* object-fit:fill deliberately stretches/distorts the single square-ish
+   world tile to exactly match mapProjectMercator()'s independent x/y
+   scaling onto the non-square MAP_W x MAP_H canvas -- cover/contain would
+   preserve the image's own aspect ratio and silently break marker/tile
+   coordinate alignment. */
+.map-tile-layer img.map-tile{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;opacity:0;transition:opacity .25s ease}
+html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
+.map-tile-layer img.map-tile.map-tile-loaded{opacity:1}
+.map-tiles-active .map-world-dots{display:none}
+.map-tile-attribution{position:absolute;right:4px;bottom:2px;font-size:.62rem;padding:1px 5px;background:rgba(0,0,0,.55);color:#e7ecf3;border-radius:3px;pointer-events:none;z-index:2}
 
 /* ---- Dashboard Builder (0.8.5): customizable Analytics widget grid ---- */
 .dash-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0}
@@ -1216,8 +1269,20 @@ function renderInstrumentGauges(data){
             <span class="map-legend-caption">More particles/brighter glow around a real observed location means more traffic there &mdash; they are an intensity visualization, not independent physical servers.</span>
           </div>
         </div>
-        <div id="destination-map"></div>
-        <div id="destination-map-detail" class="map-detail" hidden></div>
+        <div class="destination-map-layout">
+          <div>
+            <div id="destination-map"></div>
+            <div id="destination-map-detail" class="map-detail" hidden></div>
+          </div>
+          <div class="map-breakdown">
+            <div class="map-breakdown-head">
+              <span class="map-breakdown-title">Countries</span>
+              <button type="button" class="map-breakdown-sort-btn" id="map-breakdown-sort-btn" aria-label="Toggle country breakdown sort order">Sort: <span id="map-breakdown-sort-label">Metric</span></button>
+            </div>
+            <ul class="map-breakdown-list" id="map-breakdown-list" role="list" aria-label="Country breakdown"></ul>
+          </div>
+        </div>
+        <div class="stats-note" style="margin-top:0" id="destination-map-history"></div>
         <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
       </div>
     </div>
@@ -1527,9 +1592,122 @@ let mapSelectedDestinationKey = null;
 let mapZoom = 1;
 let mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
 let mapLastPayload = null;
-function mapProject(lat, lon){ return { x: (lon+180)/360*MAP_W, y: (90-lat)/180*MAP_H }; }
 function mapActiveBasemap(){ return MAP_BASEMAPS.includes(prefs.mapBasemap) ? prefs.mapBasemap : 'satellite-heat'; }
 function mapActiveTheme(){ return MAP_THEMES.includes(prefs.mapTheme) ? prefs.mapTheme : 'bemo-accent'; }
+/* Issue #63: real raster tile basemap, additive to the always-available
+   offline dot-matrix world below. A single zoom-0 tile already covers the
+   *entire* Mercator-clipped world in one image, so this never requests a
+   tile set bigger than one image per basemap and needs no per-tile
+   pan/zoom math; it loads asynchronously like any other <img>, is cached
+   by the browser the same way, and the widget keeps rendering the existing
+   offline dot-matrix (unchanged, in its own equirectangular projection)
+   until/unless that image actually finishes loading. Dark NOC intentionally
+   keeps its stylized treatment rather than a satellite/street photo (the
+   issue explicitly allows this). These are the same class of no-API-key
+   default providers commonly used for this purpose (OpenStreetMap standard
+   tiles, Esri World Imagery); see docs/MAP_BASEMAP.md for their documented
+   attribution/usage-policy requirements -- this session's sandbox had no
+   outbound network access to re-verify those live, the same limitation
+   recorded against several other 0.8.5.x GeoIP-provider hand-offs in
+   docs/CURRENT_STATE.md, so an operator should confirm both URLs still
+   resolve and still match their current policy before relying on this in
+   production. Both are overridable by editing MAP_TILE_PROVIDERS. */
+const MAP_TILE_PROVIDERS = {
+  'satellite-heat': {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/0/0/0',
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+  },
+  'satellite-density': {
+    url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/0/0/0',
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+  },
+  'real-pins': {
+    url: 'https://tile.openstreetmap.org/0/0/0.png',
+    attribution: '&copy; OpenStreetMap contributors',
+  },
+};
+function mapTileProviderFor(basemap){ return MAP_TILE_PROVIDERS[basemap] || null; }
+/* idle: nothing attempted yet for this basemap; loading: an <img> request is
+   in flight; ready: it loaded, Mercator projection + tiles are active;
+   failed: it didn't load, offline dot-matrix stays active. Persists across
+   re-renders (module-level) even though the DOM node carrying it is torn
+   down and recreated every render, same as every other map render state. */
+let mapTileState = { basemap: null, status: 'idle' };
+function mapUsesMercatorProjection(){
+  const basemap = mapActiveBasemap();
+  return !!(mapTileProviderFor(basemap) && mapTileState.basemap === basemap && mapTileState.status === 'ready');
+}
+/* Standard Web Mercator "global pixel at zoom 0, normalized to 0..1" --
+   the same formula every slippy-map tile library uses -- scaled onto our
+   existing MAP_W x MAP_H canvas so it lines up with a real zoom-0 tile
+   image stretched to fill that same canvas (see mapEnsureTileLayer()). */
+function mapProjectMercator(lat, lon){
+  const clampedLat = Math.max(-85.05112878, Math.min(85.05112878, lat));
+  const latRad = clampedLat * Math.PI / 180;
+  const px = (lon + 180) / 360;
+  const py = (1 - Math.log(Math.tan(Math.PI / 4 + latRad / 2)) / Math.PI) / 2;
+  return { x: px * MAP_W, y: py * MAP_H };
+}
+/* The offline dot-matrix silhouette (WORLD_LAND_D/mapWorldDots() below) was
+   hand-authored directly in this equirectangular pixel space, not derived
+   from real lat/lon -- so it only stays aligned with real observed
+   coordinates while this plain equirectangular projection is what's
+   actually on screen. Real tile imagery uses true Web Mercator instead
+   (mapProjectMercator above); the two are never shown at once (see
+   .map-tiles-active hiding .map-world-dots), so each stays internally
+   consistent with whichever background is actually active. */
+function mapProject(lat, lon){
+  if (mapUsesMercatorProjection()) return mapProjectMercator(lat, lon);
+  return { x: (lon + 180) / 360 * MAP_W, y: (90 - lat) / 180 * MAP_H };
+}
+/* Creates/refreshes the tile <img> for the active basemap (a no-op when the
+   basemap has no configured provider, e.g. Dark NOC) and toggles
+   .map-tiles-active on the wrapper. Called by mapFinishRender() after every
+   render, since the whole wrap (and any previous tile <img>) is replaced by
+   `el.innerHTML = mapBaseSvg(...)` like the rest of this widget -- the
+   browser's own HTTP cache (not this code) is what keeps a re-requested,
+   already-loaded tile URL cheap across those re-renders. Loading is always
+   asynchronous and never blocks bubble/particle rendering above it; the
+   *first* successful load for a given basemap re-renders once (via
+   renderDestinationMap) so markers can move from the equirectangular
+   fallback projection to the real Mercator one -- every render after that
+   already uses Mercator from the start, so no further extra re-render
+   happens. A failed load simply leaves the existing offline dot-matrix
+   showing; it never throws or blocks the rest of the widget. */
+function mapEnsureTileLayer(wrapEl){
+  const basemap = mapActiveBasemap();
+  const provider = mapTileProviderFor(basemap);
+  wrapEl.classList.toggle('map-tiles-active', mapUsesMercatorProjection());
+  if (!provider) return;
+  const layer = document.createElement('div');
+  layer.className = 'map-tile-layer';
+  const img = document.createElement('img');
+  img.className = 'map-tile';
+  img.alt = '';
+  img.decoding = 'async';
+  const alreadyReady = mapTileState.basemap === basemap && mapTileState.status === 'ready';
+  if (alreadyReady) img.classList.add('map-tile-loaded');
+  img.addEventListener('load', () => {
+    img.classList.add('map-tile-loaded');
+    const wasReady = mapTileState.basemap === basemap && mapTileState.status === 'ready';
+    mapTileState = { basemap, status: 'ready' };
+    if (!wasReady && mapLastPayload) renderDestinationMap(mapLastPayload);
+  });
+  img.addEventListener('error', () => {
+    if (mapTileState.basemap === basemap && mapTileState.status === 'ready') return;
+    mapTileState = { basemap, status: 'failed' };
+  });
+  img.src = provider.url;
+  layer.appendChild(img);
+  wrapEl.insertBefore(layer, wrapEl.firstChild);
+  // A sibling of both the tile layer and the <svg> (not a child of the tile
+  // layer's own stacking context) so its z-index reliably places it above
+  // both regardless of which one is currently on top.
+  const attribution = document.createElement('div');
+  attribution.className = 'map-tile-attribution';
+  attribution.innerHTML = provider.attribution;
+  wrapEl.appendChild(attribution);
+}
 /* Bundled/offline-safe world-landmass silhouette (Issue #33): a simplified,
    hand-authored equirectangular outline of the seven continents plus a few
    large islands, in the same 720x360 projection as mapProject()/the
@@ -1829,6 +2007,83 @@ function renderMapDetail(entity, kind){
     if (mapLastPayload) renderDestinationMap(mapLastPayload);
   });
 }
+/* Issue #63: one shared selection path for a country, used by both a map
+   marker click/keydown and a country-breakdown row click/keydown, so the
+   two never diverge. The detail card is rendered *before* the (more
+   expensive) full map re-render -- the technical guidance in the issue is
+   to avoid a click flow that risks losing/invalidating detail state behind
+   a full re-render, so "show the real detail immediately" always happens
+   first and does not depend on that re-render succeeding. */
+function mapSelectCountry(code, opts){
+  opts = opts || {};
+  const data = mapLastPayload;
+  if (!data) return;
+  const countries = data.countries || [];
+  const entity = countries.find(c => c.country_code === code);
+  if (!entity) return;
+  const toggle = opts.toggle !== false;
+  mapSelectedCountry = (toggle && mapSelectedCountry === code) ? null : code;
+  mapSelectedDestinationKey = null;
+  if (mapSelectedCountry && prefs.mapMode !== 'countries'){
+    prefs.mapMode = 'countries';
+    savePrefs();
+    syncMapControls();
+  }
+  if (mapSelectedCountry && opts.centerZoom && entity.centroid){
+    const [lat, lon] = entity.centroid;
+    const proj = mapProject(lat, lon);
+    mapZoom = Math.max(mapZoom, 3);
+    mapViewCenter = { cx: proj.x, cy: proj.y };
+    mapClampCenter();
+  }
+  renderMapDetail(mapSelectedCountry ? entity : null, 'country');
+  renderDestinationMap(data);
+}
+/* Issue #63: real country breakdown/ranking, driven by the unbounded
+   `data.countries` list already returned by /api/analytics/map (every
+   geolocated country, not only the bounded subset with a plotted map
+   bubble/centroid) -- no second backend query, no invented metrics. */
+let mapBreakdownSortMode = 'metric';
+function renderMapBreakdownHistory(data){
+  const el = document.getElementById('destination-map-history'); if (!el) return;
+  const h = data?.history;
+  if (!h || !h.tracked_domains_all_time){ el.textContent = ''; return; }
+  let since = '';
+  if (h.tracking_since){
+    const d = new Date(h.tracking_since);
+    if (!isNaN(d.getTime())) since = ` since ${d.toLocaleDateString()}`;
+  }
+  el.textContent = `Tracking ${esc(h.tracked_domains_all_time)} domain${h.tracked_domains_all_time===1?'':'s'} with observed destinations all-time${since} -- this history is stored in SQLite and persists across restarts.`;
+}
+function renderMapBreakdown(data){
+  const list = document.getElementById('map-breakdown-list'); if (!list) return;
+  const sortLabel = document.getElementById('map-breakdown-sort-label');
+  if (sortLabel) sortLabel.textContent = mapBreakdownSortMode === 'name' ? 'Name' : 'Metric';
+  const countries = (data?.countries || []).slice();
+  if (!countries.length){
+    list.innerHTML = '<li class="map-breakdown-empty">No geolocated countries yet.</li>';
+    return;
+  }
+  if (mapBreakdownSortMode === 'name') countries.sort((a, b) => String(a.country_name||'').localeCompare(String(b.country_name||'')));
+  else countries.sort((a, b) => mapMetricValue(b) - mapMetricValue(a));
+  const totalObservations = countries.reduce((s, c) => s + (c.observation_count || 0), 0);
+  list.innerHTML = countries.map(c => {
+    const selected = mapSelectedCountry === c.country_code;
+    const share = totalObservations ? Math.round((c.observation_count / totalObservations) * 1000) / 10 : 0;
+    const deviceBit = (c.device_count != null) ? ` &middot; ${esc(c.device_count)} device${c.device_count===1?'':'s'}` : '';
+    return `<li><button type="button" class="map-breakdown-row${selected ? ' map-breakdown-row-selected' : ''}" data-breakdown-country="${esc(c.country_code)}" aria-pressed="${selected}">`
+      + `<span class="map-breakdown-row-top"><span>${esc(c.country_name)}</span><span class="map-breakdown-row-metric">${mapCompactNumber(mapMetricValue(c))}</span></span>`
+      + `<span class="map-breakdown-row-sub">${esc(c.observation_count)} obs &middot; ${esc(c.unique_ip_count)} IP${c.unique_ip_count===1?'':'s'} &middot; ${esc(c.domain_count)} domain${c.domain_count===1?'':'s'}${deviceBit} &middot; ${share}% of geolocated</span>`
+      + `</button></li>`;
+  }).join('');
+  list.querySelectorAll('[data-breakdown-country]').forEach(btn => {
+    btn.addEventListener('click', () => mapSelectCountry(btn.getAttribute('data-breakdown-country'), { toggle: false, centerZoom: true }));
+  });
+}
+document.getElementById('map-breakdown-sort-btn')?.addEventListener('click', () => {
+  mapBreakdownSortMode = mapBreakdownSortMode === 'name' ? 'metric' : 'name';
+  if (mapLastPayload) renderMapBreakdown(mapLastPayload);
+});
 /* Bounded client-side grid clustering (Issue #37): nearby real destination
    coordinates merge into one cluster bubble whose observation/domain counts
    are the real sum of its members -- no observation is lost, just visually
@@ -1929,20 +2184,18 @@ function renderCountriesMode(data){
   }).join('');
   el.innerHTML = mapBaseSvg('Observed DNS destinations by country', bubbles, entitiesForDots) + coverageNote;
   mapFinishRender(el);
-  const activateCountry = (code) => {
-    mapSelectedCountry = (mapSelectedCountry === code) ? null : code;
-    renderCountriesMode(data);
-    renderMapDetail(mapSelectedCountry ? countries.find(c => c.country_code === mapSelectedCountry) : null, 'country');
-  };
+  // Issue #63: bubble clicks/keydown reuse the exact same mapSelectCountry()
+  // path a country-breakdown row uses, so the two selection paths can never
+  // diverge in behavior.
   el.querySelectorAll('[data-country]').forEach(node => {
     node.addEventListener('click', () => {
       if (mapWasDragging) return;
-      activateCountry(node.getAttribute('data-country'));
+      mapSelectCountry(node.getAttribute('data-country'));
     });
     node.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
       e.preventDefault();
-      activateCountry(node.getAttribute('data-country'));
+      mapSelectCountry(node.getAttribute('data-country'));
     });
   });
 }
@@ -2006,8 +2259,11 @@ function renderDestinationsMode(data, capabilities){
       return;
     }
     mapSelectedDestinationKey = (mapSelectedDestinationKey === key) ? null : key;
-    renderDestinationsMode(data, capabilities);
+    // Issue #63: show the real detail immediately, before the (more
+    // expensive) full bubble re-render, so the click path never risks
+    // losing/invalidating the detail state behind that re-render.
     renderMapDetail(mapSelectedDestinationKey ? cluster : null, 'destination');
+    renderDestinationsMode(data, capabilities);
   };
   el.querySelectorAll('[data-cluster]').forEach(node => {
     node.addEventListener('click', () => {
@@ -2035,6 +2291,10 @@ function renderDestinationMap(data){
   }
   const legendMetricEl = document.getElementById('map-legend-metric-label');
   if (legendMetricEl) legendMetricEl.textContent = mapMetricLabel();
+  // Issue #63: breakdown/history render from the exact same payload as the
+  // map itself, regardless of mode/diagnostic state below.
+  renderMapBreakdown(data);
+  renderMapBreakdownHistory(data);
   const diagState = data?.diagnostics?.state;
   if (diagState === 'load_failed'){
     el.innerHTML = mapBaseSvg(
@@ -2197,6 +2457,8 @@ function mapSyncLegendGradient(){
 function mapFinishRender(el){
   mapAttachInteraction(el);
   mapSyncLegendGradient();
+  const wrap = el.querySelector('.destination-map-wrap');
+  if (wrap) mapEnsureTileLayer(wrap);
 }
 function syncMapControls(){
   const modeSel = document.getElementById('map-mode-select');
@@ -5142,6 +5404,15 @@ def geoip_map_payload():
                 "SELECT device_key, COALESCE(NULLIF(hostname,''), NULLIF(name,''), NULLIF(vendor,''), device_key) FROM devices"
             ).fetchall()
         }
+        # Issue #63: all-time totals over the *whole* `domain_destination_ips`
+        # table (never bounded by GEOIP_MAP_DOMAIN_LIMIT), purely so the
+        # widget can show real evidence that this observation history is
+        # cumulative/persistent (same SQLite file as everything else under
+        # DB_PATH) rather than resetting on restart -- no new table, no new
+        # storage architecture.
+        history_row = c.execute(
+            "SELECT COUNT(DISTINCT domain), MIN(first_seen) FROM domain_destination_ips"
+        ).fetchone()
 
     destinations_by_domain = {}
     for domain, ip, observations in destination_rows:
@@ -5271,6 +5542,14 @@ def geoip_map_payload():
             "country": bool(_geoip_provider.available),
             "coordinates": city_capable,
             "heatmap": False,
+        },
+        # Issue #63: real evidence the underlying observation history is
+        # persistent/cumulative (see `history_row` above) -- not a new
+        # storage layer, just surfacing counts already durable in
+        # `domain_destination_ips`.
+        "history": {
+            "tracked_domains_all_time": int(history_row[0] or 0) if history_row else 0,
+            "tracking_since": history_row[1] if history_row and history_row[1] else None,
         },
         # Six-state diagnostic (Issue #39): lets the UI distinguish "not
         # configured" from "configured but broken" from "working but nothing
