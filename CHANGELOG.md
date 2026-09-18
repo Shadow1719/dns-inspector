@@ -2,6 +2,76 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.14]
+DNS Destinations map usability follow-up (Issue #63): a country breakdown
+panel, a real click/selection fix, and a real tile basemap layer, without
+changing `/api/analytics/map`'s existing fields, GeoIP lookup/storage
+architecture, or the observed-DNS-destination semantics. See
+`docs/MAP_BASEMAP.md` for the new basemap details.
+
+- **Country breakdown/ranking panel**, beside the map on desktop and below
+  it on narrower widths (`.destination-map-layout`), listing every
+  geolocated country from the same `data.countries` payload the map already
+  uses (no second backend query) -- sortable by the active metric or by
+  name, scrollable, highlighting the current selection, with real-metric
+  rows only (observations, unique IPs, domains, device count when
+  available, share of geolocated observations). A row click/keyboard
+  activation (native `<button>`) calls the same new `mapSelectCountry()`
+  path a map marker's click/keydown calls.
+- **Marker click/selection fix.** The exact bug reported in the issue was an
+  SVG `<g>`'s default `:focus-visible` outline drawing a *rectangle* around
+  its whole bounding box (hit-area + spread particles), not around the
+  visible marker; `.map-entity:focus-visible` no longer sets an outline at
+  all, and focus/selection now rings the real anchor circle instead
+  (`.map-entity:focus-visible .map-bubble`, `.map-bubble-selected`).
+  `mapSelectCountry()`/`activateCluster()` now show the detail card *before*
+  the fuller bubble re-render, per the issue's own guidance to avoid a click
+  flow that risks losing/invalidating detail state behind that re-render. A
+  monotonic request counter in `fetchDestinationMap()` drops an
+  out-of-order/late analytics-poll response so it can never silently
+  overwrite a newer render; click/keyboard selection never depends on that
+  poll at all.
+- **Real tile basemap layer** for Satellite Heat, Satellite Density and Real
+  Map + Pins (Dark NOC intentionally keeps its stylized treatment, as the
+  issue allows): a single zoom-0 world tile per basemap
+  (`MAP_TILE_PROVIDERS`, OpenStreetMap standard tiles / Esri World Imagery,
+  no API key), loaded asynchronously and cached by the browser like any
+  other image, stretched to the widget's canvas and aligned with markers
+  via a new true Web Mercator projection (`mapProjectMercator()`) used only
+  once that basemap's tile has actually finished loading
+  (`mapUsesMercatorProjection()`); the existing offline dot-matrix world
+  (unchanged, in its own original equirectangular projection) remains the
+  automatic, graceful fallback whenever a tile hasn't loaded or fails to.
+  See `docs/MAP_BASEMAP.md` for the attribution/usage-policy verification
+  this session's sandbox could not perform against live network access.
+- **Persistence investigated, not changed.** The reported "resets to ~20-30
+  after restart" symptom was not reproducible from the current `domains`/
+  `domain_destination_ips` source: both are plain persistent SQLite tables
+  under `DB_PATH` (`/data`) with no deletion/truncation code path, and the
+  map's own domain scan limit (`GEOIP_MAP_DOMAIN_LIMIT`) already defaults to
+  1500, not ~20-30. No storage architecture changed. A new additive
+  `/api/analytics/map` field, `history` (`tracked_domains_all_time`,
+  `tracking_since`), computed from an unbounded `COUNT`/`MIN(first_seen)`
+  over the whole `domain_destination_ips` table, surfaces real evidence of
+  this in the widget itself; see `docs/GEOIP.md`.
+- New tests: `tests/test_map_breakdown_selection_basemap.py`;
+  `tests/test_map_infographic_visual3.py`'s keyboard-activation test was
+  updated in place for the country marker's new shared `mapSelectCountry()`
+  call (destination clusters are unaffected).
+- **This hand-off's sandbox could not execute `pytest`/`python` or make any
+  outbound network request at all** (approval for both was unavailable in
+  this non-interactive session, the same limitation recorded against
+  several 0.8.5.x hand-offs above) -- verified by direct code inspection,
+  cross-checking every string/function the new and updated tests assert on
+  against the actual rendered `app.py` template, and manual regex/brace
+  balance review of the new JS. The real CI run (`pytest` + Docker build/
+  health smoke) must confirm the full suite, and a manual browser pass
+  (all basemaps, breakdown row selection, keyboard marker activation,
+  reduced-motion, and confirming the tile images actually load) is strongly
+  recommended before merge -- this repository has no headless-browser test
+  harness to exercise the new interaction/tile-loading code paths
+  automatically.
+
 ## [0.8.5.13]
 DNS Destinations map follow-up (Issue #56): splits the single 0.8.5.12
 `mapStyle` preset into two independent preferences and replaces the flat
