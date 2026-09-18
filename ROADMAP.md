@@ -186,6 +186,72 @@ The DNS Inspector functionality remains fully usable; the rebrand is architectur
 ---
 
 # Post-0.8 direction
+## v0.9.0 — Native DNS capture / AdGuard-independent ingestion
+
+**Goal: make DNS Inspector able to observe DNS traffic without requiring AdGuard Home.**
+
+This is intentionally planned as a **0.9.0** feature rather than part of the
+0.8.x visual/security work because it changes the data-acquisition layer and
+introduces a second ingestion source. The existing AdGuard integration remains
+supported; this adds a native collector that feeds the same Inspector data
+model.
+
+Planned architecture:
+
+```text
+DNS source
+│
+├─ AdGuard Home API        (existing)
+│
+└─ Native packet capture   (new)
+       │
+       └── common ingest / normalization
+                │
+                ├─ devices / identities
+                ├─ domains
+                ├─ observed A/AAAA destinations
+                ├─ SQLite persistence
+                └─ GeoIP / Analytics / Map
+```
+
+Initial scope:
+
+- capture DNS traffic directly from a selected network interface using a
+  packet-capture backend (Scapy/libpcap-compatible approach is one reference
+  implementation; the final backend is intentionally not locked here)
+- support plaintext DNS over UDP/53 and TCP/53 first, with IPv4/IPv6 handling
+  where the capture backend exposes it cleanly
+- extract the actual query name plus observed DNS response A/AAAA addresses so
+  the map continues to represent destinations that were really observed on
+  the wire, rather than re-resolving domains later
+- feed native-capture observations through the same normalization, identity,
+  persistence, analytics and GeoIP paths used by AdGuard ingestion
+- make the DNS source selectable/configurable without duplicating the rest of
+  the application logic
+- keep the existing AdGuard mode fully functional; native capture is an
+  alternative source, not a replacement
+- surface capture status, selected interface and any required OS/container
+  capabilities clearly in the UI/diagnostics
+- handle permission/capability failures cleanly (for example packet-capture
+  access denied) instead of failing the whole application startup
+- explicitly report the visibility boundary: encrypted DNS such as DoH/DoT
+  is not visible as plaintext DNS packets unless the deployment provides a
+  separate, supported observation point
+- preserve persistent history so changing/restarting the DNS source does not
+  reset accumulated domain/device/destination data
+
+Non-goals for 0.9.0:
+
+- becoming a DNS server/resolver itself
+- silently decrypting DoH/DoT
+- replacing AdGuard's filtering/policy engine
+- making packet capture mandatory when AdGuard ingestion is configured
+
+Reference implementation investigated: HalilDeniz/DNSWatch, a Python/Scapy
+DNS packet sniffer that captures UDP/TCP 53 traffic and extracts DNS request
+and response data. DNSWatch is a reference for the native capture mechanism,
+not a planned runtime dependency of DNS Inspector.
+
 
 The exact version numbers after 0.8 are intentionally not locked yet.
 
