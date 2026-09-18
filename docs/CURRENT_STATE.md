@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.11` (the `VERSION`
+- Foundation version: `0.8.0`, current release: `0.8.5.12` (the `VERSION`
   file is authoritative). The project stays in the `0.8.5.x` series
   deliberately until the UI/dashboard/operational work is fully resolved;
   0.8.6 is not to be started until that gate is explicitly lifted.
@@ -426,6 +426,44 @@ Docker build/health smoke) must confirm the full suite, and an operator
 should run `scripts/geoip_memory_benchmark.py` against a representative
 multi-million-row dataset, before the measured RAM reduction this issue asks
 for is treated as confirmed rather than a code-inspection-only claim.
+
+0.8.5.12 (Issue #56) is a visual/interaction-only redesign of the 0.8.5.1-
+0.8.5.4 DNS Destinations map into a traffic-intensity infographic, with no
+change to `/api/analytics/map`, the observed-DNS-destination source of
+truth, GeoIP lookup/storage architecture, the bundled offline basemap, or
+the existing pan/zoom/Fit/Reset/keyboard navigation and Countries/
+Destinations/style/metric selectors from Issues #33/#37/#39. Every country
+bubble and destination cluster now derives both its radius and its fill/
+stroke color from one shared value/max-in-view ratio via a new
+`mapIntensityColor()` helper (green -> lime/yellow -> orange -> red), so
+"large + red" always reads as high observed volume and "small + green" as
+low volume without opening the detail panel; markers at/above a high ratio
+get the existing pulse-ring treatment (previously hard-coded to only the
+single top country) and large-enough markers get a compact numeric count
+label (`mapCompactNumber()`). A new `.map-legend` panel above the map
+spells out the size/color encoding using the exact same HSL stops as
+`mapIntensityColor()`, with its size-metric caption kept in sync with the
+Observations/Unique IPs/Domains selector via `mapMetricLabel()`. Every
+marker is keyboard-focusable (`tabindex="0" role="button"`) and Enter/Space
+now triggers the identical `activateCountry()`/`activateCluster()` handler
+a click/tap does, so mouse, touch and keyboard users reach the same
+persistent detail card; the card gained an explicit close control
+(`#map-detail-close-btn`) rather than relying only on re-clicking the same
+marker or the Reset button, satisfying the issue's no-delayed-hover-tooltip
+requirement. All new visual treatment (marker color/size transitions, the
+pulse ring) continues to respect `html[data-motion="reduced"]` and the
+global `prefers-reduced-motion` override; no new per-frame or per-poll DOM
+churn was introduced. New tests: `tests/test_map_infographic_visual3.py`.
+**This hand-off's sandbox could not execute `pytest`/`python` at all**
+(matching the same limitation recorded against the Issue #44/#47/#50/#51/#52
+hand-offs above) -- the change is verified by direct code inspection, with
+every new string/attribute the new tests assert on independently
+grep-verified against the actual rendered `app.py` template in this
+session. The real CI run (`pytest` + Docker build/health smoke) must
+confirm the full suite, and a manual click/keyboard/legend/reduced-motion
+pass in a real browser is recommended before merge since this repository
+has no headless-browser test harness to exercise the new interaction code
+paths automatically.
 
 ## How to update this file
 

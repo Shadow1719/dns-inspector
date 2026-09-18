@@ -2,6 +2,64 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.12]
+DNS Destinations map visual/interaction redesign (Issue #56): a data-driven
+traffic-intensity infographic, not a GeoIP/data-semantics rewrite.
+`/api/analytics/map`'s payload shape, the observed-DNS-destination source of
+truth, the bundled offline basemap, pan/zoom/Fit/Reset/keyboard navigation,
+the Countries/Destinations modes, the Observations/Unique IPs/Domains metric
+selector, the four map styles and the DB-IP attribution footer are all
+unchanged.
+
+- **Size and color now encode the same traffic intensity.** Every country
+  bubble and destination cluster derives both its radius (sqrt-scaled,
+  unchanged in spirit) and its fill/stroke color from one shared
+  value/max-in-view ratio via a new `mapIntensityColor()` helper -- a
+  green -> lime/yellow -> orange -> red gradient, so "large + red" always
+  means high observed volume and "small + green" always means low volume,
+  readable without opening the detail panel. Markers at or above a high
+  ratio also get the existing pulse-ring treatment (previously hard-coded to
+  only the single top country), and markers large enough to fit one get a
+  compact numeric count label (`mapCompactNumber()`, e.g. `1.2k`).
+- **Explicit legend.** A new `.map-legend` panel above the map spells out
+  what size and color mean, using the exact same HSL stops as
+  `mapIntensityColor()` so the legend can never visually drift from what a
+  marker actually renders; its size-metric caption stays in sync with the
+  current Observations/Unique IPs/Domains selection via `mapMetricLabel()`.
+- **Click/tap is the only interaction needed for details; no delayed hover
+  dependency.** Every marker is keyboard-focusable (`tabindex="0"
+  role="button"`) and Enter/Space triggers the exact same
+  `activateCountry()`/`activateCluster()` handler as a click/tap, so mouse,
+  touch and keyboard users all reach the same persistent detail card. The
+  card now has an explicit close control (`#map-detail-close-btn`) instead
+  of only "click the same marker again," and stays open until dismissed or
+  another marker is selected, per the issue's no-hover-tooltip requirement.
+- **Restrained, bounded, reduced-motion-respecting animation.** No new
+  per-frame or per-poll DOM churn was introduced; the existing
+  `html[data-motion="reduced"]` pulse-ring suppression and the global
+  `prefers-reduced-motion` transition-duration override both continue to
+  apply unchanged to the new intensity-driven markers.
+- New focused tests in `tests/test_map_infographic_visual3.py` cover the
+  size/color ratio-sharing, the legend's presence and metric-label sync,
+  click+keyboard activation parity, the dismissible detail card, and
+  regression guards that the map API fields, widget/content ids, pan/zoom/
+  Fit/Reset controls, mode/metric/style selectors, world-landmass asset and
+  DB-IP attribution footer are all unchanged.
+- No GeoIP/backend change of any kind; stays in the 0.8.5.x series per the
+  roadmap gate (0.8.6 is not started).
+**This hand-off's sandbox could not execute `pytest`/`python` at all --
+running either, with or without approval, was unavailable in this
+non-interactive session**, matching the same limitation recorded against
+several recent 0.8.5.x hand-offs (Issues #44, #47, #50, #51, #52). The
+change is verified by direct code inspection: every new string/attribute the
+new tests assert on was independently grep-verified against the actual
+rendered `app.py` template in this session. The real CI run (`pytest` +
+Docker build/health smoke) must confirm the full suite before this is relied
+upon, and a manual click/keyboard/legend/reduced-motion pass in a real
+browser is recommended before merge since there is no headless-browser
+harness in this repository to exercise the new interaction code paths
+automatically.
+
 ## [0.8.5.11]
 Startup reachability fix (Issue #51): real TrueNAS evidence showed the
 container reporting RUNNING (socket bound) while `/health` stayed
