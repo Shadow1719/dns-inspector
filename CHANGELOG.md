@@ -2,6 +2,83 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.15]
+Issue #69: the DNS Destinations map's renderer is now Leaflet with
+OpenStreetMap standard tiles as its real geographic viewport, superseding
+the amCharts map experiment (Issue #68/PR #67) and the previous fixed-image
+basemap approach entirely. `/api/analytics/map`'s payload, the GeoIP
+lookup/storage architecture and the observed-DNS-destination semantics are
+all unchanged -- this is a frontend rendering replacement only. See
+`docs/LEAFLET_MAP.md` for the full architecture writeup.
+
+- **Removed:** the amCharts experiment (`AMCHARTS_MAP_ENABLED`,
+  `static/amcharts-map-poc.js`, `docs/AMCHARTS_MAP_POC.md`,
+  `tests/test_map_amcharts_poc.py`) and the DEV-default-on wiring a later
+  same-day commit had given it. It is no longer reachable by any
+  environment variable.
+- **Added:** `static/leaflet-map.js`, loaded unconditionally alongside
+  Leaflet 1.9.4 from `unpkg.com` (CSS + JS, in `app.py`'s `<head>`). It
+  replaces `window.renderDestinationMap` -- the single function
+  `fetchDestinationMap()` calls with whatever it fetched -- only once
+  `window.L` is confirmed available and a real `L.map()` instance
+  initializes successfully; `fetchDestinationMap()` itself and its Issue
+  #61 AbortController/monotonic-sequence/in-flight/fingerprint protections
+  are completely untouched, and remain the only owner of
+  `/api/analytics/map` network requests.
+- **Real fallback, not just a load-time check:** if the Leaflet library
+  never loads, or `L.map()` itself throws, the legacy SVG renderer already
+  defined earlier in the same template is called directly (captured before
+  the override) so the widget never renders blank -- required per the
+  issue's own "keep legacy SVG as fallback only when Leaflet cannot be
+  initialized" contract.
+- **Countries and Destinations modes** are both supported: Countries plots
+  one marker per geolocated country centroid; Destinations plots real
+  observed destination coordinates, grid-clustered by real lat/lon
+  (independent of the legacy renderer's own fixed-canvas pixel clustering)
+  and re-clustered as Leaflet's own zoom level changes. Marker size/color
+  reuse the existing `mapMetricValue()`/`mapThemeColor()` functions
+  unchanged, so both renderers agree on what "high intensity" looks like.
+- **Selection stays synchronized with the country breakdown panel**
+  (Issue #63): a marker click calls the exact same shared
+  `mapSelectCountry()` a breakdown row click already calls, and the same
+  `renderMapDetail()`/`mapLastPayload` state both surfaces already share --
+  there is no second, independent selection/detail implementation the way
+  the amCharts POC had one.
+- **Future-ready layer structure:** `state.layers` is a small named
+  `{ countries, destinations }` map of real `L.layerGroup()`s, so
+  additional infrastructure datasets this issue explicitly says not to
+  implement yet (Google/AWS/Azure/Cloudflare/CDN PoPs, a future
+  `infrastructure_locations` table) can register another named layer group
+  later without replacing the map engine.
+- Reduced-motion is respected (`zoomAnimation`/`fadeAnimation`/
+  `markerZoomAnimation` all disabled under the existing reduced-motion
+  preference/media query), and OpenStreetMap's attribution stays visible
+  via Leaflet's own built-in attribution control -- never silently removed.
+- **Scope decision:** the legacy renderer's four `mapBasemap` presets
+  (stylized backgrounds tied to the old fixed-image approach) don't apply
+  once Leaflet/OSM tiles are the real viewport; that control is hidden once
+  Leaflet initializes (the stored preference itself is untouched, so it
+  still governs the legacy SVG fallback if this ever falls back to it).
+  Selecting a country from the breakdown panel selects/opens its detail
+  card exactly like a marker click, but -- unlike the legacy renderer --
+  does not also recenter/zoom the Leaflet viewport onto it, to avoid
+  fighting a user's own in-progress pan/zoom on a real slippy map; "Fit"
+  remains the explicit way to frame all currently plotted markers.
+- New tests: `tests/test_map_leaflet_renderer.py`.
+
+**This hand-off's sandbox could not execute `pytest`/`python` or make any
+outbound network request at all** (matching numerous 0.8.5.x hand-offs
+above) -- verified by direct code inspection, with every string the new
+tests assert on independently grep-verified against the actual rendered
+`app.py` template and `static/leaflet-map.js`, and the whole new JS file
+read back in full to check brace/paren balance and control flow by hand.
+The real CI run (`pytest` + Docker build/health smoke) must confirm the
+full suite, and a manual browser pass (OpenStreetMap tiles actually
+rendering, zoom/pan moving tiles+markers+clusters together with no fixed
+image left behind, marker/breakdown-row click parity, mode toggle,
+reduced-motion) is strongly recommended before merge -- see
+`docs/LEAFLET_MAP.md`'s Verification status section.
+
 ## [0.8.5.14]
 Issue #61 P0 fix: the Analytics render-storm reported in real-DEV debug
 evidence was still present after 0.8.5.13 -- `fetchAnalyticsFull()`
