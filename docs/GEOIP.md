@@ -270,10 +270,24 @@ loading that into a plain Python list of per-row tuples/strings,
 latitude/longitude) plus small integer indices into interned country/city
 string tables -- the actual set of distinct country/city names in a real
 database is a few hundred to a few thousand, shared across millions of
-rows, not re-allocated per row. IPv6 ranges are far fewer in a real city
-export, so they stay a plain sorted list, matching the existing country
-provider's approach. Lookup is the same `bisect` binary search the country
-provider uses.
+rows, not re-allocated per row. `CsvRangeGeoIPProvider` (the country-only
+database) uses the same array-column-plus-interned-table representation for
+its own (fewer, but still potentially several-million-row) IPv4 ranges. IPv6
+ranges are far fewer in a real export for either database, so they stay a
+plain sorted list referencing the same interned table. Lookup is the same
+`bisect` binary search for both providers.
+
+Both providers' CSV parse loop (`_load()`) streams rows directly into these
+compact `array.array` columns as they're read, via a shared
+`_CompactRangeTableBuilder` helper, instead of ever buffering the whole
+database as a Python list of row tuples first and compacting it only
+afterwards (Issue #52). A source file that is already sorted by start IP
+(true of a real DB-IP Lite export) needs no extra pass at all; an unsorted
+source falls back to one index-permutation pass over the already-compact
+columns, never over Python tuples. `scripts/geoip_memory_benchmark.py`
+measures peak RSS at each load/lookup/reload stage against a synthetic (or
+real) dataset if you want to reproduce these figures for your own database
+size.
 
 ### MaxMind for Destinations mode
 

@@ -2,6 +2,18 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.11]
+
+GeoIP RAM-explosion fix (Issue #52): a real memory-architecture change, not another throttling pass.
+
+- **Eliminated the multi-million-row Python staging list.** `CsvCityGeoIPProvider._load()` used to parse every row into a Python tuple, append it to a `v4_rows` list, sort that list, and only then copy it into compact `array.array` columns -- so a real DB-IP City Lite export (several million rows) could peak at gigabytes of temporary Python objects before the compact representation became usable. Both `CsvCityGeoIPProvider` and `CsvRangeGeoIPProvider` now stream rows directly into `array.array` columns as they're parsed, via a new shared `_CompactRangeTableBuilder` helper: the common case (input already sorted by start IP, true of a real DB-IP Lite export) needs no extra buffering pass at all; an out-of-order source falls back to a single index-permutation pass over the already-compact columns, never over a list of Python tuples.
+- **Compact storage for the country provider too.** `CsvRangeGeoIPProvider` previously stored every IPv4/IPv6 range permanently as a Python tuple of boxed ints/strings, plus a second duplicate list of just the start keys for bisecting. It now uses the same array-column-plus-interned-country-table representation `CsvCityGeoIPProvider` already used, with no duplicate start-key list for IPv4.
+- **Atomic, sequential reload.** `_reload_geoip_providers()` now builds and swaps the country and city providers one at a time (not both built up-front) and drops its local reference to each as soon as the swap completes, so the old provider plus a second full provider are never both required to stay memory-resident.
+- **Allocator cleanup as a secondary mitigation only**, not a substitute for the storage redesign above: a new `_trim_allocator_memory()` runs `gc.collect()` plus a best-effort glibc `malloc_trim(0)` after every reload.
+- **New reproducible memory benchmark:** `scripts/geoip_memory_benchmark.py` measures baseline/after-country-load/after-city-load/steady-state/after-repeated-lookups/after-repeated-reload RSS (plus each provider's own compact storage size) against a synthetic dataset it generates on the fly, or a real converted database via `--country-csv`/`--city-csv`. A CI-safe regression guard (`tests/test_geoip_compact_storage.py`) pins loading a moderate synthetic row count to a bounded bytes-per-row budget.
+- Lookup semantics, IPv4/IPv6 coverage, map UI/coverage, country aggregation, destination/city lookup results, DB-IP attribution, the 0.8.5.10 load/reload throttling controls, and the Issue #44 03:00/30-day updater are all unchanged.
+- **This hand-off's sandbox could not execute `pytest` or run the new benchmark script at all (running Python, with or without `-m`/`-c`, required approval that was never available in this session)** -- the same limitation recorded against the 0.8.5.8 and 0.8.5.10 hand-offs. The change is verified by direct code inspection and by updating/extending the existing test bodies in `tests/test_geoip_destinations_map.py`/`tests/test_geoip_city_map.py`/`tests/test_geoip_auto_update.py` plus new tests in `tests/test_geoip_compact_storage.py`; the real CI run (pytest + Docker build/health smoke) must confirm the full suite and the benchmark's actual numbers before this is relied upon.
+
 ## [0.8.5.10]
 
 CI repair (Issue #50, CI run 35317057142) and low-impact GeoIP load throttling.
