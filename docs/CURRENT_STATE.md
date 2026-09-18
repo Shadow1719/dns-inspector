@@ -569,6 +569,69 @@ in a sandbox with no Python execution permission and no browser. They should
 be tracked as separate follow-up issues rather than folded into further
 0.8.5.x point releases.
 
+0.8.5.14 (Issue #63) is a DNS Destinations map usability follow-up on top of
+0.8.5.13, with no change to `/api/analytics/map`'s existing fields, GeoIP
+lookup/storage architecture, or the observed-DNS-destination semantics.
+A country breakdown/ranking panel (`.destination-map-layout`) now sits
+beside the map on desktop and below it on narrower widths, listing every
+geolocated country from the same `data.countries` payload the map already
+renders (no second backend query) -- sortable by the active metric or by
+name, scrollable, and highlighting the current selection; a row's
+click/keyboard activation (a real `<button>`) calls a new shared
+`mapSelectCountry()`, the exact same path a map marker's click/keydown now
+also calls, so the two selection surfaces can never diverge. The marker
+click/selection bug reported in the issue was real and has a concrete root
+cause: an SVG `<g>`'s default `:focus-visible` outline draws a *rectangle*
+around its whole bounding box (the invisible enlarged hit-area plus spread
+particles), not around the visible marker -- `.map-entity:focus-visible` no
+longer sets an outline at all, and focus/selection instead rings the real
+anchor circle (`.map-entity:focus-visible .map-bubble`, unchanged
+`.map-bubble-selected`). `mapSelectCountry()`/`activateCluster()` now render
+the detail card *before* the fuller bubble re-render (the issue's own
+guidance, to avoid a click flow that risks losing/invalidating detail state
+behind that re-render), and a monotonic request counter in
+`fetchDestinationMap()` drops an out-of-order/late analytics-poll response
+rather than letting it silently overwrite a newer render; click/keyboard
+selection never depends on that poll. Satellite Heat, Satellite Density and
+Real Map + Pins now attempt to load one real zoom-0 world tile image each
+(`MAP_TILE_PROVIDERS`: OpenStreetMap standard tiles / Esri World Imagery, no
+API key) instead of only the stylized dot-matrix background -- Dark NOC
+intentionally keeps its stylized treatment, as the issue allows. Tile
+loading is async and never blocks rendering; a new true Web Mercator
+projection (`mapProjectMercator()`) is used for marker placement only once
+a basemap's own tile has actually finished loading
+(`mapUsesMercatorProjection()`), so it never mixes with the existing
+offline dot-matrix world's original equirectangular projection (kept
+byte-for-byte as the automatic, graceful fallback whenever a tile hasn't
+loaded or fails to -- the two are never shown at once). See
+`docs/MAP_BASEMAP.md` for the tile-provider/attribution details and the
+explicit network-verification caveat. Separately, this issue's "resets to
+~20-30 after restart" persistence claim was investigated against the real
+source and was not reproducible: `domains`/`domain_destination_ips` are
+already plain persistent SQLite tables under `DB_PATH` (`/data`) with no
+deletion/truncation code path anywhere, and the map's own domain scan limit
+(`GEOIP_MAP_DOMAIN_LIMIT`) already defaults to 1500, not ~20-30 -- no
+storage architecture was changed on that unverified premise. A new additive
+`/api/analytics/map` field, `history` (`tracked_domains_all_time`,
+`tracking_since`, from an unbounded `COUNT`/`MIN(first_seen)` over the whole
+`domain_destination_ips` table), surfaces real evidence of this persistence
+in the widget itself. New tests:
+`tests/test_map_breakdown_selection_basemap.py`;
+`tests/test_map_infographic_visual3.py`'s keyboard-activation test was
+updated in place for the country marker's new shared `mapSelectCountry()`
+call. **This hand-off's sandbox could not execute `pytest`/`python` or make
+any outbound network request at all** (matching the same limitation
+recorded against several 0.8.5.x hand-offs above) -- verified by direct
+code inspection and manual regex/brace-balance review of the new/changed
+JS and CSS against the actual rendered `app.py` template. The real CI run
+(`pytest` + Docker build/health smoke) must confirm the full suite, and a
+manual browser pass (all basemaps actually showing tile imagery, breakdown
+row selection, keyboard marker activation, reduced-motion) is strongly
+recommended before merge, since this repository has no headless-browser
+test harness to exercise the new interaction/tile-loading code paths
+automatically.
+
+
 ## How to update this file
 
 Update this document when a change materially alters the project's current architecture, active development state, or important known constraints. Do not turn it into a changelog or duplicate the source code.

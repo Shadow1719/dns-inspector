@@ -23,6 +23,18 @@ now default under `/data` like every other persistent path instead of an
 -- the manual steps remain accurate for anyone who prefers (or needs, with
 `GEOIP_AUTO_UPDATE=false`) to convert and place a database by hand.
 
+0.8.5.x (Issue #63) adds one additive `/api/analytics/map` field, `history`
+(`tracked_domains_all_time`, `tracking_since`), computed from an unbounded
+`SELECT COUNT(DISTINCT domain), MIN(first_seen) FROM domain_destination_ips`
+-- i.e. over the *whole* persistent table, not the `GEOIP_MAP_DOMAIN_LIMIT`-
+bounded window the rest of this payload uses. It exists purely so the map
+widget can show direct evidence that this observation history already lives
+in the same persistent SQLite file as everything else (`DB_PATH`, under
+`/data`) and is not reset by an application restart; see
+`docs/MAP_BASEMAP.md` for the accompanying frontend basemap work from the
+same issue. No other field, lookup semantics, or storage architecture
+changed.
+
 If you just want to get the map populated, skip to
 ["Quick setup: DB-IP Country Lite"](#quick-setup-db-ip-country-lite).
 
