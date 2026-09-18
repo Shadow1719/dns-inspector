@@ -431,7 +431,7 @@ disabled and returns immediately without ever making a network request.
 | --- | --- | --- |
 | `GEOIP_DB_PATH` | `/data/geoip_country_ranges.csv` | Path to the country CSV database above. |
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP country lookup results. |
-| `GEOIP_INITIAL_LOAD_DELAY_SECONDS` | `1` | Delay before the deferred initial GeoIP provider load starts, giving the HTTP server time to finish binding first. |
+| `GEOIP_INITIAL_LOAD_DELAY_SECONDS` | `1` | Safety ceiling (seconds) the deferred initial GeoIP provider load will wait for the HTTP server to prove it can actually serve a request before proceeding anyway. As of Issue #51 this is no longer a blind sleep: the load starts as soon as the server serves its first response (any route), and only falls back to waiting out this full ceiling if no request arrives at all. |
 | `GEOIP_LOAD_CHUNK_ROWS` | `5000` | Row count per throttled chunk while parsing a GeoIP CSV database (initial load and reload after an auto-update both use this). |
 | `GEOIP_LOAD_YIELD_SECONDS` | `0.01` | Sleep inserted after every `GEOIP_LOAD_CHUNK_ROWS` chunk during CSV parsing, so a large database (city-level in particular) doesn't monopolize CPU/disk for the whole load. Set to `0` to disable throttling. |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | How long an aggregated map payload is reused before recomputing. |
@@ -523,6 +523,16 @@ agree:
   than zero, and `provider_type: "CsvRangeGeoIPProvider"`. `db_path_basename`
   reports only the filename, not the full path, so this endpoint doesn't leak
   host filesystem layout.
+
+- **`/api/observability`'s `startup` field** (Issue #51) separates "the
+  process is running" from "the HTTP service has proven it can serve a
+  request": `http_ready` and `first_response_seconds_after_start` reflect
+  the readiness gate described above, and `geoip_initial_load_started`/
+  `geoip_initial_load_complete`/`geoip_initial_load_seconds_after_start`/
+  `geoip_initial_load_duration_seconds` report when the deferred load
+  actually ran relative to that first response. `/health` itself
+  deliberately does not expose or depend on any of this -- it stays a
+  plain, fast, unconditional 200 so it remains a trustworthy liveness check.
 
 ## Verifying map coverage
 
