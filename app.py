@@ -653,23 +653,42 @@ html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s
 .map-graticule .map-grid-equator{opacity:calc(var(--map-grid-opacity) * 1.6);stroke:var(--map-grid-strong)}
 .map-status-banner{position:absolute;top:10px;left:10px;right:10px;margin:0 auto;padding:8px 12px;background:var(--map-banner-bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:.8rem;text-align:center;pointer-events:none;box-shadow:var(--shadow-sm,0 1px 4px rgba(0,0,0,.15))}
 .map-status-banner .map-status-action{margin-top:6px;pointer-events:auto}
-.map-bubble{fill:var(--map-point);fill-opacity:var(--map-point-opacity);stroke:var(--map-point);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease}
-.map-bubble:hover,.map-bubble-selected{fill-opacity:.85;stroke-width:2}
+/* Issue #56: marker fill/stroke is now set inline per-bubble/cluster from
+   mapIntensityColor() (green -> lime/yellow -> orange -> red, driven by the
+   same relative-to-max ratio that already sized the bubble) rather than the
+   single flat `--map-point` accent -- traffic intensity is meant to be
+   readable from color alone, independent of the chosen map style. The
+   style-scoped glow/opacity/hover treatment below is unchanged. */
+.map-bubble{fill-opacity:var(--map-point-opacity);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
+.map-bubble:hover,.map-bubble-selected{fill-opacity:.9;stroke-width:2}
 .map-bubble-pulse-ring{fill:none;stroke:var(--map-point);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none;display:var(--map-pulse-display)}
 html:not([data-motion="reduced"]) .map-bubble-pulse-ring{animation:dnsInspectorMapPulse 2.4s ease-out infinite}
 html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 @keyframes dnsInspectorMapPulse{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.4);opacity:0}}
-.map-cluster{fill:var(--map-point-2);fill-opacity:var(--map-point-opacity);stroke:var(--map-point-2);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease}
-.map-cluster:hover,.map-cluster-selected{fill-opacity:.9;stroke-width:2}
+.map-cluster{fill-opacity:var(--map-point-opacity);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
+.map-cluster:hover,.map-cluster-selected{fill-opacity:.95;stroke-width:2}
 .map-cluster-count{font-size:7px;fill:var(--map-bg-b);pointer-events:none;text-anchor:middle;dominant-baseline:central}
+.map-bubble-count{font-size:7px;fill:rgba(4,10,18,.85);font-weight:600;pointer-events:none;text-anchor:middle;dominant-baseline:central}
+.map-bubble:focus-visible,.map-cluster:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .map-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
 .map-controls .settings-select{padding:6px 8px;font-size:.78rem}
 .map-zoom-group{display:inline-flex;gap:4px}
 .map-zoom-btn{padding:5px 10px;font-size:.78rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
 .map-zoom-btn:hover{background:var(--surface-3)}
-.map-detail{margin-top:10px;padding:10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm)}
+/* Issue #56: explicit size+color legend, kept in sync with mapIntensityColor()'s
+   gradient stops so the swatches never drift from the actual marker colors. */
+.map-legend{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-end;margin:8px 0;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.76rem;color:var(--text-secondary)}
+.map-legend-group{display:flex;flex-direction:column;gap:5px;min-width:130px}
+.map-legend-title{font-weight:600;color:var(--text-primary)}
+.map-legend-size-scale{display:flex;align-items:flex-end;gap:7px;height:30px}
+.map-legend-dot{border-radius:50%;flex-shrink:0;display:inline-block}
+.map-legend-gradient{width:132px;height:10px;border-radius:6px;background:linear-gradient(90deg,hsl(152,68%,42%),hsl(84,72%,45%),hsl(40,92%,50%),hsl(2,82%,52%))}
+.map-legend-caption{font-size:.72rem}
+.map-detail{position:relative;margin-top:10px;padding:10px 34px 10px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm)}
 .map-detail h3{margin:0 0 4px;font-size:.95rem}
 .map-detail-row{margin-top:6px;font-size:.82rem}
+.map-detail-close{position:absolute;top:6px;right:6px;width:24px;height:24px;background:transparent;border:none;border-radius:var(--radius-sm);color:var(--text-secondary);font-size:1rem;line-height:1;cursor:pointer}
+.map-detail-close:hover{background:var(--surface-3);color:var(--text-primary)}
 .chip-row{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
 .chip{background:var(--surface-3);border:1px solid var(--border);border-radius:var(--radius-pill);padding:2px 8px;font-size:.72rem}
 
@@ -1153,7 +1172,23 @@ function renderInstrumentGauges(data){
             <button type="button" class="map-zoom-btn" id="map-reset-btn" aria-label="Reset map view">Reset</button>
           </span>
         </div>
-        <div class="stats-note" style="margin-top:0">Drag to pan, scroll/pinch to zoom, or use the buttons above. Arrow keys pan and +/- zoom when the map is focused.</div>
+        <div class="stats-note" style="margin-top:0">Click or tap a marker for details &mdash; they stay open until dismissed. Drag to pan, scroll/pinch to zoom, or use the buttons above. Tab to a marker and press Enter/Space to select it; arrow keys pan and +/- zoom when the map is focused.</div>
+        <div class="map-legend" id="destination-map-legend" role="note" aria-label="Map legend: marker size and color both scale with observation count">
+          <div class="map-legend-group">
+            <span class="map-legend-title">Marker size</span>
+            <span class="map-legend-size-scale">
+              <span class="map-legend-dot" style="width:8px;height:8px;background:hsl(152,68%,42%)"></span>
+              <span class="map-legend-dot" style="width:17px;height:17px;background:hsl(40,92%,50%)"></span>
+              <span class="map-legend-dot" style="width:28px;height:28px;background:hsl(2,82%,52%)"></span>
+            </span>
+            <span class="map-legend-caption">Fewer <span id="map-legend-metric-label">observations</span> &rarr; more</span>
+          </div>
+          <div class="map-legend-group">
+            <span class="map-legend-title">Marker color</span>
+            <span class="map-legend-gradient"></span>
+            <span class="map-legend-caption">Low intensity &rarr; high intensity</span>
+          </div>
+        </div>
         <div id="destination-map"></div>
         <div id="destination-map-detail" class="map-detail" hidden></div>
         <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
@@ -1481,25 +1516,67 @@ function mapMetricValue(entity){
   if (metric === 'domains') return entity.domain_count ?? 0;
   return entity.observation_count ?? 0;
 }
+function mapMetricLabel(){
+  const metric = MAP_METRICS.includes(prefs.mapMetric) ? prefs.mapMetric : 'observations';
+  if (metric === 'unique_ips') return 'unique IPs';
+  if (metric === 'domains') return 'domains';
+  return 'observations';
+}
+/* Issue #56: shared green -> lime/yellow -> orange -> red traffic-intensity
+   scale. `ratio` is always the same value/max-in-view fraction that already
+   drives bubble/cluster radius, so a marker's size and color are always two
+   views of one underlying intensity rather than independently chosen. The
+   gradient stops here are duplicated (as literal HSL values) by the
+   `.map-legend-gradient` CSS background and the legend's three sample dots,
+   so the legend can never visually drift from what a marker actually renders. */
+const MAP_INTENSITY_STOPS = [
+  {t: 0, h: 152, s: 68, l: 42},
+  {t: 0.35, h: 84, s: 72, l: 45},
+  {t: 0.65, h: 40, s: 92, l: 50},
+  {t: 1, h: 2, s: 82, l: 52},
+];
+function mapIntensityColor(ratio){
+  const t = Math.max(0, Math.min(1, Number(ratio) || 0));
+  let a = MAP_INTENSITY_STOPS[0], b = MAP_INTENSITY_STOPS[MAP_INTENSITY_STOPS.length - 1];
+  for (let i = 0; i < MAP_INTENSITY_STOPS.length - 1; i++){
+    if (t >= MAP_INTENSITY_STOPS[i].t && t <= MAP_INTENSITY_STOPS[i + 1].t){ a = MAP_INTENSITY_STOPS[i]; b = MAP_INTENSITY_STOPS[i + 1]; break; }
+  }
+  const span = (b.t - a.t) || 1;
+  const f = (t - a.t) / span;
+  const h = a.h + (b.h - a.h) * f, s = a.s + (b.s - a.s) * f, l = a.l + (b.l - a.l) * f;
+  return `hsl(${h.toFixed(0)},${s.toFixed(0)}%,${l.toFixed(0)}%)`;
+}
+function mapCompactNumber(n){
+  n = Number(n) || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(n);
+}
 function renderMapDetail(entity, kind){
   const el = document.getElementById('destination-map-detail'); if (!el) return;
   if (!entity){ el.hidden = true; el.innerHTML = ''; return; }
   el.hidden = false;
+  const closeBtn = '<button type="button" class="map-detail-close" id="map-detail-close-btn" aria-label="Close details">&times;</button>';
   if (kind === 'destination'){
     const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
     const ipCount = entity.unique_ip_count || 1;
     const where = entity.city ? `${entity.city}, ${entity.country_name || entity.country_code || 'unknown location'}` : (entity.country_name || entity.country_code || 'Unknown location');
-    el.innerHTML = `<h3>${esc(where)} <span class="sub">${esc(ipCount)} IP${ipCount===1?'':'s'}</span></h3>`
+    el.innerHTML = closeBtn + `<h3>${esc(where)} <span class="sub">${esc(ipCount)} IP${ipCount===1?'':'s'}</span></h3>`
       + `<div class="stats-note">${esc(entity.observation_count)} observed destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; approximate coordinates from observed DNS destinations, not a verified physical location</div>`
       + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`;
-    return;
+  } else {
+    const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
+    const devices = (entity.sample_devices||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No associated devices</span>';
+    el.innerHTML = closeBtn + `<h3>${esc(entity.country_name)} <span class="sub">${esc(entity.country_code)}</span></h3>`
+      + `<div class="stats-note">${esc(entity.observation_count)} destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; ${esc(entity.device_count)} device${entity.device_count===1?'':'s'}</div>`
+      + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`
+      + `<div class="map-detail-row"><b>Devices</b><div class="chip-row">${devices}</div></div>`;
   }
-  const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
-  const devices = (entity.sample_devices||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No associated devices</span>';
-  el.innerHTML = `<h3>${esc(entity.country_name)} <span class="sub">${esc(entity.country_code)}</span></h3>`
-    + `<div class="stats-note">${esc(entity.observation_count)} destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; ${esc(entity.device_count)} device${entity.device_count===1?'':'s'}</div>`
-    + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`
-    + `<div class="map-detail-row"><b>Devices</b><div class="chip-row">${devices}</div></div>`;
+  document.getElementById('map-detail-close-btn')?.addEventListener('click', () => {
+    mapSelectedCountry = null; mapSelectedDestinationKey = null;
+    renderMapDetail(null);
+    if (mapLastPayload) renderDestinationMap(mapLastPayload);
+  });
 }
 /* Bounded client-side grid clustering (Issue #37): nearby real destination
    coordinates merge into one cluster bubble whose observation/domain counts
@@ -1573,24 +1650,41 @@ function renderCountriesMode(data){
     return;
   }
   const maxVal = Math.max(1, ...countries.map(c => mapMetricValue(c)));
-  const topCode = countries[0].country_code;
+  /* Issue #56: size and color are both driven by the same relative-to-max
+     `ratio` -- size via sqrt (so one dominant country can't visually swallow
+     the map) and color via mapIntensityColor() (green=few -> red=many). A
+     ratio at/above 0.72 also gets the existing pulse ring (previously only
+     the single top country did), so "large + red" markers read as genuinely
+     high activity rather than being a decorative one-off. */
   const bubbles = countries.map(c => {
     const [lat, lon] = c.centroid;
     const {x, y} = mapProject(lat, lon);
-    const r = (3 + Math.sqrt(mapMetricValue(c) / maxVal) * 14).toFixed(1);
+    const ratio = mapMetricValue(c) / maxVal;
+    const color = mapIntensityColor(ratio);
+    const r = (4 + Math.sqrt(ratio) * 18).toFixed(1);
     const selected = mapSelectedCountry === c.country_code ? ' map-bubble-selected' : '';
-    const pulse = c.country_code === topCode ? `<circle class="map-bubble-pulse-ring" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>` : '';
-    return `${pulse}<circle class="map-bubble${selected}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"><title>${esc(c.country_name)}: ${esc(c.observation_count)} destination observations, ${esc(c.domain_count)} domains</title></circle>`;
+    const pulse = ratio >= 0.72 ? `<circle class="map-bubble-pulse-ring" style="stroke:${color}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>` : '';
+    const label = `${c.country_name}: ${esc(c.observation_count)} destination observations, ${esc(c.domain_count)} domains`;
+    const countLabel = Number(r) >= 9
+      ? `<text class="map-bubble-count" x="${x.toFixed(1)}" y="${y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>`
+      : '';
+    return `${pulse}<circle class="map-bubble${selected}" style="fill:${color};stroke:${color}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" tabindex="0" role="button" aria-pressed="${mapSelectedCountry === c.country_code}" aria-label="${esc(label)}"><title>${label}</title></circle>${countLabel}`;
   }).join('');
   el.innerHTML = mapBaseSvg('Observed DNS destinations by country', bubbles) + coverageNote;
   mapFinishRender(el);
-  el.querySelectorAll('[data-country]').forEach(node => node.addEventListener('click', () => {
-    if (mapWasDragging) return;
-    const code = node.getAttribute('data-country');
+  const activateCountry = (code) => {
     mapSelectedCountry = (mapSelectedCountry === code) ? null : code;
     renderCountriesMode(data);
-    renderMapDetail(mapSelectedCountry ? countries.find(c => c.country_code === mapSelectedCountry) : null);
-  }));
+    renderMapDetail(mapSelectedCountry ? countries.find(c => c.country_code === mapSelectedCountry) : null, 'country');
+  };
+  el.querySelectorAll('[data-country]').forEach(node => {
+    node.addEventListener('click', () => { if (!mapWasDragging) activateCountry(node.getAttribute('data-country')); });
+    node.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      e.preventDefault();
+      activateCountry(node.getAttribute('data-country'));
+    });
+  });
 }
 function renderDestinationsMode(data, capabilities){
   const el = document.getElementById('destination-map'); if (!el) return;
@@ -1626,21 +1720,21 @@ function renderDestinationsMode(data, capabilities){
   const cov = data?.coverage || {};
   const coverageNote = `<div class="stats-note">${esc(cov.geolocated_pct ?? 0)}% of observed destinations geolocated &middot; ${esc(clusters.length)} cluster${clusters.length===1?'':'s'} &middot; ${esc(points.length)} destination point${points.length===1?'':'s'} plotted (bounded)</div>`;
   const bubbles = clusters.map(c => {
-    const r = (3 + Math.sqrt(mapMetricValue(c) / maxVal) * 12).toFixed(1);
+    const ratio = mapMetricValue(c) / maxVal;
+    const color = mapIntensityColor(ratio);
+    const r = (4 + Math.sqrt(ratio) * 15).toFixed(1);
     const selected = mapSelectedDestinationKey === c.key ? ' map-cluster-selected' : '';
     const label = c.unique_ip_count > 1
       ? `${esc(c.unique_ip_count)} destinations: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`
       : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`;
     const badge = c.unique_ip_count > 1
       ? `<text class="map-cluster-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${c.unique_ip_count > 99 ? '99+' : c.unique_ip_count}</text>`
-      : '';
-    return `<circle class="map-cluster${selected}" data-cluster="${esc(c.key)}" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${r}"><title>${label}</title></circle>${badge}`;
+      : (Number(r) >= 9 ? `<text class="map-bubble-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>` : '');
+    return `<circle class="map-cluster${selected}" style="fill:${color};stroke:${color}" data-cluster="${esc(c.key)}" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${r}" tabindex="0" role="button" aria-pressed="${mapSelectedDestinationKey === c.key}" aria-label="${esc(label)}"><title>${label}</title></circle>${badge}`;
   }).join('');
   el.innerHTML = mapBaseSvg('Observed DNS destinations by coordinate, clustered', bubbles) + coverageNote;
   mapFinishRender(el);
-  el.querySelectorAll('[data-cluster]').forEach(node => node.addEventListener('click', () => {
-    if (mapWasDragging) return;
-    const key = node.getAttribute('data-cluster');
+  const activateCluster = (key) => {
     const cluster = clusters.find(c => c.key === key);
     if (!cluster) return;
     if (cluster.unique_ip_count > 1 && mapZoom < 8){
@@ -1652,7 +1746,15 @@ function renderDestinationsMode(data, capabilities){
     mapSelectedDestinationKey = (mapSelectedDestinationKey === key) ? null : key;
     renderDestinationsMode(data, capabilities);
     renderMapDetail(mapSelectedDestinationKey ? cluster : null, 'destination');
-  }));
+  };
+  el.querySelectorAll('[data-cluster]').forEach(node => {
+    node.addEventListener('click', () => { if (!mapWasDragging) activateCluster(node.getAttribute('data-cluster')); });
+    node.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      e.preventDefault();
+      activateCluster(node.getAttribute('data-cluster'));
+    });
+  });
 }
 function renderDestinationMap(data){
   const el = document.getElementById('destination-map'); if (!el) return;
@@ -1666,6 +1768,8 @@ function renderDestinationMap(data){
       ? 'Real observed DNS destination IPs plotted by coordinate and clustered when nearby — not verified physical server locations.'
       : 'Country-level aggregate of resolved DNS response IPs — not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.';
   }
+  const legendMetricEl = document.getElementById('map-legend-metric-label');
+  if (legendMetricEl) legendMetricEl.textContent = mapMetricLabel();
   const diagState = data?.diagnostics?.state;
   if (diagState === 'load_failed'){
     el.innerHTML = mapBaseSvg(
