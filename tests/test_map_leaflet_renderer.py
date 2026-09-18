@@ -65,3 +65,13 @@ def test_leaflet_renderer_keeps_reduced_motion_support():
     source = (STATIC_DIR / "leaflet-map.js").read_text(encoding="utf-8")
     assert "reducedMotion()" in source
     assert "zoomAnimation: !reducedMotion()" in source
+
+def test_country_breakdown_is_height_constrained_for_scroll():
+    app_source = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+    # The desktop grid needs a definite breakdown height; otherwise an
+    # unbounded country list grows the whole row instead of making the list
+    # itself scroll. The formula mirrors the Leaflet map's 2:1 aspect ratio
+    # after reserving the 280px breakdown column and 12px gap.
+    assert "container-type:inline-size" in app_source
+    assert "height:max(320px,calc((100cqw - 292px)/2))" in app_source
+    assert "overflow-y:auto" in app_source
