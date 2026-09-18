@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.10` (the `VERSION`
+- Foundation version: `0.8.0`, current release: `0.8.5.11` (the `VERSION`
   file is authoritative). The project stays in the `0.8.5.x` series
   deliberately until the UI/dashboard/operational work is fully resolved;
   0.8.6 is not to be started until that gate is explicitly lifted.
@@ -333,6 +333,55 @@ throttled load ships, not as a bug in this own right. (The same log excerpt
 also showed every request/ingest line triplicated byte-for-byte at identical
 timestamps -- treated as log aggregation/duplication, not three real
 requests, absent code evidence otherwise.)
+
+0.8.5.11 (Issue #52) is the real memory-architecture fix the above TrueNAS
+evidence and 0.8.5.10's own throttling actually needed -- throttling only
+changed *when* the CSV parse's CPU/disk cost landed, not how much memory it
+used at its peak. The root cause, confirmed by direct code inspection: both
+`CsvRangeGeoIPProvider._load()` and `CsvCityGeoIPProvider._load()` built a
+plain Python list of one per-row tuple (`v4_rows` for the city provider;
+every IPv4 *and* IPv6 row for the country provider) before sorting it and
+copying it into the final representation, so for a multi-million-row City
+Lite import that temporary list -- not the final packed columns -- was the
+dominant transient allocation. Both providers' `_load()` now stream parsed
+rows directly into a compact `array.array`-column representation (4-byte
+IPv4 start/end keys, interned country/city string tables), falling back to
+a bounded index-permutation reorder only if the input isn't already sorted
+by start address (real DB-IP exports are); no per-row Python tuple is ever
+built for IPv4 data in either provider. IPv6 ranges (far fewer in a real
+export) still stay a plain sorted list of tuples in both providers, but the
+previously-duplicated `_v4_starts`/`_v6_starts` "just the start keys again"
+lists are gone -- `lookup()`/`lookup_city()` bisect the compact column or
+the IPv6 list directly. `_reload_geoip_providers()` also now swaps the
+country provider in immediately after it finishes loading, before the city
+provider starts loading, instead of building both new providers first, so
+a hot reload never holds all four (old+new country, old+new city) at once.
+A new `_geoip_allocator_cleanup()` helper (`gc.collect()` + best-effort
+glibc `malloc_trim(0)`) runs once after a load/reload completes as an
+explicitly *secondary* mitigation, per the task contract's own instruction
+not to treat allocator cleanup as the fix. A new standalone diagnostic,
+`scripts/geoip_memory_benchmark.py`, measures baseline RSS, peak RSS while
+each database loads, steady-state RSS after cleanup, RSS after a lookup
+batch, RSS after repeated reloads, and each provider's own compact storage
+size against synthetic CSVs (configurable row count, including real City
+Lite scale) using the real production provider classes -- **this
+implementation's sandbox could not execute Python at all in this session
+(every `python3 -m ...`/`python3 -c ...`/`pytest` invocation required an
+approval that was never available here, the same constraint the 0.8.5.8 and
+0.8.5.10 hand-offs already recorded; plain `git`/`ls` commands worked
+throughout)**, so the redesign is verified by direct code inspection and
+by new/updated unit tests in `tests/test_geoip_destinations_map.py`,
+`tests/test_geoip_city_map.py`, `tests/test_geoip_auto_update.py` and the
+new `tests/test_geoip_memory_benchmark.py`, not by an actual local test or
+benchmark run. Preserves 0.8.5.10's `GEOIP_LOAD_CHUNK_ROWS`/
+`GEOIP_LOAD_YIELD_SECONDS` throttling, the Issue #44 03:00/30-day scheduled
+updater, Issue #51's deferred-startup load, and every existing lookup/
+map-coverage/destination-map-UI semantic unchanged. **The real CI run
+(pytest + Docker build/health smoke) and a real before/after memory
+measurement (ideally via `scripts/geoip_memory_benchmark.py --city-rows
+7750000` against the real TrueNAS deployment, or the existing `GET
+/debug/bundle` deep memory snapshot) still need to confirm this holds up in
+practice before it is relied upon.**
 
 ## How to update this file
 

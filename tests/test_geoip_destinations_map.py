@@ -18,6 +18,7 @@ DNS-over-HTTPS-re-resolved snapshot used only by the domain detail page).
 import json
 import re
 import sqlite3
+import tracemalloc
 import uuid
 from contextlib import closing
 
@@ -194,6 +195,22 @@ def test_record_domain_destination_ips_is_bounded_per_domain(app_module, initial
 # --- GeoIPProvider abstraction + local caching -------------------------------
 
 
+def test_reorder_columns_by_first_sorts_all_columns_together(app_module):
+    """`_reorder_columns_by_first()` (Issue #52) is the shared bounded fallback
+    both providers use to repair genuinely out-of-order input without ever
+    building a Python tuple per row -- it must reorder every column by the
+    same permutation derived from the first (key) column."""
+    import array
+
+    start = array.array('I', [30, 10, 20])
+    end = array.array('I', [39, 19, 29])
+    tag = array.array('H', [3, 1, 2])
+    app_module._reorder_columns_by_first([start, end, tag])
+    assert list(start) == [10, 20, 30]
+    assert list(end) == [19, 29, 39]
+    assert list(tag) == [1, 2, 3]
+
+
 def test_null_geoip_provider_is_the_default_when_no_database_is_configured(app_module):
     """No database ships in the repository by default (docs/GEOIP.md); the
     map must honestly report unmapped rather than guess a location."""
@@ -238,19 +255,143 @@ def test_csv_range_provider_skips_malformed_rows_without_failing(tmp_path, app_m
     assert provider.lookup("203.0.113.1") == ("US", "United States")
 
 
-def test_csv_range_provider_precomputes_start_key_arrays_for_bisect(tmp_path, app_module):
-    """lookup() must bisect a precomputed start-key array (built once at load
-    time) rather than rebuilding `[r[0] for r in bucket]` on every call --
-    otherwise each lookup does O(n) work despite the binary search."""
+def test_csv_range_provider_bisects_the_compact_column_directly(tmp_path, app_module):
+    """lookup() must bisect the compact `array.array` start-key column
+    itself (built once at load time) rather than rebuilding a start-key
+    list on every call -- otherwise each lookup does O(n) work despite the
+    binary search. Issue #52 also removes the old separate `_v4_starts`
+    duplicate-of-`_v4` list entirely: there is exactly one compact IPv4
+    representation now, not a list of tuples plus a second list of just
+    their first elements."""
     csv_path = tmp_path / "geoip.csv"
     csv_path.write_text(
         "203.0.113.0,203.0.113.63,US,United States\n"
         "198.51.100.0,198.51.100.63,DE,Germany\n"
     )
     provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
-    assert provider._v4_starts == [r[0] for r in provider._v4]
+    assert not hasattr(provider, "_v4_starts")
+    assert not hasattr(provider, "_v4")
+    assert list(provider._v4_start) == sorted(provider._v4_start)
     assert provider.lookup("198.51.100.10") == ("DE", "Germany")
     assert provider.lookup("203.0.113.10") == ("US", "United States")
+
+
+def test_csv_range_provider_packs_ipv4_columns_into_4_byte_ints(tmp_path, app_module):
+    """Issue #52: an IPv4 address always fits an unsigned 32-bit int, so the
+    packed start/end columns use a 4-byte array typecode (`'I'`), and the
+    country database is no longer a plain Python list of per-row tuples --
+    the primary RAM driver this issue reports for a multi-million-row
+    import."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text("203.0.113.0,203.0.113.255,US,United States\n")
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert provider._v4_start.itemsize == 4
+    assert provider._v4_end.itemsize == 4
+
+
+def test_csv_range_provider_sorts_out_of_order_ipv4_input(tmp_path, app_module):
+    """Real DB-IP Country Lite exports are already sorted by start address,
+    so `_load()` streams straight into the final compact columns without
+    ever building a temporary list of row tuples (Issue #52) -- but a
+    hand-edited/out-of-order input must still end up correctly sorted and
+    correctly looked up, via the index-permutation fallback."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "203.0.113.128,203.0.113.191,DE,Germany\n"
+        "203.0.113.0,203.0.113.63,US,United States\n"
+        "203.0.113.64,203.0.113.127,FR,France\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert list(provider._v4_start) == sorted(provider._v4_start)
+    assert provider.lookup("203.0.113.10") == ("US", "United States")
+    assert provider.lookup("203.0.113.70") == ("FR", "France")
+    assert provider.lookup("203.0.113.150") == ("DE", "Germany")
+
+
+def test_csv_range_provider_interns_repeated_country_strings(tmp_path, app_module):
+    """A real Country Lite export repeats the same handful of country
+    codes/names across hundreds of thousands of rows (Issue #52): each IPv4
+    row must share one interned `(country_code, country_name)` tuple rather
+    than allocating a fresh pair of strings per row, and IPv6 rows (which
+    stay a plain list) must share the same interned strings too."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "203.0.113.0,203.0.113.63,US,United States\n"
+        "203.0.113.64,203.0.113.127,us,United States\n"
+        "2001:db8::,2001:db8::ffff,US,United States\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert len(provider._countries) == 1
+    assert provider._v4_country_idx[0] == provider._v4_country_idx[1] == 0
+    assert provider._v6[0][2] is provider._countries[0][0]
+    assert provider._v6[0][3] is provider._countries[0][1]
+
+
+def test_csv_range_provider_v6_lookup_uses_no_duplicate_start_list(tmp_path, app_module):
+    """Issue #52 requirement 3: avoid duplicating start keys unnecessarily.
+    The IPv6 path bisects the sorted `_v6` list directly via `bisect`'s
+    `key=`, so there is no second `_v6_starts` list duplicating `r[0]` for
+    every entry."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "2001:db8::,2001:db8::ffff,US,United States\n"
+        "2001:db8:1::,2001:db8:1::ffff,DE,Germany\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert not hasattr(provider, "_v6_starts")
+    assert provider.lookup("2001:db8::1") == ("US", "United States")
+    assert provider.lookup("2001:db8:1::1") == ("DE", "Germany")
+
+
+def _peak_traced_bytes(fn):
+    """Run `fn()` and return `(result, peak_bytes)` -- the real peak Python-
+    level allocation reached while it ran, via `tracemalloc`. Leaves
+    `tracemalloc`'s tracing state exactly as it found it: if tracing was
+    already on (e.g. `MEMORY_DIAGNOSTICS_ENABLED`), only its peak is reset
+    and restored; otherwise tracing is started and stopped around the call
+    so this test has no side effect on the rest of the suite."""
+    was_tracing = tracemalloc.is_tracing()
+    if was_tracing:
+        tracemalloc.reset_peak()
+    else:
+        tracemalloc.start()
+    try:
+        result = fn()
+        _current, peak = tracemalloc.get_traced_memory()
+        return result, peak
+    finally:
+        if not was_tracing:
+            tracemalloc.stop()
+
+
+def test_csv_range_provider_load_peak_memory_stays_far_below_a_boxed_tuple_list(tmp_path, app_module):
+    """Issue #52's real acceptance criterion, measured rather than assumed:
+    the old `_load()` stored every IPv4 row as a plain `(start, end, code,
+    name)` Python tuple in a growing list -- each tuple ~88 bytes alone,
+    plus a boxed int for start/end (~28 bytes each, not small-int-cached at
+    these IP values) and, before this fix, a fresh un-interned pair of
+    strings per row. The new streaming/compact-array `_load()` should cost
+    roughly 10 bytes per row for the packed columns themselves (4+4+2 bytes)
+    plus a bounded, small amount for CSV-parsing transients and the tiny
+    interned country table -- nowhere near a per-row boxed-tuple footprint.
+    This asserts a generous upper bound (120 bytes/row) that comfortably
+    fits the compact representation while still being well under half of
+    what the old per-row-tuple design would cost, so a regression back to a
+    plain per-row list would be caught here."""
+    rows = 20_000
+    csv_path = tmp_path / "geoip_country_bulk.csv"
+    with open(csv_path, "w") as f:
+        for i in range(rows):
+            start = i * 256
+            end = start + 255
+            f.write(
+                f"{start >> 24 & 255}.{start >> 16 & 255}.{start >> 8 & 255}.{start & 255},"
+                f"{end >> 24 & 255}.{end >> 16 & 255}.{end >> 8 & 255}.{end & 255},"
+                f"US,United States\n"
+            )
+    provider, peak_bytes = _peak_traced_bytes(lambda: app_module.CsvRangeGeoIPProvider(str(csv_path)))
+    assert provider.range_count == rows
+    assert peak_bytes / rows < 120, f"{peak_bytes / rows:.1f} bytes/row -- looks like a per-row object is being retained again"
 
 
 def test_geoip_lookup_is_cached_and_bounded(app_module, monkeypatch):

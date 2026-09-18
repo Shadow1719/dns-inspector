@@ -266,14 +266,64 @@ has additional documentation of its own that should mention it too.
 A real city-level database can have several million IPv4 rows. Rather than
 loading that into a plain Python list of per-row tuples/strings,
 `CsvCityGeoIPProvider` (`app.py`) stores IPv4 ranges as parallel fixed-width
-`array.array` columns (8-byte integer start/end keys, 4-byte float
-latitude/longitude) plus small integer indices into interned country/city
-string tables -- the actual set of distinct country/city names in a real
-database is a few hundred to a few thousand, shared across millions of
-rows, not re-allocated per row. IPv6 ranges are far fewer in a real city
-export, so they stay a plain sorted list, matching the existing country
-provider's approach. Lookup is the same `bisect` binary search the country
-provider uses.
+`array.array` columns (4-byte integer start/end keys -- an IPv4 address
+always fits an unsigned 32-bit int -- and 4-byte float latitude/longitude)
+plus small integer indices into interned country/city string tables -- the
+actual set of distinct country/city names in a real database is a few
+hundred to a few thousand, shared across millions of rows, not re-allocated
+per row. IPv6 ranges are far fewer in a real city export, so they stay a
+plain sorted list (with the same interning applied to their `country_code`/
+`country_name`/`city` values), matching the existing country provider's
+approach. Lookup is the same `bisect` binary search the country provider
+uses, bisecting the compact column/list directly -- neither provider keeps
+a second, duplicate list of just the start keys alongside it.
+
+**0.8.5.11 (Issue #52):** fixes real TrueNAS evidence of container RAM
+climbing toward 5+ GiB while GeoIP was active -- the 0.8.5.10 CSV-load
+throttle (Issue #50) only changed *when* the CPU-heavy parse happened, not
+how much memory it used at its peak. `CsvCityGeoIPProvider._load()`
+previously built a plain Python list of one 6-element tuple per CSV row
+(`v4_rows`) before sorting it and copying it into the packed columns above;
+for a multi-million-row City Lite import, that *temporary* list -- not the
+final packed columns -- was the dominant transient allocation. `_load()`
+(for both `CsvCityGeoIPProvider` and `CsvRangeGeoIPProvider`, which
+previously stored *every* row, IPv4 and IPv6, as a plain tuple with its own
+un-interned `country_code`/`country_name` strings) now streams parsed rows
+directly into their final compact representation while verifying the input
+arrived in the non-decreasing start-address order every real DB-IP export
+already uses; a cheap index-permutation reorder (`_reorder_columns_by_
+first()`) is used as a bounded fallback only if genuinely out-of-order
+input is detected, so nothing bigger than the final columns is ever
+materialized in the common case, and no per-row Python tuple is ever built
+for IPv4 data either way. `CsvRangeGeoIPProvider`'s IPv4 ranges gained the
+same `array.array` treatment `CsvCityGeoIPProvider` already had (country
+Lite is smaller than City Lite but a real export is still several hundred
+thousand rows); both providers' IPv6 path stays a plain list (matching the
+existing city-provider precedent that splitting a 128-bit key across array
+slots isn't worth it at IPv6's much lower real-world row count) but now
+bisects that list directly via `bisect`'s `key=` parameter instead of
+keeping a separate, duplicate start-key list next to it.
+`_reload_geoip_providers()` also now swaps the country provider in as soon
+as it finishes loading, *before* the city provider starts loading, instead
+of building both new providers first -- so a hot reload never holds the old
+country provider, the new country provider, the old city provider and the
+new city provider all at once. A new `_geoip_allocator_cleanup()` helper
+(`gc.collect()` plus a best-effort glibc `malloc_trim(0)` via `ctypes`,
+still a no-op off glibc) runs once after a load/reload completes -- this is
+explicitly a *secondary* mitigation layered on top of the smaller
+representation above, not a substitute for it.
+`scripts/geoip_memory_benchmark.py` is a new standalone diagnostic
+(imports `app.py` on purpose, unlike `scripts/verify_geoip.py`, since it
+has to measure the real production provider classes) that generates
+configurable-size synthetic country/city CSVs and reports RSS at each stage
+Issue #52 asks for -- baseline, peak RSS while the country database loads,
+peak RSS while the city database loads, steady-state after cleanup, RSS
+after a lookup batch, RSS after repeated reloads -- plus each provider's own
+compact storage size in bytes (computed from its `array.array` buffers and
+interned tables directly, not from RSS). Run it directly, ideally at real
+City Lite scale (`--city-rows 7750000`), to get actual before/after numbers
+for a given deployment; see `docs/CURRENT_STATE.md` for what this
+implementation could and couldn't measure in its own sandbox.
 
 ### MaxMind for Destinations mode
 

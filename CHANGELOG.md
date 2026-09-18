@@ -2,6 +2,19 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.11]
+
+GeoIP RAM fix (Issue #52): a real memory-architecture change, not another throttle.
+
+- **Eliminated the giant temporary Python row-tuple staging list.** `CsvCityGeoIPProvider._load()` previously built a plain Python list of one 6-element tuple per CSV row (`v4_rows`) before sorting it and copying it into its packed `array.array` columns; for a multi-million-row City Lite import, that temporary list -- not the final packed columns -- was the dominant transient allocation. `_load()` now streams parsed rows directly into the final compact columns, falling back to a cheap index-permutation reorder (`_reorder_columns_by_first()`) only if the input isn't already sorted by start address (real DB-IP exports are) -- no per-row Python tuple is ever built for IPv4 data.
+- **`CsvRangeGeoIPProvider` (the country database) gained the same compact storage.** IPv4 ranges are now parallel `array.array` columns (4-byte start/end keys, an interned country-code/name index) instead of a plain list of per-row tuples; IPv6 ranges (far fewer in a real export) stay a sorted list of tuples with interned `country_code`/`country_name` strings, matching the existing city-provider precedent.
+- **Removed duplicate start-key storage.** Both providers used to keep a separate `_v4_starts`/`_v6_starts` list alongside the full row data purely so `lookup()` could bisect it. `lookup()` now bisects the compact IPv4 column or the IPv6 tuple list directly (via `bisect`'s `key=` parameter for the latter) -- there is exactly one representation of each range table, not two.
+- **IPv4 columns narrowed from 8-byte to 4-byte integers** (`array.array('I')` instead of `'Q'`) in both providers -- an IPv4 address always fits an unsigned 32-bit int.
+- **`_reload_geoip_providers()` swaps the country provider in immediately after it finishes loading, before the city provider starts loading**, instead of building both new providers first: a hot reload no longer briefly holds the old country provider, new country provider, old city provider and new city provider all at once.
+- **Secondary mitigation only:** a new `_geoip_allocator_cleanup()` helper (`gc.collect()` plus a best-effort glibc `malloc_trim(0)`) runs once after a load/reload completes, so freed memory is more likely to show up as lower RSS promptly -- layered on top of the smaller representation above, not a substitute for it.
+- **New `scripts/geoip_memory_benchmark.py`** measures baseline RSS, peak RSS while the country/city databases each load, steady-state RSS after cleanup, RSS after a lookup batch, RSS after repeated reloads, and each provider's own compact storage size against synthetic (and optionally real-scale) CSVs, using the real production provider classes.
+- No change to lookup/ordering/map-coverage/destination-map-UI semantics, 0.8.5.10's load-throttling controls, or the Issue #44 scheduled updater's own behaviour.
+
 ## [0.8.5.10]
 
 CI repair (Issue #50, CI run 35317057142) and low-impact GeoIP load throttling.

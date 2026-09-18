@@ -11,6 +11,7 @@ in-memory CSV fixtures -- never a real city database.
 
 import json
 import sqlite3
+import tracemalloc
 import uuid
 from contextlib import closing
 
@@ -126,6 +127,27 @@ def _write_city_csv(tmp_path, rows):
     return csv_path
 
 
+def _peak_traced_bytes(fn):
+    """Run `fn()` and return `(result, peak_bytes)` -- the real peak Python-
+    level allocation reached while it ran, via `tracemalloc`. Leaves
+    `tracemalloc`'s tracing state exactly as it found it: if tracing was
+    already on (e.g. `MEMORY_DIAGNOSTICS_ENABLED`), only its peak is reset
+    and restored; otherwise tracing is started and stopped around the call
+    so this test has no side effect on the rest of the suite."""
+    was_tracing = tracemalloc.is_tracing()
+    if was_tracing:
+        tracemalloc.reset_peak()
+    else:
+        tracemalloc.start()
+    try:
+        result = fn()
+        _current, peak = tracemalloc.get_traced_memory()
+        return result, peak
+    finally:
+        if not was_tracing:
+            tracemalloc.stop()
+
+
 def test_csv_city_provider_matches_an_ipv4_address_inside_a_configured_range(tmp_path, app_module):
     csv_path = _write_city_csv(tmp_path, [
         ["203.0.113.0", "203.0.113.255", "US", "United States", "Mountain View", "37.386", "-122.0838"],
@@ -218,6 +240,103 @@ def test_csv_city_provider_range_count_covers_both_families(tmp_path, app_module
     ])
     provider = app_module.CsvCityGeoIPProvider(str(csv_path))
     assert provider.range_count == 2
+
+
+def test_csv_city_provider_packs_ipv4_columns_into_4_byte_ints(tmp_path, app_module):
+    """Issue #52: an IPv4 address always fits an unsigned 32-bit int, so the
+    packed start/end columns use a 4-byte array typecode (`'I'`), not an
+    8-byte one -- a real multi-million-row City Lite import makes this a
+    meaningful cut on the largest resident structure."""
+    csv_path = _write_city_csv(tmp_path, [
+        ["203.0.113.0", "203.0.113.255", "US", "United States", "Mountain View", "37.386", "-122.0838"],
+    ])
+    provider = app_module.CsvCityGeoIPProvider(str(csv_path))
+    assert provider._v4_start.itemsize == 4
+    assert provider._v4_end.itemsize == 4
+
+
+def test_csv_city_provider_has_no_giant_row_tuple_staging_list(tmp_path, app_module):
+    """Issue #52's primary complaint: `_load()` must stream straight into
+    the final compact columns, never building a plain Python list of one
+    tuple per CSV row (the old `v4_rows`) first. There is no such attribute
+    left on the instance once loading completes, and the compact columns are
+    the only IPv4 representation that exists."""
+    csv_path = _write_city_csv(tmp_path, [
+        ["203.0.113.0", "203.0.113.255", "US", "United States", "Mountain View", "37.386", "-122.0838"],
+    ])
+    provider = app_module.CsvCityGeoIPProvider(str(csv_path))
+    assert not hasattr(provider, "v4_rows")
+    assert not hasattr(provider, "_v4_rows")
+    assert not hasattr(provider, "_v6_starts")
+
+
+def test_csv_city_provider_sorts_out_of_order_ipv4_input(tmp_path, app_module):
+    """Real DB-IP exports are already sorted by start address, so `_load()`
+    streams straight into the final columns without ever building a
+    temporary list of row tuples (Issue #52) -- but a hand-edited/out-of-
+    order input must still end up correctly sorted and correctly looked up,
+    via the index-permutation fallback."""
+    csv_path = _write_city_csv(tmp_path, [
+        ["203.0.113.128", "203.0.113.191", "DE", "Germany", "Berlin", "52.52", "13.405"],
+        ["203.0.113.0", "203.0.113.63", "US", "United States", "Mountain View", "37.386", "-122.0838"],
+        ["203.0.113.64", "203.0.113.127", "FR", "France", "Paris", "48.8566", "2.3522"],
+    ])
+    provider = app_module.CsvCityGeoIPProvider(str(csv_path))
+    assert list(provider._v4_start) == sorted(provider._v4_start)
+    assert provider.lookup_city("203.0.113.10")["country_code"] == "US"
+    assert provider.lookup_city("203.0.113.70")["country_code"] == "FR"
+    assert provider.lookup_city("203.0.113.150")["country_code"] == "DE"
+
+
+def test_csv_city_provider_interns_v6_country_and_city_strings(tmp_path, app_module):
+    """The IPv6 path stays a plain list of tuples (far fewer real-world rows
+    than IPv4), but repeated `country_code`/`country_name`/`city` values must
+    still share one string object per distinct value (Issue #52), and lookup
+    must not rely on a separate duplicate `_v6_starts` list."""
+    csv_path = _write_city_csv(tmp_path, [
+        ["2001:db8::", "2001:db8::ffff", "DE", "Germany", "Berlin", "52.52", "13.405"],
+        ["2001:db8:1::", "2001:db8:1::ffff", "de", "Germany", "Berlin", "52.52", "13.405"],
+    ])
+    provider = app_module.CsvCityGeoIPProvider(str(csv_path))
+    assert not hasattr(provider, "_v6_starts")
+    assert len(provider._v6) == 2
+    assert provider._v6[0][2] is provider._v6[1][2]  # country_code
+    assert provider._v6[0][3] is provider._v6[1][3]  # country_name
+    assert provider._v6[0][4] is provider._v6[1][4]  # city
+    assert provider.lookup_city("2001:db8:1::1")["country_code"] == "DE"
+
+
+def test_csv_city_provider_load_peak_memory_stays_far_below_a_boxed_tuple_list(tmp_path, app_module):
+    """Issue #52's real acceptance criterion, measured rather than assumed:
+    the old `_load()` built a plain Python list of one 6-element tuple per
+    CSV row (`v4_rows`) before packing it into the compact columns -- for a
+    real multi-million-row City Lite import, that boxed-tuple list (each
+    tuple ~104 bytes alone, plus ~28 bytes per boxed int and ~24 bytes per
+    boxed float it holds, none of which are small-int-cached at these IP
+    values) is several hundred bytes per row, not counting the strings.
+    The new streaming/compact-array `_load()` should cost roughly 22 bytes
+    per row for the packed columns themselves (4+4+2+4+4+4 bytes) plus a
+    bounded, small amount for CSV-parsing transients and the tiny interned
+    country/city tables -- nowhere near a 6-tuple-per-row footprint. This
+    asserts a generous upper bound (200 bytes/row) that comfortably fits the
+    compact representation while still being well under half of what the
+    old boxed-tuple-list design would cost, so a regression back to
+    building a temporary per-row tuple list would be caught here."""
+    rows = 20_000
+    csv_path = tmp_path / "geoip_city_bulk.csv"
+    with open(csv_path, "w") as f:
+        for i in range(rows):
+            start = i * 256
+            end = start + 255
+            f.write(
+                f"{start >> 24 & 255}.{start >> 16 & 255}.{start >> 8 & 255}.{start & 255},"
+                f"{end >> 24 & 255}.{end >> 16 & 255}.{end >> 8 & 255}.{end & 255},"
+                f"US,United States,Mountain View,37.386,-122.0838\n"
+            )
+    provider, peak_bytes = _peak_traced_bytes(lambda: app_module.CsvCityGeoIPProvider(str(csv_path)))
+    assert provider.range_count == rows
+    assert peak_bytes / rows < 200, f"{peak_bytes / rows:.1f} bytes/row -- looks like a per-row object is being retained again"
+    assert provider.lookup_city("2001:db8:1::1")["country_code"] == "DE"
 
 
 # --- geoip_city_lookup(): local caching --------------------------------------
