@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.10` (the `VERSION`
+- Foundation version: `0.8.0`, current release: `0.8.5.11` (the `VERSION`
   file is authoritative). The project stays in the `0.8.5.x` series
   deliberately until the UI/dashboard/operational work is fully resolved;
   0.8.6 is not to be started until that gate is explicitly lifted.
@@ -333,6 +333,99 @@ throttled load ships, not as a bug in this own right. (The same log excerpt
 also showed every request/ingest line triplicated byte-for-byte at identical
 timestamps -- treated as log aggregation/duplication, not three real
 requests, absent code evidence otherwise.)
+
+0.8.5.11 (Issue #51) fixes a real-startup semantic problem confirmed by
+TrueNAS evidence in the 0.8.5.10 entry above: the container could report
+RUNNING (listening socket bound, Flask's own startup banner printed) while
+`/health` itself stayed unanswered for several more seconds once the
+0.8.5.9/0.8.5.10 deferred initial GeoIP load started on a fixed
+`GEOIP_INITIAL_LOAD_DELAY_SECONDS` (default 1s) clock delay -- "process is
+running" and "HTTP service is actually ready" were conflated. The fixed
+delay is replaced with a real readiness gate: a new `after_request` hook,
+`_mark_first_response_ready()`, sets a module-level `threading.Event`
+(`_first_response_ready`) the first time the HTTP service finishes serving
+any response, and `_geoip_initial_load_worker()` now waits on that event
+before starting instead of guessing a delay was long enough --
+`GEOIP_INITIAL_LOAD_DELAY_SECONDS` (same env var, same default) becomes only
+a safety ceiling for a deployment that never receives a single request at
+all. `serve()` also now runs Flask's built-in server with `threaded=True`
+so a request already in flight can no longer fully block a concurrent
+request behind it. `/api/observability` gains an additive `startup` field
+(`http_ready`, `first_response_seconds_after_start`,
+`geoip_initial_load_started`/`geoip_initial_load_complete`/
+`geoip_initial_load_seconds_after_start`/`geoip_initial_load_duration_seconds`)
+so this distinction is observable without container log access; `/health`
+itself is deliberately unchanged -- still a plain, fast, unconditional 200,
+never gated on GeoIP or on this new field. `refresh_trackerdb()` was
+inspected and confirmed already safely off the request-serving path (it is
+started from its own daemon thread inside the `agh-ingest` background
+worker, itself started before `serve()` but never blocking it), so no
+change was made there. No change to GeoIP lookup/map-coverage semantics,
+the 0.8.5.10 CSV row-load throttle, or the fixed five-long-lived-worker
+contract (`test_background_workers_are_declared`/
+`test_start_background_workers_starts_daemon_threads` in
+`tests/test_startup.py`, unchanged).
+**This session's sandbox could not execute `pytest` or `docker` at all**
+(both required approval that was never available in this non-interactive
+GitHub Actions session, consistent with the 0.8.5.7-0.8.5.10 hand-offs
+above) -- the new/changed tests
+(`tests/test_startup_readiness.py`, covering the readiness gate, the
+fallback ceiling, the `startup` observability field, and two real
+`werkzeug.serving.make_server` end-to-end checks that `/health` answers
+promptly while a slow request or the GeoIP load itself is held deliberately
+busy) are verified only by direct code inspection against the existing test
+patterns in `tests/test_startup.py` and `tests/test_geoip_load_throttle.py`.
+The real CI run (`pytest` + Docker build/health smoke) must confirm the
+full suite before this is relied upon in production.
+
+0.8.5.11 (Issue #52) fixes the real memory-architecture problem 0.8.5.10's
+throttling did not: on real TrueNAS deployment evidence, leaving GeoIP
+running could drive the container toward 5+ GiB RSS. The root cause was
+`CsvCityGeoIPProvider._load()` parsing every row into a Python tuple,
+appending it to a `v4_rows` list, sorting that list, and only then copying it
+into compact `array.array` columns -- for a multi-million-row DB-IP City
+Lite export, that temporary Python list could itself reach gigabytes before
+the compact representation became usable; 0.8.5.10's chunk/yield throttle
+changed only the timing of that parse, not its peak memory. `_load()` for
+both `CsvCityGeoIPProvider` and `CsvRangeGeoIPProvider` now streams rows
+directly into `array.array` columns via a new shared
+`_CompactRangeTableBuilder` (`app.py`): the common case -- input already
+sorted by start IP, true of a real DB-IP Lite export -- needs no extra
+buffering pass, and an out-of-order source falls back to a single
+index-permutation pass over the already-compact columns, never over a list
+of Python tuples. `CsvRangeGeoIPProvider` (previously a permanent plain
+Python-tuple-per-row list, unlike the city provider) now uses the same
+array-column-plus-interned-country-table representation, with the previous
+duplicate `_v4_starts` list removed since the compact start-key array itself
+is the bisect key. `_reload_geoip_providers()` now builds and swaps the
+country and city providers one at a time (rather than both up front) and
+drops its local reference to each immediately after its swap, so the old
+provider plus a second full provider are never both required to be
+memory-resident together; a new `_trim_allocator_memory()`
+(`gc.collect()` + best-effort glibc `malloc_trim(0)`) runs after every reload
+as an explicitly secondary mitigation, not a substitute for the storage
+redesign. A new standalone script, `scripts/geoip_memory_benchmark.py`,
+measures baseline/after-country-load/after-city-load/steady-state/
+after-repeated-lookups/after-repeated-reload RSS plus each provider's own
+compact storage size against a synthetic dataset it generates (or a real
+database via `--country-csv`/`--city-csv`); a CI-safe regression guard in the
+new `tests/test_geoip_compact_storage.py` bounds a moderate synthetic load's
+RSS growth to a fixed bytes-per-row budget. Lookup semantics, IPv4/IPv6
+coverage, map UI/coverage, country aggregation, destination/city lookup
+results, DB-IP attribution, the 0.8.5.10 throttling controls, and the Issue
+#44 03:00/30-day updater are all unchanged; no 0.8.6 work is included.
+**This hand-off's sandbox could not execute `pytest`, the new benchmark
+script, or Docker at all -- running Python, with or without `-m`/`-c`, itself
+required approval that was never available in this session**, matching the
+same limitation recorded against the 0.8.5.8 and 0.8.5.10 hand-offs. The
+change is verified by direct code inspection and by updating/extending the
+existing test bodies that asserted the old internal representation
+(`tests/test_geoip_destinations_map.py`'s `_v4_starts`/`_v4` bisect test) plus
+new tests in `tests/test_geoip_compact_storage.py`. The real CI run (pytest +
+Docker build/health smoke) must confirm the full suite, and an operator
+should run `scripts/geoip_memory_benchmark.py` against a representative
+multi-million-row dataset, before the measured RAM reduction this issue asks
+for is treated as confirmed rather than a code-inspection-only claim.
 
 ## How to update this file
 

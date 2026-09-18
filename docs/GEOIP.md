@@ -270,10 +270,24 @@ loading that into a plain Python list of per-row tuples/strings,
 latitude/longitude) plus small integer indices into interned country/city
 string tables -- the actual set of distinct country/city names in a real
 database is a few hundred to a few thousand, shared across millions of
-rows, not re-allocated per row. IPv6 ranges are far fewer in a real city
-export, so they stay a plain sorted list, matching the existing country
-provider's approach. Lookup is the same `bisect` binary search the country
-provider uses.
+rows, not re-allocated per row. `CsvRangeGeoIPProvider` (the country-only
+database) uses the same array-column-plus-interned-table representation for
+its own (fewer, but still potentially several-million-row) IPv4 ranges. IPv6
+ranges are far fewer in a real export for either database, so they stay a
+plain sorted list referencing the same interned table. Lookup is the same
+`bisect` binary search for both providers.
+
+Both providers' CSV parse loop (`_load()`) streams rows directly into these
+compact `array.array` columns as they're read, via a shared
+`_CompactRangeTableBuilder` helper, instead of ever buffering the whole
+database as a Python list of row tuples first and compacting it only
+afterwards (Issue #52). A source file that is already sorted by start IP
+(true of a real DB-IP Lite export) needs no extra pass at all; an unsorted
+source falls back to one index-permutation pass over the already-compact
+columns, never over Python tuples. `scripts/geoip_memory_benchmark.py`
+measures peak RSS at each load/lookup/reload stage against a synthetic (or
+real) dataset if you want to reproduce these figures for your own database
+size.
 
 ### MaxMind for Destinations mode
 
@@ -431,7 +445,7 @@ disabled and returns immediately without ever making a network request.
 | --- | --- | --- |
 | `GEOIP_DB_PATH` | `/data/geoip_country_ranges.csv` | Path to the country CSV database above. |
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP country lookup results. |
-| `GEOIP_INITIAL_LOAD_DELAY_SECONDS` | `1` | Delay before the deferred initial GeoIP provider load starts, giving the HTTP server time to finish binding first. |
+| `GEOIP_INITIAL_LOAD_DELAY_SECONDS` | `1` | Safety ceiling (seconds) the deferred initial GeoIP provider load will wait for the HTTP server to prove it can actually serve a request before proceeding anyway. As of Issue #51 this is no longer a blind sleep: the load starts as soon as the server serves its first response (any route), and only falls back to waiting out this full ceiling if no request arrives at all. |
 | `GEOIP_LOAD_CHUNK_ROWS` | `5000` | Row count per throttled chunk while parsing a GeoIP CSV database (initial load and reload after an auto-update both use this). |
 | `GEOIP_LOAD_YIELD_SECONDS` | `0.01` | Sleep inserted after every `GEOIP_LOAD_CHUNK_ROWS` chunk during CSV parsing, so a large database (city-level in particular) doesn't monopolize CPU/disk for the whole load. Set to `0` to disable throttling. |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | How long an aggregated map payload is reused before recomputing. |
@@ -523,6 +537,16 @@ agree:
   than zero, and `provider_type: "CsvRangeGeoIPProvider"`. `db_path_basename`
   reports only the filename, not the full path, so this endpoint doesn't leak
   host filesystem layout.
+
+- **`/api/observability`'s `startup` field** (Issue #51) separates "the
+  process is running" from "the HTTP service has proven it can serve a
+  request": `http_ready` and `first_response_seconds_after_start` reflect
+  the readiness gate described above, and `geoip_initial_load_started`/
+  `geoip_initial_load_complete`/`geoip_initial_load_seconds_after_start`/
+  `geoip_initial_load_duration_seconds` report when the deferred load
+  actually ran relative to that first response. `/health` itself
+  deliberately does not expose or depend on any of this -- it stays a
+  plain, fast, unconditional 200 so it remains a trustworthy liveness check.
 
 ## Verifying map coverage
 
