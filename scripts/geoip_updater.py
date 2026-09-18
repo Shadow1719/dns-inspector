@@ -183,26 +183,29 @@ def resolve_auto_update_timezone(name):
     for the caller to log -- a bad timezone must never crash the background
     worker or block startup. Returns `(tzinfo, warning_or_None)`."""
     requested = (name or "").strip() or DEFAULT_AUTO_UPDATE_TIMEZONE
+    if requested == DEFAULT_AUTO_UPDATE_TIMEZONE:
+        return timezone.utc, None
     try:
         from zoneinfo import ZoneInfo
         return ZoneInfo(requested), None
     except Exception as e:
-        if requested == DEFAULT_AUTO_UPDATE_TIMEZONE:
-            return timezone.utc, None
         return timezone.utc, f"unknown or unavailable GEOIP_AUTO_UPDATE_TIMEZONE {requested!r} ({e}) -- falling back to UTC"
 
 
 def next_scheduled_run(now, hour, minute):
-    """Return the next datetime >= `now` (same tzinfo as `now`) that falls at
-    `hour:minute:00` local time: today's occurrence if it hasn't passed yet,
-    otherwise tomorrow's. Pure and deterministic (no I/O, no real sleeping)
+    """Return the next datetime strictly after `now` (same tzinfo as `now`)
+    that falls at `hour:minute:00` local time: today's occurrence if it
+    hasn't happened yet, otherwise tomorrow's -- `now` landing exactly on
+    today's window counts as already consumed, so it always rolls to
+    tomorrow rather than being returned again. Pure and deterministic (no
+    I/O, no real sleeping)
     so scheduling math -- including midnight and DST-transition edge cases --
     is directly testable. `now`'s tzinfo should be a real IANA zone
     (`resolve_auto_update_timezone()`) rather than a fixed offset so a
     24-hour-wall-clock day that is actually 23 or 25 hours around a DST
     transition is handled correctly by simple `timedelta(days=1)` arithmetic."""
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if candidate < now:
+    if candidate <= now:
         candidate = candidate + timedelta(days=1)
     return candidate
 

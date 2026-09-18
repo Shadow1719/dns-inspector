@@ -2,6 +2,22 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.8]
+
+CI repair (Issue #47): fixes the two real test failures left by the
+0.8.5.7 GeoIP update scheduler.
+
+- **`next_scheduled_run()` no longer returns an already-consumed instant.**
+  An exact hit (`now` equal to today's configured window, e.g. a pass
+  starting precisely at `03:00:00`) now counts as passed and rolls to
+  tomorrow (`candidate <= now`, not `candidate < now`), instead of handing
+  the worker the same instant again and risking a tight re-run loop.
+- **`resolve_auto_update_timezone()` returns the real `timezone.utc`
+  object for the default/empty-string case**, instead of a `ZoneInfo("UTC")`
+  instance that fails identity comparison against `datetime.timezone.utc`.
+  Real IANA zone names (including DST-observing ones) still resolve via
+  `zoneinfo.ZoneInfo` unchanged.
+
 ## [0.8.5.6]
 
 Dashboard widget layout fix, a functional restart control, and a GeoIP

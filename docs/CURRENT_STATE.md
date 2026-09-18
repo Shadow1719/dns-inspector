@@ -260,6 +260,30 @@ container's own logs for "scheduled for" without ever seeing "starting
 scheduled check/update pass") is recorded in the Issue #44 PR description
 for the repository owner to add by hand.
 
+0.8.5.8 (Issue #47) is a CI repair for the two real test failures left by
+0.8.5.7/Issue #44's scheduler (CI run `35274175672` on the PR #46 merge
+commit, `aba7744`: 371 passed, 2 failed). `next_scheduled_run()` used
+`candidate < now`, so calling it again at the *exact* configured instant
+(e.g. a pass that starts precisely at `03:00:00`) returned that same
+already-consumed instant instead of rolling to tomorrow, which would have
+spun the worker's loop into re-running a pass every iteration instead of
+waiting a day; it now uses `candidate <= now` so an exact hit always counts
+as consumed. `resolve_auto_update_timezone()` resolved even the default/
+empty-string UTC case through `zoneinfo.ZoneInfo("UTC")`, so callers relying
+on identity comparison against `datetime.timezone.utc` (a fixed-offset type
+distinct from a `ZoneInfo` instance) would not match; the explicit/default
+UTC case now returns the real `timezone.utc` object directly and only falls
+through to `ZoneInfo` for a real IANA zone name, so non-UTC timezones
+(including DST-observing ones like `Europe/Bucharest`) are unaffected. No
+other scheduler behaviour, `/api/observability` field, or route changed.
+**This hand-off's sandbox could not execute `pytest` or `docker` at all
+(both required approval that was never available in this session)**, so
+the fix is verified by direct code inspection against the existing test
+bodies in `tests/test_geoip_updater.py` rather than an actual local test
+run; the repository owner or the real CI run should confirm the full suite
+and the Docker smoke path referenced in the issue before relying on this
+fix.
+
 ## How to update this file
 
 Update this document when a change materially alters the project's current architecture, active development state, or important known constraints. Do not turn it into a changelog or duplicate the source code.
