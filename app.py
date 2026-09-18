@@ -827,6 +827,8 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
       <section class="settings-section" data-settings-panel="diagnostics">
         <h3>Diagnostics</h3>
         <div class="settings-kv" id="diagnostics-kv"><b>Loading…</b><span></span></div>
+        <div class="settings-row-label" style="padding-top:14px"><b>Analytics render performance</b><small>Last fetch/render timing for the Analytics poll and the destination map, split by network vs. on-page render time</small></div>
+        <div class="settings-kv" id="diagnostics-perf-kv"><b>No samples yet</b><span>Open the Analytics tab first</span></div>
         <div class="settings-row" style="border-bottom:0;padding-top:14px"><div class="settings-row-label"><b>Debug bundle</b><small>A safe diagnostic snapshot for troubleshooting</small></div>
           <div class="settings-control"><button type="button" onclick="window.location='/debug/bundle'">Generate Debug Bundle</button></div>
         </div>
@@ -1380,6 +1382,40 @@ const ANALYTICS_LIVE_MAX_SAMPLES = 100;
 let analyticsLiveSamples = [];
 let analyticsRange = '1h';
 let analyticsFullTimer = null;
+/* Issue #61: performance/render-storm fixes. `/api/analytics/map` runs
+   heavier server-side GeoIP aggregation than `/api/analytics`, so it gets
+   its own bounded timer (mapRefreshMs()) instead of being fetched on every
+   analytics poll tick. Every poll path below also gets an AbortController
+   (cancels its own previous in-flight request) plus a monotonic sequence
+   number, so a slow response can never overwrite state a newer request
+   already replaced, and an in-flight guard so a slow interval tick can't
+   pile up overlapping requests. */
+let mapRefreshTimer = null;
+let analyticsFetchController = null;
+let mapFetchController = null;
+let analyticsFetchSeq = 0;
+let mapFetchSeq = 0;
+let mapFetchInFlight = false;
+let mapLastFingerprint = null;
+const MAP_MIN_REFRESH_MS = 20000;
+function mapRefreshMs(){ return Math.max(MAP_MIN_REFRESH_MS, refreshMs * 3); }
+/* Lightweight client-side perf trace (Issue #61): records HTTP-fetch time
+   separately from render time for the last few analytics/map cycles so a
+   slow interaction can be attributed to network vs. main-thread rendering
+   without needing a browser profiler. Read via window.__dnsInspectorPerf or
+   Settings > Diagnostics. Never itself triggers a network request. */
+window.__dnsInspectorPerf = { analytics: [], map: [] };
+function perfNow(){ return (window.performance && typeof window.performance.now === 'function') ? window.performance.now() : Date.now(); }
+function recordPerf(kind, fetchStartedAt, renderStartedAt, renderEndedAt){
+  const bucket = window.__dnsInspectorPerf[kind] || (window.__dnsInspectorPerf[kind] = []);
+  bucket.push({
+    fetchMs: Math.round(renderStartedAt - fetchStartedAt),
+    renderMs: Math.round(renderEndedAt - renderStartedAt),
+    totalMs: Math.round(renderEndedAt - fetchStartedAt),
+    at: Date.now(),
+  });
+  if (bucket.length > 20) bucket.shift();
+}
 
 const STATUS_COLOR_VAR = {Allowed:'--sem-ok', Blocked:'--sem-blocked', Mixed:'--sem-warn', Unknown:'--sem-info'};
 function renderStatusBreakdown(breakdown){
@@ -1434,10 +1470,18 @@ function pushLiveSample(n, windowSeconds){
   renderLiveHero(windowSeconds);
 }
 async function fetchAnalyticsFull(){
+  const seq = ++analyticsFetchSeq;
+  if (analyticsFetchController) analyticsFetchController.abort();
+  const controller = new AbortController();
+  analyticsFetchController = controller;
+  const fetchStartedAt = perfNow();
   try{
-    const r = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`, {cache:'no-store'});
+    const r = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`, {cache:'no-store', signal: controller.signal});
+    if (seq !== analyticsFetchSeq) return; // superseded by a newer request while this one was in flight
     if (!r.ok) return;
     const data = await r.json();
+    if (seq !== analyticsFetchSeq) return; // superseded while awaiting the response body
+    const renderStartedAt = perfNow();
     renderMetricVisual('chart-query-volume', data.series?.queries?.points, '--sem-info', 'DNS queries');
     renderMetricVisual('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
     renderMetricVisual('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
@@ -1449,8 +1493,12 @@ async function fetchAnalyticsFull(){
     const tDevices=document.getElementById('tile-devices'); if(tDevices) tDevices.textContent = data.active_devices ?? '—';
     const tNewDomains=document.getElementById('tile-new-domains'); if(tNewDomains) tNewDomains.textContent = data.new_domains_24h ?? '—';
     document.querySelectorAll('[data-analytics-range]').forEach(b => b.classList.toggle('active', b.dataset.analyticsRange === analyticsRange));
-    fetchDestinationMap();
-  }catch(e){ console.debug('analytics refresh failed', e); }
+    recordPerf('analytics', fetchStartedAt, renderStartedAt, perfNow());
+    // /api/analytics/map is intentionally NOT fetched here -- see
+    // startAnalyticsPolling()/mapRefreshMs(): it runs heavier server-side
+    // GeoIP aggregation and gets its own bounded-cadence timer so it can
+    // never turn every analytics poll into a map-rebuild storm.
+  }catch(e){ if (e?.name !== 'AbortError') console.debug('analytics refresh failed', e); }
 }
 /* DNS Destinations map (0.8.5.1; Visual 2.0 in Issue #37/0.8.6): aggregated
    GeoIP data from its own endpoint/cache (see `/api/analytics/map`) so it
@@ -1522,7 +1570,7 @@ const WORLD_LAND_D = [
    and is memoized (WORLD_DOT_CACHE). */
 function mapLandRings(){
   return WORLD_LAND_D.split('Z').map(seg => seg.trim()).filter(Boolean).map(seg => {
-    const nums = (seg.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    const nums = (seg.match(/-?\\d+(?:\\.\\d+)?/g) || []).map(Number);
     const pts = [];
     for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
     return pts;
@@ -1678,7 +1726,7 @@ function mapThemeColor(ratio, theme){
 function mapCompactNumber(n){
   n = Number(n) || 0;
   if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\\.0$/, '') + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\\.0$/, '') + 'k';
   return String(n);
 }
 /* Deterministic, seeded particle placement (Issue #56 follow-up): particle
@@ -2201,21 +2249,55 @@ document.getElementById('map-reset-btn')?.addEventListener('click', () => {
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-fit-btn')?.addEventListener('click', mapFitToData);
-async function fetchDestinationMap(){
+function mapPayloadFingerprint(data){
   try{
-    const r = await fetch('/api/analytics/map', {cache:'no-store'});
+    return JSON.stringify({
+      provider: data?.provider, capabilities: data?.capabilities,
+      diagnostics: data?.diagnostics, coverage: data?.coverage,
+      countries: data?.countries, destinations: data?.destinations, unknown: data?.unknown,
+    });
+  }catch(e){ return null; }
+}
+async function fetchDestinationMap(){
+  if (mapFetchInFlight) return;
+  mapFetchInFlight = true;
+  const seq = ++mapFetchSeq;
+  if (mapFetchController) mapFetchController.abort();
+  const controller = new AbortController();
+  mapFetchController = controller;
+  const fetchStartedAt = perfNow();
+  try{
+    const r = await fetch('/api/analytics/map', {cache:'no-store', signal: controller.signal});
+    if (seq !== mapFetchSeq) return; // superseded by a newer request while this one was in flight
     if (!r.ok) return;
-    renderDestinationMap(await r.json());
-  }catch(e){ console.debug('destination map refresh failed', e); }
+    const data = await r.json();
+    if (seq !== mapFetchSeq) return; // superseded while awaiting the response body
+    const fingerprint = mapPayloadFingerprint(data);
+    if (fingerprint !== null && fingerprint === mapLastFingerprint && mapLastPayload){
+      mapLastPayload = data; // keep the freshest payload for interaction-triggered re-renders (zoom/pan/Fit)
+      recordPerf('map', fetchStartedAt, perfNow(), perfNow());
+      return;
+    }
+    mapLastFingerprint = fingerprint;
+    const renderStartedAt = perfNow();
+    renderDestinationMap(data);
+    recordPerf('map', fetchStartedAt, renderStartedAt, perfNow());
+  }catch(e){ if (e?.name !== 'AbortError') console.debug('destination map refresh failed', e); }
+  finally{ mapFetchInFlight = false; }
 }
 function startAnalyticsPolling(){
   if (analyticsFullTimer) return;
   renderLiveHero();
   fetchAnalyticsFull();
+  fetchDestinationMap();
   analyticsFullTimer = setInterval(fetchAnalyticsFull, refreshMs);
+  mapRefreshTimer = setInterval(fetchDestinationMap, mapRefreshMs());
 }
 function stopAnalyticsPolling(){
   if (analyticsFullTimer){ clearInterval(analyticsFullTimer); analyticsFullTimer = null; }
+  if (mapRefreshTimer){ clearInterval(mapRefreshTimer); mapRefreshTimer = null; }
+  if (analyticsFetchController){ analyticsFetchController.abort(); analyticsFetchController = null; }
+  if (mapFetchController){ mapFetchController.abort(); mapFetchController = null; }
 }
 document.querySelectorAll('[data-analytics-range]').forEach(b => b.addEventListener('click', () => {
   analyticsRange = b.dataset.analyticsRange;
@@ -2515,6 +2597,25 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       ['domains','devices','processed_queries'].forEach(t => { if (counts[t] != null) rows.push(['Rows: ' + t, counts[t]]); });
       el.innerHTML = kvRows(rows);
     }catch(e){ el.innerHTML = '<b>Diagnostics unavailable</b><span>—</span>'; }
+    renderClientPerfPanel();
+  }
+
+  /* Issue #61: surfaces the client-side perf trace recorded by
+     recordPerf()/fetchAnalyticsFull()/fetchDestinationMap() so an operator
+     can tell a slow HTTP round-trip apart from slow in-browser rendering
+     without opening devtools. Purely reads window.__dnsInspectorPerf --
+     never triggers a request of its own. */
+  function renderClientPerfPanel(){
+    const el = document.getElementById('diagnostics-perf-kv'); if (!el) return;
+    const perf = window.__dnsInspectorPerf || {analytics:[], map:[]};
+    const summarize = (label, samples) => {
+      if (!samples.length) return [label + ' (no samples yet)', '—'];
+      const last = samples[samples.length - 1];
+      const avg = (key) => Math.round(samples.reduce((s,x) => s + x[key], 0) / samples.length);
+      return [label + ' (last / avg of ' + samples.length + ')', `fetch ${last.fetchMs}ms / ${avg('fetchMs')}ms &middot; render ${last.renderMs}ms / ${avg('renderMs')}ms`];
+    };
+    const rows = [summarize('Analytics poll', perf.analytics || []), summarize('Destination map', perf.map || [])];
+    el.innerHTML = rows.map(([k,v]) => `<b>${esc(k)}</b><span>${v}</span>`).join('');
   }
 
   async function refreshSystemPanel(){
@@ -2785,17 +2886,25 @@ def trackerdb_refresh_needed():
 
 
 def _execute_sql_file(conn, path):
-    """Execute a SQL dump incrementally to avoid holding the full snapshot in RAM."""
+    """Execute a SQL dump incrementally to avoid holding the full snapshot in RAM.
+
+    Uses execute() rather than executescript() for each statement: executescript()
+    implicitly commits any pending transaction before it runs, which silently split
+    the dump's own BEGIN TRANSACTION/COMMIT wrapper into separate auto-committed
+    statements and left the final COMMIT with nothing to commit ("cannot commit -
+    no transaction is active"). execute() has no such implicit commit, so the
+    dump's own BEGIN/COMMIT bracket the whole load in one real transaction.
+    """
     statement = []
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         for raw_line in f:
             statement.append(raw_line)
             candidate = "".join(statement)
             if sqlite3.complete_statement(candidate):
-                conn.executescript(candidate)
+                conn.execute(candidate)
                 statement.clear()
     if statement and "".join(statement).strip():
-        conn.executescript("".join(statement))
+        conn.execute("".join(statement))
 
 
 def refresh_trackerdb(force=False):

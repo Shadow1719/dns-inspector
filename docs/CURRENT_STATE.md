@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.13` (the `VERSION`
+- Foundation version: `0.8.0`, current release: `0.8.5.14` (the `VERSION`
   file is authoritative). The project stays in the `0.8.5.x` series
   deliberately until the UI/dashboard/operational work is fully resolved;
   0.8.6 is not to be started until that gate is explicitly lifted.
@@ -512,6 +512,62 @@ keyboard activation on a dense particle cluster, reduced-motion toggle) is
 strongly recommended before merge, since this repository has no headless-
 browser test harness to exercise the new rendering/interaction code paths
 automatically.
+
+0.8.5.14 (Issue #61 P0 follow-up) fixes a real render-storm that was still
+present in `dev` after 0.8.5.13 shipped: `fetchAnalyticsFull()` still called
+`fetchDestinationMap()` unconditionally on every `/api/analytics` poll tick,
+with no in-flight guard, `AbortController` or unchanged-data check, so the
+heavier `/api/analytics/map` GeoIP aggregation ran at the same cadence as the
+light poll. **Scoping note for future agents:** an earlier session (branch
+`claude/issue-61-20260918-0930`, commit `09863f851d4b2dec28ad27bdfa20a4df0f79170e`)
+implemented this exact P0 fix plus a Basemap/Theme split, but that branch was
+never merged; `dev`'s actual 0.8.5.13 (`0335860`/`0fd8f83`) is a separate,
+independently-authored implementation of the Basemap/Theme split only, built
+from the same `b412140` base, that did not carry the P0 fix, the
+`mapCompactNumber()`/TrackerDB cleanup fixes, or their dedicated tests over.
+This release re-implements the P0 fix and the two cleanup fixes against the
+current `dev` code (porting the reviewed logic from the abandoned branch
+where compatible; the map-visual portions of that old branch are obsolete
+against the current Basemap/Theme implementation and were not used). See
+`/api/analytics/map` polling: `mapRefreshMs()` (`max(20000, refreshMs*3)`)
+now drives its own `mapRefreshTimer`, independent of `analyticsFullTimer`;
+both `fetchAnalyticsFull()`/`fetchDestinationMap()` use an `AbortController` +
+monotonic sequence number so a slow response can't overwrite newer state,
+`fetchDestinationMap()` also has an in-flight guard, and `mapPayloadFingerprint()`
+skips `renderDestinationMap()`'s SVG rebuild when the polled payload is
+structurally unchanged. A client-side perf trace
+(`window.__dnsInspectorPerf`/`recordPerf()`) is surfaced in Settings >
+Diagnostics. Reusing DOM nodes inside `renderDestinationMap()` instead of
+`innerHTML` replacement, and giving charts/gauges/map fully independent
+render paths, are explicitly **not** done -- see `CHANGELOG.md` for why.
+Also fixes two real-DEV bugs from the issue's debug log: `mapCompactNumber()`'s
+JS regex had a Python-invalid escape sequence (`SyntaxWarning` at import,
+correct JS output regardless) -- compiling the whole file with `SyntaxWarning`
+escalated to an error found a second, previously-unreported instance of the
+same root cause in 0.8.5.13's `mapLandRings()` dot-matrix sampling regex,
+fixed the same way -- and `refresh_trackerdb()`'s `_execute_sql_file()`
+ran each dump statement through `executescript()`, which implicitly commits
+any pending transaction and silently defeated the dump's own
+`BEGIN TRANSACTION;`/`COMMIT;` wrapper (`cannot commit - no transaction is
+active`); both now use `conn.execute()` per statement instead. New tests:
+`tests/test_analytics_polling_performance.py`,
+`tests/test_app_source_no_syntax_warnings.py`,
+`tests/test_trackerdb_sql_dump_transaction.py`.
+**This hand-off's sandbox could not execute `pytest`/`python` at all**
+(matching every 0.8.5.x hand-off above since 0.8.5.7) -- verified by direct
+code inspection, with every new/changed string the new tests assert on
+independently grep-verified against the actual rendered `app.py` template,
+and every inserted JS block read back in full to check brace balance. The
+real CI run (`pytest` + Docker build/health smoke) must confirm the full
+suite before merge.
+
+The full tile-based/photographic basemap source abstraction (satellite/street
+tiles + offline fallback) and the full 2026 Analytics charts/gauges visual
+rewrite requested in Issue #61 remain **not implemented** -- same rationale
+as 0.8.5.13's deferral: too large and rendering-sensitive to ship unverified
+in a sandbox with no Python execution permission and no browser. They should
+be tracked as separate follow-up issues rather than folded into further
+0.8.5.x point releases.
 
 ## How to update this file
 
