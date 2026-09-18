@@ -321,6 +321,26 @@ semantics:
 - Heatmap mode is deliberately left as a documented follow-up rather than a
   half-working implementation
 
+## Implemented: Leaflet + OpenStreetMap real map viewport (Issue #69)
+
+The map above (0.8.5.1-0.8.5.14/Issues #27-#63) drew its basemap as a fixed
+CSS/SVG background (or, for some presets, a single stretched static tile
+image) underneath a separately hand-projected marker overlay, so panning or
+zooming only ever moved the overlay, never the geography under it. Issue #69
+replaces the renderer with [Leaflet](https://leafletjs.com/) and
+[OpenStreetMap](https://www.openstreetmap.org/) standard tiles as a real
+slippy-map engine -- tiles, markers and pan/zoom are now one scene -- without
+changing `/api/analytics/map`'s payload, the GeoIP lookup/storage
+architecture, or the observed-DNS-destination semantics above. See
+`docs/LEAFLET_MAP.md` for the architecture, fallback contract and disclosed
+scope decisions, and `CHANGELOG.md`/`docs/CURRENT_STATE.md` for the full
+0.8.5.15 entry. The renderer exposes a small named
+`{ countries, destinations }` layer-group structure so future infrastructure-
+location datasets (Google/AWS/Azure/Cloudflare/CDN PoPs, a possible future
+`infrastructure_locations` table) can be added as additional layers later
+without replacing the map engine -- none of those datasets exist in the
+repository yet and none were added by this issue.
+
 ---
 
 # Design principles

@@ -50,20 +50,12 @@ def is_development_environment():
     return RUNTIME_ENV == "development"
 
 
-# DEV experiment: amCharts is on by default in development builds only.
-# Production keeps the existing SVG renderer unless explicitly enabled.
-AMCHARTS_MAP_ENABLED = os.getenv(
-    "AMCHARTS_MAP_ENABLED",
-    "1" if RUNTIME_ENV == "development" else "0",
-).strip().lower() not in {"0", "false", "no", "off"}
-
 def _environment_render_context():
     dev = is_development_environment()
     return {
         "is_dev_environment": dev,
         "favicon_path": "/static/favicon-dev.svg" if dev else "/static/favicon.svg",
         "page_title": f"DNS Inspector DEV v{APP_VERSION}" if dev else "DNS Inspector",
-        "amcharts_map_enabled": AMCHARTS_MAP_ENABLED,
     }
 
 
@@ -232,11 +224,13 @@ IP_RE = re.compile(r"^[0-9a-f:.]+$")
 
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
-{% if amcharts_map_enabled %}
-<script src="https://cdn.amcharts.com/lib/version/5.20.6/index.js"></script>
-<script src="https://cdn.amcharts.com/lib/version/5.20.6/map.js"></script>
-<script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script>
-{% endif %}
+<!-- Issue #69: Leaflet + OpenStreetMap is the DNS Destinations map's real
+     geographic viewport (replacing the previous experimental renderer). The legacy
+     SVG renderer further below in this template remains the automatic
+     fallback whenever this library/tiles can't load -- see
+     static/leaflet-map.js. -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /* Applied before first paint so a saved theme/density/accent never flashes
    the default look first. Kept intentionally tiny and self-contained (the
@@ -618,6 +612,18 @@ html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:tra
    background. Bubble/particle size and position are entirely data-driven
    and deterministic (seeded, never Math.random()); only markers at/above a
    high intensity ratio pulse, and only when motion isn't reduced. ---- */
+/* Issue #69: Leaflet + OpenStreetMap real map viewport. static/leaflet-map.js
+   turns #destination-map itself into Leaflet's own container (a real
+   pan/zoom slippy map, not a fixed image) only once the library actually
+   initializes; these rules only apply then (via the leaflet-map-host class
+   it adds), so the legacy SVG fallback above -- which sizes itself through
+   .destination-map-wrap/.destination-map-svg -- is completely unaffected
+   when Leaflet can't load. */
+#destination-map.leaflet-map-host{width:100%;min-height:320px;aspect-ratio:2/1;position:relative;border:1px solid var(--border);border-radius:var(--radius-md);background:var(--surface-1)}
+.leaflet-status-banner{z-index:1000}
+.leaflet-dns-marker{cursor:pointer}
+.leaflet-dns-marker span{display:flex;width:100%;height:100%;align-items:center;justify-content:center;border-radius:50%;color:#0b0f14;font-size:.68rem;font-weight:700;border:1.5px solid rgba(255,255,255,.55);box-shadow:0 0 0 1px rgba(0,0,0,.25)}
+.leaflet-dns-marker-selected span{outline:2px solid #fff;outline-offset:1px}
 .destination-map-wrap{
   position:relative;
   --map-bg-a:var(--surface-2); --map-bg-b:var(--surface-1);
@@ -1297,7 +1303,6 @@ function renderInstrumentGauges(data){
           </div>
         </div>
         <div class="stats-note" style="margin-top:0" id="destination-map-history"></div>
-        {% if amcharts_map_enabled %}<div class="stats-note" style="margin-top:0">amCharts map POC enabled via <code>AMCHARTS_MAP_ENABLED=1</code> — experimental; legacy SVG remains the default.</div>{% endif %}
         <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
       </div>
     </div>
@@ -2997,9 +3002,8 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
 
   syncControls();
 })();
-</script></body>{% if amcharts_map_enabled %}
-<script src="/static/amcharts-map-poc.js"></script>
-{% endif %}
+</script></body>
+<script src="/static/leaflet-map.js"></script>
 </html>
 """
 

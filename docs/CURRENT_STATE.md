@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.14` (the `VERSION`
+- Foundation version: `0.8.0`, current release: `0.8.5.15` (the `VERSION`
   file is authoritative). The project stays in the `0.8.5.x` series
   deliberately until the UI/dashboard/operational work is fully resolved;
   0.8.6 is not to be started until that gate is explicitly lifted.
@@ -630,6 +630,83 @@ row selection, keyboard marker activation, reduced-motion) is strongly
 recommended before merge, since this repository has no headless-browser
 test harness to exercise the new interaction/tile-loading code paths
 automatically.
+
+0.8.5.15 (Issue #69) replaces the DNS Destinations map's renderer with
+Leaflet + OpenStreetMap standard tiles as a real geographic viewport,
+superseding both the fixed-image/dot-matrix basemap approach from Issues
+#33/#37/#39/#56/#63 and a same-day amCharts experiment (added, briefly
+DEV-default-enabled, then explicitly superseded by this issue before it was
+ever the shipped default) that this branch had added and this issue's own
+instructions said to stop and remove. `AMCHARTS_MAP_ENABLED`,
+`static/amcharts-map-poc.js`, `docs/AMCHARTS_MAP_POC.md` and
+`tests/test_map_amcharts_poc.py` are all removed; there is no environment
+variable that brings amCharts back. `/api/analytics/map`'s payload, the
+GeoIP lookup/storage architecture and the observed-DNS-destination
+semantics are all unchanged -- this is a frontend rendering replacement
+only. The previous renderer's core problem, called out explicitly in this
+issue, was architectural: its "basemap" was a fixed CSS/SVG background (or,
+for three of its four presets, a single stretched zoom-0 tile image -- see
+`docs/MAP_BASEMAP.md`) that did not pan/zoom with the marker overlay drawn
+on top of it; only the overlay's own hand-rolled `mapZoom`/`mapViewCenter`
+moved. A new file, `static/leaflet-map.js`, loads Leaflet 1.9.4 (CSS+JS,
+unconditionally from `unpkg.com`, no integrity/crossorigin attributes,
+matching the existing amCharts CDN include's own convention) and, once
+`window.L` is confirmed available and a real `L.map()` instance actually
+initializes, replaces `window.renderDestinationMap` -- the single function
+`fetchDestinationMap()` calls with whatever it fetched. `fetchDestinationMap()`
+itself and its Issue #61 AbortController/monotonic-sequence/in-flight/
+fingerprint protections are completely untouched and remain the map
+widget's only network-request owner. Unlike the amCharts POC (a reference
+implementation only, per this issue's own instructions, never the shipped
+renderer), this renderer deliberately reuses the existing shared
+`mapSelectCountry()`/`renderMapDetail()`/`mapLastPayload`/`mapMetricValue()`/
+`mapThemeColor()` functions instead of re-implementing selection/detail/
+sizing/color independently, so a marker click and a country-breakdown-row
+click (Issue #63) can never diverge, and both renderers agree on what "high
+intensity" looks like. Countries mode plots one marker per geolocated
+country centroid; Destinations mode plots real observed destination
+coordinates, grid-clustered by real lat/lon (a new, independent clustering
+heuristic -- the legacy renderer's own `clusterDestinationPoints()` assumes
+a fixed equirectangular pixel canvas that doesn't apply once Leaflet owns
+real geographic coordinates) and re-clusters as Leaflet's own zoom level
+changes. `state.layers` is a small named `{ countries, destinations }` map
+of real `L.layerGroup()`s so future infrastructure-location datasets this
+issue explicitly says not to implement yet can register another named
+layer group later without replacing the map engine. If Leaflet's library
+never loads, or `L.map()` itself throws (checked lazily on the first real
+payload), the original legacy SVG renderer -- captured by reference before
+being overridden -- is called directly as a genuine fallback, not just a
+console warning, so the widget never renders blank; this satisfies the
+issue's explicit "legacy SVG as fallback only when Leaflet cannot be
+initialized" requirement. Reduced-motion disables Leaflet's own zoom/pan/
+marker animation options; OpenStreetMap attribution stays visible via
+Leaflet's built-in attribution control. Two disclosed scope decisions: the
+legacy renderer's four `mapBasemap` presets (a stylized-background concept
+tied to the old fixed-image approach) don't apply once Leaflet/OSM tiles
+are the real viewport, so that control is hidden once Leaflet initializes
+(the stored preference itself is untouched, so it still governs the legacy
+SVG fallback if this ever falls back to it); and selecting a country from
+the breakdown panel opens its detail card exactly like a marker click but,
+unlike the legacy renderer, does not also recenter/zoom the Leaflet
+viewport onto it (to avoid fighting a user's own in-progress pan/zoom on a
+real slippy map) -- "Fit" remains the explicit way to frame all currently
+plotted markers. See `docs/LEAFLET_MAP.md` for the full architecture
+writeup. New tests: `tests/test_map_leaflet_renderer.py`.
+**This hand-off's sandbox could not execute `pytest`/`python` or make any
+outbound network request at all** (matching numerous 0.8.5.x hand-offs
+above, e.g. Issues #44/#50/#52/#56/#63) -- the change is verified by direct
+code inspection, with every string the new tests assert on independently
+grep-verified against the actual rendered `app.py` template and
+`static/leaflet-map.js`, and the whole new JS file read back in full to
+check brace/paren balance and control flow by hand. The real CI run
+(`pytest` + Docker build/health smoke) must confirm the full suite, and a
+manual browser pass is strongly recommended before merge: confirm
+OpenStreetMap tiles actually render (not a blank/gray host), zoom 2-3 steps
+into Europe/North America and pan around to confirm tiles/markers/clusters
+genuinely move and scale together with no fixed image left behind underneath,
+confirm a marker click and a breakdown-row click open the identical detail
+card, toggle Countries/Destinations mode, and confirm the reduced-motion
+preference disables Leaflet's zoom/pan animation.
 
 
 ## How to update this file
