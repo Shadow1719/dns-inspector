@@ -50,7 +50,12 @@ def is_development_environment():
     return RUNTIME_ENV == "development"
 
 
-AMCHARTS_MAP_ENABLED = os.getenv("AMCHARTS_MAP_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
+# DEV experiment: amCharts is on by default in development builds only.
+# Production keeps the existing SVG renderer unless explicitly enabled.
+AMCHARTS_MAP_ENABLED = os.getenv(
+    "AMCHARTS_MAP_ENABLED",
+    "1" if RUNTIME_ENV == "development" else "0",
+).strip().lower() not in {"0", "false", "no", "off"}
 
 def _environment_render_context():
     dev = is_development_environment()
