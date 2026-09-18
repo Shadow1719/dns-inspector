@@ -445,6 +445,54 @@ def test_geoip_map_payload_still_works_with_a_mix_of_mapped_and_unmapped_destina
     assert us["observation_count"] >= 5
     assert payload["coverage"]["geolocated_domains"] >= 1
     assert payload["coverage"]["geolocated_pct"] > 0
+
+
+# --- configurable basemap tile source (Issue #61) ----------------------------
+#
+# Fully optional/additive: unset by default (no hard-coded vendor, no API key
+# required), reported on /api/analytics/map's new `basemap` field so the
+# frontend can render correct attribution and fall back to the bundled
+# offline map when nothing is configured or a tile request fails.
+
+
+def test_map_basemap_config_is_unconfigured_by_default(app_module, initialised_db, monkeypatch):
+    monkeypatch.setattr(app_module, "MAP_TILE_URL_TEMPLATE", "")
+    monkeypatch.setattr(app_module, "MAP_TILE_ATTRIBUTION", "")
+    _reset_map_cache(app_module)
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["basemap"] == {"tile_url_template": None, "attribution": None, "configured": False}
+
+
+def test_map_basemap_config_reports_an_operator_configured_tile_source(app_module, initialised_db, monkeypatch):
+    monkeypatch.setattr(app_module, "MAP_TILE_URL_TEMPLATE", "https://tiles.example.org/{z}/{x}/{y}.png")
+    monkeypatch.setattr(app_module, "MAP_TILE_ATTRIBUTION", "Example Tiles contributors")
+    _reset_map_cache(app_module)
+
+    payload = app_module.geoip_map_payload()
+
+    assert payload["basemap"] == {
+        "tile_url_template": "https://tiles.example.org/{z}/{x}/{y}.png",
+        "attribution": "Example Tiles contributors",
+        "configured": True,
+    }
+
+
+def test_map_basemap_config_is_present_on_the_load_failed_fallback_payload(app_module, initialised_db, monkeypatch):
+    """The route's own exception-fallback payload (a different code path from
+    geoip_map_payload()'s own diagnostics states) must also carry a stable
+    `basemap` field so the frontend never has to special-case its absence."""
+    def _boom():
+        raise RuntimeError("simulated geoip aggregation failure")
+
+    monkeypatch.setattr(app_module, "geoip_map_payload", _boom)
+    monkeypatch.setattr(app_module, "MAP_TILE_URL_TEMPLATE", "")
+    monkeypatch.setattr(app_module, "MAP_TILE_ATTRIBUTION", "")
+    with app_module.app.test_client() as client:
+        response = client.get("/api/analytics/map")
+    assert response.status_code == 200
+    assert response.get_json()["basemap"] == {"tile_url_template": None, "attribution": None, "configured": False}
     assert payload["coverage"]["geolocated_pct"] < 100
 
 

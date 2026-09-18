@@ -136,6 +136,28 @@ GEOIP_CITY_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CITY_CACHE_MAX_ENTR
 # regardless of this cap (see geoip_map_payload()).
 GEOIP_MAP_DESTINATION_POINTS_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DESTINATION_POINTS_LIMIT", "600")))
 
+# Configurable basemap tile source (Issue #61): fully optional and unset by
+# default, so the DNS Destinations map always renders from the bundled
+# offline vector geometry below with zero required network access and no
+# API key. An operator may opt in to a real online tile background (any
+# XYZ/TMS-style tile provider they're licensed to use) by setting
+# MAP_TILE_URL_TEMPLATE (e.g. "https://tiles.example.org/{z}/{x}/{y}.png")
+# and MAP_TILE_ATTRIBUTION; both are surfaced additively on
+# `/api/analytics/map`'s `basemap` field so the frontend can render correct
+# attribution and fall back cleanly when no source is configured or a tile
+# request fails. Deliberately not defaulted to any single commercial
+# vendor's URL -- see docs/GEOIP.md for setup guidance once configured.
+MAP_TILE_URL_TEMPLATE = os.getenv("MAP_TILE_URL_TEMPLATE", "").strip()
+MAP_TILE_ATTRIBUTION = os.getenv("MAP_TILE_ATTRIBUTION", "").strip()
+
+
+def _map_basemap_config():
+    return {
+        "tile_url_template": MAP_TILE_URL_TEMPLATE or None,
+        "attribution": MAP_TILE_ATTRIBUTION or None,
+        "configured": bool(MAP_TILE_URL_TEMPLATE),
+    }
+
 # Issue #50 / 0.8.5.10: the CSV parse phase inside `CsvRangeGeoIPProvider`/
 # `CsvCityGeoIPProvider` (below) is the actual CPU/disk-heavy step in both the
 # deferred initial load (`_geoip_initial_load_worker()`) and a completed
@@ -589,19 +611,31 @@ html[data-motion="reduced"] .metric-sweep,html[data-motion="reduced"] .radar-swe
 .gauge-face{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:180px}
 html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:transform .5s ease}
 
-/* ---- DNS Destinations map (Issue #33; Visual 2.0 in Issue #37/0.8.6): a
-   bundled/offline-safe stylized world-landmass silhouette (WORLD_LAND_D
-   below), a graticule and either a country-bubble or clustered-destination
-   overlay. The landmass path is a simplified, hand-authored equirectangular
-   outline -- not survey-accurate coastline data -- so the map always renders
-   something recognizable even with no GeoIP database configured and no
-   network access. Bubble/cluster size/position is entirely data-driven; only
-   the top country's pulse ring animates, and only when motion isn't
-   reduced. Map appearance (BEMO Dark/Aurora/White/Minimal) is a
-   `dnsInspectorPrefs.mapStyle` preference, independent of the application
-   theme -- it is expressed entirely through the `--map-*` custom properties
-   below, scoped under `[data-map-style]` on the wrap element, rather than
-   `html[data-theme]`. ---- */
+/* ---- DNS Destinations map (Issue #33; Visual 2.0 in Issue #37/0.8.6;
+   Basemap/Theme split in Issue #61): a bundled/offline-safe stylized
+   world-landmass silhouette (WORLD_LAND_D below), a graticule and either a
+   country-bubble or clustered-destination overlay. The landmass path is a
+   simplified, hand-authored equirectangular outline -- not survey-accurate
+   coastline data -- so the map always renders something recognizable even
+   with no GeoIP database, no configured tile source and no network access.
+   Bubble/cluster size/position is entirely data-driven; only the top
+   country's pulse ring animates, and only when motion isn't reduced.
+
+   Issue #61 splits the old single "map style" preference into two
+   independent axes, each its own `dnsInspectorPrefs` key:
+   - Basemap (`mapBasemap`, `[data-map-basemap]`) -- the background/
+     rendering *strategy*: Dark NOC/Urban, Satellite Heat, Satellite
+     Density, Real Map/Pins. Sets the ocean/land/grid/vignette variables
+     below AND which marker shape mapEntityMarkerSvg() draws (see the
+     script block) -- these are genuinely different rendering treatments,
+     not four recolors of the same bubble.
+   - Theme (`mapTheme`, `[data-map-theme]`) -- the color palette layered on
+     top: BEMO Dark Accent, Indigo + Gold, Cyan. Overrides only the point/
+     glow variables (declared after the basemap rules below so they win for
+     just those properties) and the JS intensity-ramp stops in
+     MAP_THEME_INTENSITY_STOPS, independent of which basemap is selected --
+     any of the 3 themes can pair with any of the 4 basemaps. Both are
+     independent of the application theme (`html[data-theme]`). */
 .destination-map-wrap{
   position:relative;
   --map-bg-a:var(--surface-2); --map-bg-b:var(--surface-1);
@@ -610,39 +644,48 @@ html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:tra
   --map-point:var(--accent); --map-point-2:var(--accent); --map-point-opacity:.45; --map-point-glow:none;
   --map-vignette:none; --map-banner-bg:var(--surface-1); --map-pulse-display:block;
 }
-/* Issue #39: each style below now sets its own ocean gradient, land fill/
-   glow, grid opacity, marker glow, empty-state banner treatment and pulse
-   visibility -- not just an accent color -- so the four presets are
-   genuinely different map visuals rather than the same map recolored. */
-.destination-map-wrap[data-map-style="bemo-dark"]{
-  --map-bg-a:#0c1a2c; --map-bg-b:#03060b;
+.destination-map-wrap[data-map-basemap="dark-noc"]{
+  --map-bg-a:#0a1626; --map-bg-b:#02050a;
   --map-land:#0f2036; --map-land-stroke:#2a4a70; --map-land-glow:blur(1.5px);
-  --map-border:#132338; --map-grid:#1c3350; --map-grid-strong:#2a4a70; --map-grid-opacity:.55;
-  --map-point:#2dd4c8; --map-point-2:#5eead4; --map-point-opacity:.6;
-  --map-point-glow:drop-shadow(0 0 4px rgba(45,212,200,.9)) drop-shadow(0 0 9px rgba(45,212,200,.4));
-  --map-vignette:inset 0 0 70px 12px rgba(0,0,0,.6); --map-banner-bg:rgba(6,11,20,.9); --map-pulse-display:block;
+  --map-border:#132338; --map-grid:#24466e; --map-grid-strong:#3a6ea5; --map-grid-opacity:.75;
+  --map-point:#ff6a3d; --map-point-2:#ffd166; --map-point-opacity:.7;
+  --map-point-glow:drop-shadow(0 0 4px rgba(255,106,61,.9)) drop-shadow(0 0 10px rgba(255,209,102,.4));
+  --map-vignette:inset 0 0 70px 12px rgba(0,0,0,.7); --map-banner-bg:rgba(4,8,15,.92); --map-pulse-display:block;
 }
-.destination-map-wrap[data-map-style="aurora"]{
-  --map-bg-a:#1a1044; --map-bg-b:#05030f;
-  --map-land:#1c1440; --map-land-stroke:#4c3c9a; --map-land-glow:blur(2px);
-  --map-border:#1c1440; --map-grid:#2c2160; --map-grid-strong:#4c3c9a; --map-grid-opacity:.5;
-  --map-point:#a78bfa; --map-point-2:#22d3ee; --map-point-opacity:.65;
-  --map-point-glow:drop-shadow(0 0 5px rgba(167,139,250,.95)) drop-shadow(0 0 12px rgba(34,211,238,.45));
-  --map-vignette:inset 0 0 80px 16px rgba(40,10,70,.55); --map-banner-bg:rgba(10,6,32,.88); --map-pulse-display:block;
+.destination-map-wrap[data-map-basemap="satellite-heat"]{
+  --map-bg-a:#1c2417; --map-bg-b:#070a06;
+  --map-land:#2c3a24; --map-land-stroke:#4a5c3a; --map-land-glow:blur(3px);
+  --map-border:#1c2417; --map-grid:#33422a; --map-grid-strong:#4a5c3a; --map-grid-opacity:.18;
+  --map-point:#facc15; --map-point-2:#f97316; --map-point-opacity:.55;
+  --map-point-glow:drop-shadow(0 0 6px rgba(250,204,21,.9)) drop-shadow(0 0 16px rgba(249,115,22,.5));
+  --map-vignette:inset 0 0 90px 20px rgba(0,0,0,.55); --map-banner-bg:rgba(10,14,8,.9); --map-pulse-display:block;
 }
-.destination-map-wrap[data-map-style="white"]{
-  --map-bg-a:#ffffff; --map-bg-b:#e4ebf5;
-  --map-land:#dbe4ee; --map-land-stroke:#a9b8c9; --map-land-glow:none;
-  --map-border:#c7d2e0; --map-grid:#e2e8f0; --map-grid-strong:#c7d2e0; --map-grid-opacity:.7;
-  --map-point:#1d4ed8; --map-point-2:#0e7490; --map-point-opacity:.85; --map-point-glow:none;
+.destination-map-wrap[data-map-basemap="satellite-density"]{
+  --map-bg-a:#182417; --map-bg-b:#060a06;
+  --map-land:#26361f; --map-land-stroke:#42592f; --map-land-glow:blur(2.5px);
+  --map-border:#182417; --map-grid:#2c3e22; --map-grid-strong:#42592f; --map-grid-opacity:.16;
+  --map-point:#5eead4; --map-point-2:#22d3ee; --map-point-opacity:.6;
+  --map-point-glow:drop-shadow(0 0 3px rgba(94,234,212,.85));
+  --map-vignette:inset 0 0 90px 20px rgba(0,0,0,.55); --map-banner-bg:rgba(8,12,7,.9); --map-pulse-display:block;
+}
+.destination-map-wrap[data-map-basemap="real-pins"]{
+  --map-bg-a:#eef2f7; --map-bg-b:#d7e0ec;
+  --map-land:#c7d3e2; --map-land-stroke:#93a4bc; --map-land-glow:none;
+  --map-border:#b7c3d6; --map-grid:#dbe4f0; --map-grid-strong:#b7c3d6; --map-grid-opacity:.55;
+  --map-point:#dc2626; --map-point-2:#1d4ed8; --map-point-opacity:.92; --map-point-glow:none;
   --map-vignette:none; --map-banner-bg:rgba(255,255,255,.94); --map-pulse-display:block;
 }
-.destination-map-wrap[data-map-style="minimal"]{
-  --map-bg-a:#15171d; --map-bg-b:#0b0c0f;
-  --map-land:#1d2129; --map-land-stroke:#262b34; --map-land-glow:none;
-  --map-border:#1a1d24; --map-grid:transparent; --map-grid-strong:transparent; --map-grid-opacity:0;
-  --map-point:#e2e8f0; --map-point-2:#94a3b8; --map-point-opacity:.6; --map-point-glow:none;
-  --map-vignette:none; --map-banner-bg:rgba(21,23,29,.88); --map-pulse-display:none;
+.destination-map-wrap[data-map-theme="bemo-dark-accent"]{
+  --map-point:#2dd4c8; --map-point-2:#5eead4; --map-point-opacity:.6;
+  --map-point-glow:drop-shadow(0 0 4px rgba(45,212,200,.9)) drop-shadow(0 0 9px rgba(45,212,200,.4));
+}
+.destination-map-wrap[data-map-theme="indigo-gold"]{
+  --map-point:#818cf8; --map-point-2:#fbbf24; --map-point-opacity:.68;
+  --map-point-glow:drop-shadow(0 0 4px rgba(129,140,248,.9)) drop-shadow(0 0 10px rgba(251,191,36,.45));
+}
+.destination-map-wrap[data-map-theme="cyan"]{
+  --map-point:#22d3ee; --map-point-2:#67e8f9; --map-point-opacity:.65;
+  --map-point-glow:drop-shadow(0 0 4px rgba(34,211,238,.9)) drop-shadow(0 0 10px rgba(103,232,249,.4));
 }
 .destination-map-svg{width:100%;height:auto;aspect-ratio:2/1;background:radial-gradient(ellipse at 50% 40%,var(--map-bg-a),var(--map-bg-b));box-shadow:var(--map-vignette);border:1px solid var(--map-border);border-radius:var(--radius-md);cursor:grab}
 .destination-map-svg.map-dragging{cursor:grabbing}
@@ -666,11 +709,23 @@ html:not([data-motion="reduced"]) .map-bubble-pulse-ring{animation:dnsInspectorM
 html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 @media(prefers-reduced-motion:reduce){
   .map-bubble-pulse-ring{display:none!important;animation:none!important}
-  .map-bubble,.map-cluster{transition:none!important}
+  .map-bubble,.map-cluster,.map-heat-glow,.map-heat-core,.map-density-particle,.map-density-anchor,.map-pin{transition:none!important}
 }
 @keyframes dnsInspectorMapPulse{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.4);opacity:0}}
 .map-cluster{fill-opacity:var(--map-point-opacity);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
 .map-cluster:hover,.map-cluster-selected{fill-opacity:.95;stroke-width:2}
+/* Issue #61: per-basemap marker treatments drawn by mapEntityMarkerSvg() --
+   a heat/glow blob (Satellite Heat), a deterministic particle field
+   (Satellite Density) and a real pin glyph (Real Map/Pins), alongside the
+   existing pulse-ring bubble (Dark NOC/Urban) above. */
+.map-heat-glow{opacity:.35;filter:blur(6px);pointer-events:none;transition:r .3s ease,opacity .3s ease}
+.map-heat-core{fill-opacity:.85;stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:r .3s ease,stroke-width .3s ease}
+.map-heat-core:hover,.map-heat-core.map-bubble-selected,.map-heat-core.map-cluster-selected{stroke-width:2}
+.map-density-particle{opacity:.55;pointer-events:none}
+.map-density-anchor{fill-opacity:.95;stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:stroke-width .3s ease}
+.map-density-anchor:hover,.map-density-anchor.map-bubble-selected,.map-density-anchor.map-cluster-selected{stroke-width:2}
+.map-pin{cursor:pointer;filter:var(--map-point-glow);fill-opacity:.92;stroke-width:1;transition:transform .3s ease}
+.map-pin:hover,.map-pin.map-bubble-selected,.map-pin.map-cluster-selected{stroke-width:2}
 .map-cluster-count{font-size:7px;fill:var(--map-bg-b);pointer-events:none;text-anchor:middle;dominant-baseline:central}
 .map-bubble-count{font-size:7px;fill:rgba(4,10,18,.85);font-weight:600;pointer-events:none;text-anchor:middle;dominant-baseline:central}
 .map-bubble:focus-visible,.map-cluster:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
@@ -679,8 +734,12 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .map-zoom-group{display:inline-flex;gap:4px}
 .map-zoom-btn{padding:5px 10px;font-size:.78rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
 .map-zoom-btn:hover{background:var(--surface-3)}
-/* Issue #56: explicit size+color legend, kept in sync with mapIntensityColor()'s
-   gradient stops so the swatches never drift from the actual marker colors. */
+/* Issue #56: explicit size+color legend. The literal stops below are only
+   the pre-JS fallback for the default BEMO Dark Accent theme -- Issue #61's
+   syncMapLegendColors() overwrites this element's inline background (and
+   the three legend dot colors) from the currently selected Theme's own
+   MAP_THEME_INTENSITY_STOPS on every render, so the legend never drifts
+   from the actual marker colors for whichever theme is active. */
 .map-legend{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-end;margin:8px 0;padding:8px 12px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);font-size:.76rem;color:var(--text-secondary)}
 .map-legend-group{display:flex;flex-direction:column;gap:5px;min-width:130px}
 .map-legend-title{font-weight:600;color:var(--text-primary)}
@@ -815,6 +874,8 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
       <section class="settings-section" data-settings-panel="diagnostics">
         <h3>Diagnostics</h3>
         <div class="settings-kv" id="diagnostics-kv"><b>Loading…</b><span></span></div>
+        <div class="settings-row-label" style="padding-top:14px"><b>Analytics render performance</b><small>Last fetch/render timing for the Analytics poll and the destination map, split by network vs. on-page render time</small></div>
+        <div class="settings-kv" id="diagnostics-perf-kv"><b>No samples yet</b><span>Open the Analytics tab first</span></div>
         <div class="settings-row" style="border-bottom:0;padding-top:14px"><div class="settings-row-label"><b>Debug bundle</b><small>A safe diagnostic snapshot for troubleshooting</small></div>
           <div class="settings-control"><button type="button" onclick="window.location='/debug/bundle'">Generate Debug Bundle</button></div>
         </div>
@@ -862,8 +923,19 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
-const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapStyle:'bemo-dark'};
-function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'dark-noc', mapTheme:'bemo-dark-accent'};
+// Issue #61: the old single `mapStyle` preference (BEMO Dark/Aurora/White/
+// Minimal) is replaced by independent `mapBasemap`/`mapTheme` keys. A
+// browser that already has an older `dnsInspectorPrefs.mapStyle` saved gets
+// a sensible one-time mapping instead of silently losing its choice.
+const MAP_STYLE_TO_BASEMAP_MIGRATION = {'bemo-dark':'dark-noc', 'aurora':'satellite-heat', 'white':'real-pins', 'minimal':'satellite-density'};
+function loadPrefs(){
+  let p;
+  try{ p = Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }
+  catch(e){ p = Object.assign({}, DEFAULT_PREFS); }
+  if (!p.mapBasemap && p.mapStyle && MAP_STYLE_TO_BASEMAP_MIGRATION[p.mapStyle]) p.mapBasemap = MAP_STYLE_TO_BASEMAP_MIGRATION[p.mapStyle];
+  return p;
+}
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
 let prefs = loadPrefs();
 function resolvedTheme(theme){ if(theme !== 'system') return theme; return (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) ? 'bemo-light' : 'bemo-dark'; }
@@ -1163,11 +1235,16 @@ function renderInstrumentGauges(data){
             <option value="unique_ips">Unique IPs</option>
             <option value="domains">Domains</option>
           </select>
-          <select class="settings-select" id="map-style-select" aria-label="Map style">
-            <option value="bemo-dark">BEMO Dark</option>
-            <option value="aurora">Aurora</option>
-            <option value="white">White</option>
-            <option value="minimal">Minimal</option>
+          <select class="settings-select" id="map-basemap-select" aria-label="Map basemap">
+            <option value="dark-noc">Dark NOC / Urban</option>
+            <option value="satellite-heat">Satellite Heat</option>
+            <option value="satellite-density">Satellite Density</option>
+            <option value="real-pins">Real Map / Pins</option>
+          </select>
+          <select class="settings-select" id="map-theme-select" aria-label="Map theme">
+            <option value="bemo-dark-accent">BEMO Dark Accent</option>
+            <option value="indigo-gold">Indigo + Gold</option>
+            <option value="cyan">Cyan</option>
           </select>
           <span class="map-zoom-group" role="group" aria-label="Map zoom">
             <button type="button" class="map-zoom-btn" id="map-zoom-out-btn" aria-label="Zoom out">&minus;</button>
@@ -1195,6 +1272,7 @@ function renderInstrumentGauges(data){
         </div>
         <div id="destination-map"></div>
         <div id="destination-map-detail" class="map-detail" hidden></div>
+        <div class="stats-note" style="margin-top:0" id="destination-map-basemap-note">Basemap: bundled offline vector map.</div>
         <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
       </div>
     </div>
@@ -1359,6 +1437,40 @@ const ANALYTICS_LIVE_MAX_SAMPLES = 100;
 let analyticsLiveSamples = [];
 let analyticsRange = '1h';
 let analyticsFullTimer = null;
+/* Issue #61: performance/render-storm fixes. `/api/analytics/map` runs
+   heavier server-side GeoIP aggregation than `/api/analytics`, so it gets
+   its own bounded timer (mapRefreshMs()) instead of being fetched on every
+   analytics poll tick. Every poll path below also gets an AbortController
+   (cancels its own previous in-flight request) plus a monotonic sequence
+   number, so a slow response can never overwrite state a newer request
+   already replaced, and an in-flight guard so a slow interval tick can't
+   pile up overlapping requests. */
+let mapRefreshTimer = null;
+let analyticsFetchController = null;
+let mapFetchController = null;
+let analyticsFetchSeq = 0;
+let mapFetchSeq = 0;
+let mapFetchInFlight = false;
+let mapLastFingerprint = null;
+const MAP_MIN_REFRESH_MS = 20000;
+function mapRefreshMs(){ return Math.max(MAP_MIN_REFRESH_MS, refreshMs * 3); }
+/* Lightweight client-side perf trace (Issue #61): records HTTP-fetch time
+   separately from render time for the last few analytics/map cycles so a
+   slow interaction can be attributed to network vs. main-thread rendering
+   without needing a browser profiler. Read via window.__dnsInspectorPerf or
+   Settings > Diagnostics. Never itself triggers a network request. */
+window.__dnsInspectorPerf = { analytics: [], map: [] };
+function perfNow(){ return (window.performance && typeof window.performance.now === 'function') ? window.performance.now() : Date.now(); }
+function recordPerf(kind, fetchStartedAt, renderStartedAt, renderEndedAt){
+  const bucket = window.__dnsInspectorPerf[kind] || (window.__dnsInspectorPerf[kind] = []);
+  bucket.push({
+    fetchMs: Math.round(renderStartedAt - fetchStartedAt),
+    renderMs: Math.round(renderEndedAt - renderStartedAt),
+    totalMs: Math.round(renderEndedAt - fetchStartedAt),
+    at: Date.now(),
+  });
+  if (bucket.length > 20) bucket.shift();
+}
 
 const STATUS_COLOR_VAR = {Allowed:'--sem-ok', Blocked:'--sem-blocked', Mixed:'--sem-warn', Unknown:'--sem-info'};
 function renderStatusBreakdown(breakdown){
@@ -1413,10 +1525,18 @@ function pushLiveSample(n, windowSeconds){
   renderLiveHero(windowSeconds);
 }
 async function fetchAnalyticsFull(){
+  const seq = ++analyticsFetchSeq;
+  if (analyticsFetchController) analyticsFetchController.abort();
+  const controller = new AbortController();
+  analyticsFetchController = controller;
+  const fetchStartedAt = perfNow();
   try{
-    const r = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`, {cache:'no-store'});
+    const r = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`, {cache:'no-store', signal: controller.signal});
+    if (seq !== analyticsFetchSeq) return; // superseded by a newer request while this one was in flight
     if (!r.ok) return;
     const data = await r.json();
+    if (seq !== analyticsFetchSeq) return; // superseded while awaiting the response body
+    const renderStartedAt = perfNow();
     renderMetricVisual('chart-query-volume', data.series?.queries?.points, '--sem-info', 'DNS queries');
     renderMetricVisual('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
     renderMetricVisual('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
@@ -1428,8 +1548,12 @@ async function fetchAnalyticsFull(){
     const tDevices=document.getElementById('tile-devices'); if(tDevices) tDevices.textContent = data.active_devices ?? '—';
     const tNewDomains=document.getElementById('tile-new-domains'); if(tNewDomains) tNewDomains.textContent = data.new_domains_24h ?? '—';
     document.querySelectorAll('[data-analytics-range]').forEach(b => b.classList.toggle('active', b.dataset.analyticsRange === analyticsRange));
-    fetchDestinationMap();
-  }catch(e){ console.debug('analytics refresh failed', e); }
+    recordPerf('analytics', fetchStartedAt, renderStartedAt, perfNow());
+    // /api/analytics/map is intentionally NOT fetched here -- see
+    // startAnalyticsPolling()/mapRefreshMs(): it runs heavier server-side
+    // GeoIP aggregation and gets its own bounded-cadence timer so it can
+    // never turn every analytics poll into a map-rebuild storm.
+  }catch(e){ if (e?.name !== 'AbortError') console.debug('analytics refresh failed', e); }
 }
 /* DNS Destinations map (0.8.5.1; Visual 2.0 in Issue #37/0.8.6): aggregated
    GeoIP data from its own endpoint/cache (see `/api/analytics/map`) so it
@@ -1443,7 +1567,8 @@ async function fetchAnalyticsFull(){
    cluster sizing metric are `dnsInspectorPrefs` preferences, independent of
    the application theme/Analytics visual style. */
 const MAP_W = 720, MAP_H = 360;
-const MAP_STYLES = ['bemo-dark', 'aurora', 'white', 'minimal'];
+const MAP_BASEMAPS = ['dark-noc', 'satellite-heat', 'satellite-density', 'real-pins'];
+const MAP_THEMES = ['bemo-dark-accent', 'indigo-gold', 'cyan'];
 const MAP_METRICS = ['observations', 'unique_ips', 'domains'];
 let mapSelectedCountry = null;
 let mapSelectedDestinationKey = null;
@@ -1485,7 +1610,7 @@ const WORLD_LAND_D = [
 function mapLandmassSvg(){
   // A soft blurred duplicate behind the crisp fill gives the coastline real
   // depth instead of reading as one flat cutout shape; --map-land-glow is
-  // `none` for the White/Minimal styles, so this stays inert there (Issue #39).
+  // `none` for the Real Map/Pins basemap, so this stays inert there (Issue #39).
   return `<path class="map-landmass-glow" d="${WORLD_LAND_D}"/><path class="map-landmass" d="${WORLD_LAND_D}"/>`;
 }
 function mapBaseLayers(){ return `${mapLandmassSvg()}${mapGraticule()}`; }
@@ -1499,9 +1624,10 @@ function mapViewBoxAttr(){
   const vy = Math.min(Math.max(mapViewCenter.cy - vh / 2, 0), MAP_H - vh);
   return `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`;
 }
+function mapCurrentBasemap(){ return MAP_BASEMAPS.includes(prefs.mapBasemap) ? prefs.mapBasemap : 'dark-noc'; }
+function mapCurrentTheme(){ return MAP_THEMES.includes(prefs.mapTheme) ? prefs.mapTheme : 'bemo-dark-accent'; }
 function mapBaseSvg(label, inner){
-  const style = MAP_STYLES.includes(prefs.mapStyle) ? prefs.mapStyle : 'bemo-dark';
-  return `<div class="destination-map-wrap" data-map-style="${esc(style)}"><svg viewBox="${mapViewBoxAttr()}" class="destination-map-svg" role="img" aria-label="${esc(label)}" tabindex="0" style="touch-action:none">${mapBaseLayers()}${inner || ''}</svg></div>`;
+  return `<div class="destination-map-wrap" data-map-basemap="${esc(mapCurrentBasemap())}" data-map-theme="${esc(mapCurrentTheme())}"><svg viewBox="${mapViewBoxAttr()}" class="destination-map-svg" role="img" aria-label="${esc(label)}" tabindex="0" style="touch-action:none">${mapBaseLayers()}${inner || ''}</svg></div>`;
 }
 function mapGraticule(){
   let lines = '';
@@ -1526,34 +1652,135 @@ function mapMetricLabel(){
   if (metric === 'domains') return 'domains';
   return 'observations';
 }
-/* Issue #56: shared green -> lime/yellow -> orange -> red traffic-intensity
-   scale. `ratio` is always the same value/max-in-view fraction that already
-   drives bubble/cluster radius, so a marker's size and color are always two
-   views of one underlying intensity rather than independently chosen. The
-   gradient stops here are duplicated (as literal HSL values) by the
-   `.map-legend-gradient` CSS background and the legend's three sample dots,
-   so the legend can never visually drift from what a marker actually renders. */
-const MAP_INTENSITY_STOPS = [
-  {t: 0, h: 152, s: 68, l: 42},
-  {t: 0.35, h: 84, s: 72, l: 45},
-  {t: 0.65, h: 40, s: 92, l: 50},
-  {t: 1, h: 2, s: 82, l: 52},
-];
+/* Issue #56 (color ramp); Issue #61 (per-theme ramp + shared marker
+   builder): `ratio` is always the same value/max-in-view fraction that
+   already drives marker size, so a marker's size and color are always two
+   views of one underlying intensity rather than independently chosen. Each
+   Theme (independent of Basemap -- see the CSS comment above
+   .destination-map-wrap) gets its own low->high intensity ramp here;
+   syncMapLegendColors() reads the same table so the legend can never
+   visually drift from what a marker actually renders. */
+const MAP_THEME_INTENSITY_STOPS = {
+  'bemo-dark-accent': [
+    {t: 0, h: 152, s: 68, l: 42}, {t: 0.35, h: 84, s: 72, l: 45},
+    {t: 0.65, h: 40, s: 92, l: 50}, {t: 1, h: 2, s: 82, l: 52},
+  ],
+  'indigo-gold': [
+    {t: 0, h: 231, s: 48, l: 48}, {t: 0.35, h: 199, s: 60, l: 50},
+    {t: 0.65, h: 38, s: 85, l: 55}, {t: 1, h: 45, s: 95, l: 58},
+  ],
+  'cyan': [
+    {t: 0, h: 195, s: 40, l: 38}, {t: 0.35, h: 189, s: 70, l: 48},
+    {t: 0.65, h: 178, s: 85, l: 55}, {t: 1, h: 172, s: 95, l: 62},
+  ],
+};
+function mapThemeIntensityStops(){ return MAP_THEME_INTENSITY_STOPS[mapCurrentTheme()] || MAP_THEME_INTENSITY_STOPS['bemo-dark-accent']; }
 function mapIntensityColor(ratio){
+  const stops = mapThemeIntensityStops();
   const t = Math.max(0, Math.min(1, Number(ratio) || 0));
-  let a = MAP_INTENSITY_STOPS[0], b = MAP_INTENSITY_STOPS[MAP_INTENSITY_STOPS.length - 1];
-  for (let i = 0; i < MAP_INTENSITY_STOPS.length - 1; i++){
-    if (t >= MAP_INTENSITY_STOPS[i].t && t <= MAP_INTENSITY_STOPS[i + 1].t){ a = MAP_INTENSITY_STOPS[i]; b = MAP_INTENSITY_STOPS[i + 1]; break; }
+  let a = stops[0], b = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++){
+    if (t >= stops[i].t && t <= stops[i + 1].t){ a = stops[i]; b = stops[i + 1]; break; }
   }
   const span = (b.t - a.t) || 1;
   const f = (t - a.t) / span;
   const h = a.h + (b.h - a.h) * f, s = a.s + (b.s - a.s) * f, l = a.l + (b.l - a.l) * f;
   return `hsl(${h.toFixed(0)},${s.toFixed(0)}%,${l.toFixed(0)}%)`;
 }
+function mapLegendGradientCss(){
+  return 'linear-gradient(90deg,' + mapThemeIntensityStops().map(s => `hsl(${s.h},${s.s}%,${s.l}%)`).join(',') + ')';
+}
+function syncMapLegendColors(){
+  const grad = document.querySelector('#destination-map-legend .map-legend-gradient');
+  if (grad) grad.style.background = mapLegendGradientCss();
+  const dots = document.querySelectorAll('#destination-map-legend .map-legend-dot');
+  const ratios = [0, 0.5, 1];
+  dots.forEach((dot, i) => { dot.style.background = mapIntensityColor(ratios[i] ?? 1); });
+}
+function syncMapBasemapNote(){
+  const el = document.getElementById('destination-map-basemap-note'); if (!el) return;
+  const basemapLabels = {'dark-noc':'Dark NOC / Urban', 'satellite-heat':'Satellite Heat', 'satellite-density':'Satellite Density', 'real-pins':'Real Map / Pins'};
+  const cfg = mapLastPayload?.basemap;
+  const label = basemapLabels[mapCurrentBasemap()] || 'Dark NOC / Urban';
+  if (cfg && cfg.configured && cfg.attribution){
+    el.innerHTML = `Basemap: ${esc(label)} (bundled offline vector map). Online tile source configured (${esc(cfg.attribution)}); tile rendering is not yet wired into this widget.`;
+  } else {
+    el.textContent = `Basemap: ${label} (bundled offline vector map). Configure MAP_TILE_URL_TEMPLATE for a future online tile source.`;
+  }
+}
+/* Deterministic seeded PRNG (Issue #61, Satellite Density basemap): particle
+   jitter must be stable across refreshes for the same entity so the map
+   never visually "jumps" when nothing observed actually changed. Seeded
+   from the entity's own stable key (country code or cluster grid key), not
+   from Date.now()/Math.random(). mulberry32 is a small, well-known,
+   deterministic PRNG -- not used for anything security-sensitive here. */
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function seededRandomFor(key){
+  let h = 0;
+  const s = String(key);
+  for (let i = 0; i < s.length; i++){ h = (Math.imul(31, h) + s.charCodeAt(i)) | 0; }
+  return mulberry32(h || 1);
+}
+/* Issue #61: one shared marker builder for both Countries-mode bubbles and
+   Destinations-mode clusters, branching on the selected Basemap so the four
+   basemaps are genuinely different rendering strategies for the exact same
+   underlying data -- never four color reskins of one bubble. Every mode
+   still anchors on the entity's real x/y (a real country centroid or a real
+   observed-destination cluster centroid); Satellite Density's extra
+   particles are a bounded, deterministically-seeded visualization of volume
+   around that anchor, never an additional claimed destination. */
+function mapEntityMarkerSvg(opts){
+  const {x, y, ratio, key, dataAttr, label, selected, countText, badgeText} = opts;
+  const color = mapIntensityColor(ratio);
+  const isCluster = dataAttr === 'data-cluster';
+  const r = (4 + Math.sqrt(Math.max(0, ratio)) * (isCluster ? 15 : 18)).toFixed(1);
+  const xs = x.toFixed(1), ys = y.toFixed(1);
+  const baseCls = isCluster ? 'map-cluster' : 'map-bubble';
+  const selectedCls = selected ? ' ' + baseCls + '-selected' : '';
+  const commonAttrs = `${dataAttr}="${esc(key)}" tabindex="0" role="button" aria-pressed="${!!selected}" aria-label="${esc(label)}"`;
+  const basemap = mapCurrentBasemap();
+  // Density's particle cloud already visualizes volume; a numeric overlay on
+  // top of the particles would just add clutter, so it's intentionally
+  // suppressed there (the detail card still shows the exact count on click).
+  const showCount = badgeText || (countText && basemap !== 'satellite-density' && ratio >= 0.15);
+  const countLabel = showCount ? `<text class="${isCluster ? 'map-cluster-count' : 'map-bubble-count'}" x="${xs}" y="${ys}">${esc(badgeText || countText)}</text>` : '';
+  if (basemap === 'real-pins'){
+    const scale = (0.5 + Math.sqrt(Math.max(0, ratio)) * 0.9).toFixed(2);
+    return `<g class="${baseCls} map-pin${selectedCls}" style="fill:${color};stroke:${color}" transform="translate(${xs},${ys}) scale(${scale})" ${commonAttrs}><title>${label}</title><path d="M0,-14 C6,-14 10,-9.5 10,-4.5 C10,2 0,12 0,12 C0,12 -10,2 -10,-4.5 C-10,-9.5 -6,-14 0,-14 Z"/><circle cx="0" cy="-4.5" r="3.2" fill="var(--map-bg-b)" stroke="none"/></g>${countLabel}`;
+  }
+  if (basemap === 'satellite-heat'){
+    const glowR = (Number(r) * 2.1).toFixed(1);
+    const coreR = (Number(r) * 0.55).toFixed(1);
+    return `<circle class="${baseCls} map-heat-glow" style="fill:${color}" cx="${xs}" cy="${ys}" r="${glowR}"/><circle class="${baseCls}${selectedCls} map-heat-core" style="fill:${color};stroke:${color}" cx="${xs}" cy="${ys}" r="${coreR}" ${commonAttrs}><title>${label}</title></circle>${countLabel}`;
+  }
+  if (basemap === 'satellite-density'){
+    const rnd = seededRandomFor(key);
+    const count = Math.max(1, Math.min(28, Math.round(2 + Math.sqrt(Math.max(0, ratio)) * 26)));
+    const spread = 4 + Number(r) * 1.3;
+    let particles = '';
+    for (let i = 0; i < count; i++){
+      const ang = rnd() * Math.PI * 2, dist = Math.sqrt(rnd()) * spread;
+      const px = (x + Math.cos(ang) * dist).toFixed(1), py = (y + Math.sin(ang) * dist).toFixed(1);
+      const pr = (1 + rnd() * 1.6).toFixed(1);
+      particles += `<circle class="map-density-particle" style="fill:${color}" cx="${px}" cy="${py}" r="${pr}"/>`;
+    }
+    return `${particles}<circle class="${baseCls}${selectedCls} map-density-anchor" style="fill:${color};stroke:${color}" cx="${xs}" cy="${ys}" r="3" ${commonAttrs}><title>${label}</title></circle>${countLabel}`;
+  }
+  // dark-noc (default): the original crisp pulse-ring bubble treatment.
+  const pulse = ratio >= 0.72 ? `<circle class="map-bubble-pulse-ring" style="stroke:${color}" cx="${xs}" cy="${ys}" r="${r}"/>` : '';
+  return `${pulse}<circle class="${baseCls}${selectedCls}" style="fill:${color};stroke:${color}" cx="${xs}" cy="${ys}" r="${r}" ${commonAttrs}><title>${label}</title></circle>${countLabel}`;
+}
 function mapCompactNumber(n){
   n = Number(n) || 0;
   if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\\.0$/, '') + 'M';
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
+  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\\.0$/, '') + 'k';
   return String(n);
 }
 function renderMapDetail(entity, kind){
@@ -1664,15 +1891,8 @@ function renderCountriesMode(data){
     const [lat, lon] = c.centroid;
     const {x, y} = mapProject(lat, lon);
     const ratio = mapMetricValue(c) / maxVal;
-    const color = mapIntensityColor(ratio);
-    const r = (4 + Math.sqrt(ratio) * 18).toFixed(1);
-    const selected = mapSelectedCountry === c.country_code ? ' map-bubble-selected' : '';
-    const pulse = ratio >= 0.72 ? `<circle class="map-bubble-pulse-ring" style="stroke:${color}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>` : '';
     const label = `${c.country_name}: ${esc(c.observation_count)} destination observations, ${esc(c.domain_count)} domains`;
-    const countLabel = Number(r) >= 9
-      ? `<text class="map-bubble-count" x="${x.toFixed(1)}" y="${y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>`
-      : '';
-    return `${pulse}<circle class="map-bubble${selected}" style="fill:${color};stroke:${color}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" tabindex="0" role="button" aria-pressed="${mapSelectedCountry === c.country_code}" aria-label="${esc(label)}"><title>${label}</title></circle>${countLabel}`;
+    return mapEntityMarkerSvg({x, y, ratio, key: c.country_code, dataAttr: 'data-country', label, selected: mapSelectedCountry === c.country_code, countText: mapCompactNumber(mapMetricValue(c))});
   }).join('');
   el.innerHTML = mapBaseSvg('Observed DNS destinations by country', bubbles) + coverageNote;
   mapFinishRender(el);
@@ -1728,16 +1948,11 @@ function renderDestinationsMode(data, capabilities){
   const coverageNote = `<div class="stats-note">${esc(cov.geolocated_pct ?? 0)}% of observed destinations geolocated &middot; ${esc(clusters.length)} cluster${clusters.length===1?'':'s'} &middot; ${esc(points.length)} destination point${points.length===1?'':'s'} plotted (bounded)</div>`;
   const bubbles = clusters.map(c => {
     const ratio = mapMetricValue(c) / maxVal;
-    const color = mapIntensityColor(ratio);
-    const r = (4 + Math.sqrt(ratio) * 15).toFixed(1);
-    const selected = mapSelectedDestinationKey === c.key ? ' map-cluster-selected' : '';
     const label = c.unique_ip_count > 1
       ? `${esc(c.unique_ip_count)} destinations: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`
       : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`;
-    const badge = c.unique_ip_count > 1
-      ? `<text class="map-cluster-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${c.unique_ip_count > 99 ? '99+' : c.unique_ip_count}</text>`
-      : (Number(r) >= 9 ? `<text class="map-bubble-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>` : '');
-    return `<circle class="map-cluster${selected}" style="fill:${color};stroke:${color}" data-cluster="${esc(c.key)}" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${r}" tabindex="0" role="button" aria-pressed="${mapSelectedDestinationKey === c.key}" aria-label="${esc(label)}"><title>${label}</title></circle>${badge}`;
+    const badgeText = c.unique_ip_count > 1 ? (c.unique_ip_count > 99 ? '99+' : String(c.unique_ip_count)) : null;
+    return mapEntityMarkerSvg({x: c.x, y: c.y, ratio, key: c.key, dataAttr: 'data-cluster', label, selected: mapSelectedDestinationKey === c.key, countText: mapCompactNumber(mapMetricValue(c)), badgeText});
   }).join('');
   el.innerHTML = mapBaseSvg('Observed DNS destinations by coordinate, clustered', bubbles) + coverageNote;
   mapFinishRender(el);
@@ -1780,6 +1995,8 @@ function renderDestinationMap(data){
   }
   const legendMetricEl = document.getElementById('map-legend-metric-label');
   if (legendMetricEl) legendMetricEl.textContent = mapMetricLabel();
+  syncMapLegendColors();
+  syncMapBasemapNote();
   const diagState = data?.diagnostics?.state;
   if (diagState === 'load_failed'){
     el.innerHTML = mapBaseSvg(
@@ -1932,10 +2149,12 @@ function mapFinishRender(el){
 function syncMapControls(){
   const modeSel = document.getElementById('map-mode-select');
   const metricSel = document.getElementById('map-metric-select');
-  const styleSel = document.getElementById('map-style-select');
+  const basemapSel = document.getElementById('map-basemap-select');
+  const themeSel = document.getElementById('map-theme-select');
   if (modeSel) modeSel.value = prefs.mapMode || 'countries';
   if (metricSel) metricSel.value = prefs.mapMetric || 'observations';
-  if (styleSel) styleSel.value = prefs.mapStyle || 'bemo-dark';
+  if (basemapSel) basemapSel.value = mapCurrentBasemap();
+  if (themeSel) themeSel.value = mapCurrentTheme();
 }
 syncMapControls();
 document.getElementById('map-mode-select')?.addEventListener('change', (e) => {
@@ -1949,8 +2168,13 @@ document.getElementById('map-metric-select')?.addEventListener('change', (e) => 
   savePrefs();
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
-document.getElementById('map-style-select')?.addEventListener('change', (e) => {
-  prefs.mapStyle = MAP_STYLES.includes(e.target.value) ? e.target.value : 'bemo-dark';
+document.getElementById('map-basemap-select')?.addEventListener('change', (e) => {
+  prefs.mapBasemap = MAP_BASEMAPS.includes(e.target.value) ? e.target.value : 'dark-noc';
+  savePrefs();
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-theme-select')?.addEventListener('change', (e) => {
+  prefs.mapTheme = MAP_THEMES.includes(e.target.value) ? e.target.value : 'bemo-dark-accent';
   savePrefs();
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
@@ -1970,21 +2194,63 @@ document.getElementById('map-reset-btn')?.addEventListener('click', () => {
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-fit-btn')?.addEventListener('click', mapFitToData);
-async function fetchDestinationMap(){
+/* Cheap content fingerprint (Issue #61) covering exactly the fields
+   renderDestinationMap() actually draws from. A poll that returns identical
+   aggregated data is extremely common (aggregation is cached server-side
+   and DNS activity between two consecutive map polls is often unchanged),
+   so fetchDestinationMap() skips the full SVG rebuild below when this
+   hasn't changed -- it never affects interaction-triggered re-renders
+   (mode/style/metric/zoom/pan/selection), which call renderDestinationMap()
+   directly with the same mapLastPayload and must still redraw. */
+function mapPayloadFingerprint(data){
   try{
-    const r = await fetch('/api/analytics/map', {cache:'no-store'});
+    return JSON.stringify({
+      provider: data?.provider, capabilities: data?.capabilities,
+      diagnostics: data?.diagnostics, coverage: data?.coverage,
+      countries: data?.countries, destinations: data?.destinations, unknown: data?.unknown,
+    });
+  }catch(e){ return null; }
+}
+async function fetchDestinationMap(){
+  if (mapFetchInFlight) return;
+  mapFetchInFlight = true;
+  const seq = ++mapFetchSeq;
+  if (mapFetchController) mapFetchController.abort();
+  const controller = new AbortController();
+  mapFetchController = controller;
+  const fetchStartedAt = perfNow();
+  try{
+    const r = await fetch('/api/analytics/map', {cache:'no-store', signal: controller.signal});
+    if (seq !== mapFetchSeq) return; // superseded by a newer request while this one was in flight
     if (!r.ok) return;
-    renderDestinationMap(await r.json());
-  }catch(e){ console.debug('destination map refresh failed', e); }
+    const data = await r.json();
+    if (seq !== mapFetchSeq) return; // superseded while awaiting the response body
+    const fingerprint = mapPayloadFingerprint(data);
+    if (fingerprint !== null && fingerprint === mapLastFingerprint && mapLastPayload){
+      mapLastPayload = data; // keep the freshest payload for interaction-triggered re-renders (zoom/pan/Fit)
+      recordPerf('map', fetchStartedAt, perfNow(), perfNow());
+      return;
+    }
+    mapLastFingerprint = fingerprint;
+    const renderStartedAt = perfNow();
+    renderDestinationMap(data);
+    recordPerf('map', fetchStartedAt, renderStartedAt, perfNow());
+  }catch(e){ if (e?.name !== 'AbortError') console.debug('destination map refresh failed', e); }
+  finally{ mapFetchInFlight = false; }
 }
 function startAnalyticsPolling(){
   if (analyticsFullTimer) return;
   renderLiveHero();
   fetchAnalyticsFull();
+  fetchDestinationMap();
   analyticsFullTimer = setInterval(fetchAnalyticsFull, refreshMs);
+  mapRefreshTimer = setInterval(fetchDestinationMap, mapRefreshMs());
 }
 function stopAnalyticsPolling(){
   if (analyticsFullTimer){ clearInterval(analyticsFullTimer); analyticsFullTimer = null; }
+  if (mapRefreshTimer){ clearInterval(mapRefreshTimer); mapRefreshTimer = null; }
+  if (analyticsFetchController){ analyticsFetchController.abort(); analyticsFetchController = null; }
+  if (mapFetchController){ mapFetchController.abort(); mapFetchController = null; }
 }
 document.querySelectorAll('[data-analytics-range]').forEach(b => b.addEventListener('click', () => {
   analyticsRange = b.dataset.analyticsRange;
@@ -2284,6 +2550,25 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       ['domains','devices','processed_queries'].forEach(t => { if (counts[t] != null) rows.push(['Rows: ' + t, counts[t]]); });
       el.innerHTML = kvRows(rows);
     }catch(e){ el.innerHTML = '<b>Diagnostics unavailable</b><span>—</span>'; }
+    renderClientPerfPanel();
+  }
+
+  /* Issue #61: surfaces the client-side perf trace recorded by
+     recordPerf()/fetchAnalyticsFull()/fetchDestinationMap() so an operator
+     can tell a slow HTTP round-trip apart from slow in-browser rendering
+     without opening devtools. Purely reads window.__dnsInspectorPerf --
+     never triggers a request of its own. */
+  function renderClientPerfPanel(){
+    const el = document.getElementById('diagnostics-perf-kv'); if (!el) return;
+    const perf = window.__dnsInspectorPerf || {analytics:[], map:[]};
+    const summarize = (label, samples) => {
+      if (!samples.length) return [label + ' (no samples yet)', '—'];
+      const last = samples[samples.length - 1];
+      const avg = (key) => Math.round(samples.reduce((s,x) => s + x[key], 0) / samples.length);
+      return [label + ' (last / avg of ' + samples.length + ')', `fetch ${last.fetchMs}ms / ${avg('fetchMs')}ms &middot; render ${last.renderMs}ms / ${avg('renderMs')}ms`];
+    };
+    const rows = [summarize('Analytics poll', perf.analytics || []), summarize('Destination map', perf.map || [])];
+    el.innerHTML = rows.map(([k,v]) => `<b>${esc(k)}</b><span>${v}</span>`).join('');
   }
 
   async function refreshSystemPanel(){
@@ -2553,6 +2838,12 @@ def trackerdb_refresh_needed():
     return (not trackerdb_ready()) or (time.time() - os.path.getmtime(TRACKERDB_PATH) > TRACKERDB_REFRESH_HOURS * 3600)
 
 
+_SQL_DUMP_TRANSACTION_CONTROL_RE = re.compile(
+    r"^\s*(BEGIN(\s+(DEFERRED|IMMEDIATE|EXCLUSIVE))?(\s+TRANSACTION)?|COMMIT(\s+TRANSACTION)?|END(\s+TRANSACTION)?)\s*;?\s*$",
+    re.IGNORECASE,
+)
+
+
 def _execute_sql_file(conn, path):
     """Execute a SQL dump incrementally to avoid holding the full snapshot in RAM."""
     statement = []
@@ -2561,10 +2852,23 @@ def _execute_sql_file(conn, path):
             statement.append(raw_line)
             candidate = "".join(statement)
             if sqlite3.complete_statement(candidate):
-                conn.executescript(candidate)
+                _execute_sql_dump_statement(conn, candidate)
                 statement.clear()
     if statement and "".join(statement).strip():
-        conn.executescript("".join(statement))
+        _execute_sql_dump_statement(conn, "".join(statement))
+
+
+def _execute_sql_dump_statement(conn, candidate):
+    # A `sqlite3 .dump` snapshot wraps its inserts in its own literal
+    # BEGIN TRANSACTION/COMMIT statements, but conn.executescript() already
+    # issues an implicit COMMIT before every statement it runs here (each
+    # complete statement above is its own executescript() call). Running the
+    # dump's own BEGIN/COMMIT lines through that leaves the final COMMIT with
+    # no active transaction, which raises "cannot commit - no transaction is
+    # active" -- skip them since executescript() already commits per call.
+    if _SQL_DUMP_TRANSACTION_CONTROL_RE.match(candidate):
+        return
+    conn.executescript(candidate)
 
 
 def refresh_trackerdb(force=False):
@@ -4932,6 +5236,7 @@ def geoip_map_payload():
             "coordinates": city_capable,
             "heatmap": False,
         },
+        "basemap": _map_basemap_config(),
         # Six-state diagnostic (Issue #39): lets the UI distinguish "not
         # configured" from "configured but broken" from "working but nothing
         # to show yet" without container log access.
@@ -6044,6 +6349,7 @@ def api_analytics_map():
             "unknown": {"domain_count": 0, "observation_count": 0},
             "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0},
             "capabilities": {"country": False, "coordinates": False, "heatmap": False},
+            "basemap": _map_basemap_config(),
             "diagnostics": {"state": "load_failed", "message": GEOIP_DIAGNOSTIC_MESSAGES["load_failed"], "country": None, "city": None},
             "error": str(e),
         }), 200

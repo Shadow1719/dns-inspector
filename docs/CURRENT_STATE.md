@@ -465,6 +465,49 @@ pass in a real browser is recommended before merge since this repository
 has no headless-browser test harness to exercise the new interaction code
 paths automatically.
 
+0.8.5.13 (Issue #61, partial -- see
+`docs/tasks/ISSUE-61-ANALYTICS-MODERNIZATION.md`) fixes the reported P0
+Analytics render-storm and splits the DNS Destinations map's single "map
+style" preference into independent Basemap and Theme axes, deliberately
+deferring the issue's much larger charts/gauges 2026 visual rewrite to a
+follow-up rather than shipping it unverified in the same change (this
+hand-off's sandbox again could not execute `pytest`/`python` at all). Root
+cause of the reported responsiveness problem: `fetchAnalyticsFull()`
+unconditionally called `fetchDestinationMap()` on every `/api/analytics`
+poll tick, with no in-flight guard, no cancellation and no check for
+unchanged data. The destination map now polls on its own bounded timer
+(`mapRefreshMs()`, at least 3x the analytics interval and never faster than
+20s); both poll functions use a real `AbortController` (cancelling their own
+previous in-flight request) plus a sequence number so a slow response can
+never overwrite newer state, and a new `mapPayloadFingerprint()` skips the
+full SVG rebuild when a poll's aggregated data is unchanged from the last
+render. A new client-side perf trace (`window.__dnsInspectorPerf`, surfaced
+in Settings > Diagnostics) records HTTP-fetch time separately from render
+time for the last 20 analytics/map cycles. Basemap (`mapBasemap` -- Dark
+NOC/Urban, Satellite Heat, Satellite Density, Real Map/Pins) now controls
+both the background CSS treatment and a genuinely different marker
+rendering strategy via a new shared `mapEntityMarkerSvg()` builder (pulse-
+ring bubble, heat/glow blob, a deterministically-seeded particle field, or a
+real pin glyph); Theme (`mapTheme` -- BEMO Dark Accent, Indigo + Gold, Cyan)
+independently controls only the point/glow palette and its own intensity
+color ramp. Two new optional env vars, `MAP_TILE_URL_TEMPLATE`/
+`MAP_TILE_ATTRIBUTION` (unset by default, no hard-coded vendor, no required
+API key), are surfaced additively on `/api/analytics/map`'s new `basemap`
+field as plumbing for a future real online tile background -- **actual
+raster-tile compositing is not wired into the widget yet**; that needs a
+Mercator reprojection of the map's current equirectangular pan/zoom math,
+tracked as deferred follow-up work in the task doc rather than attempted
+unverified in this session. Also fixed, since their root causes were
+directly identified while touching this code: `mapCompactNumber()`'s two
+regex literals had inconsistent backslash escaping in the plain (non-raw)
+`HTML` Python string, which is exactly the SyntaxWarning the issue's debug
+log showed; and `refresh_trackerdb()`'s SQL-dump importer ran a dump's own
+literal `BEGIN TRANSACTION;`/`COMMIT;` lines through `executescript()` one
+statement at a time, and since that method already commits implicitly
+before every call, the dump's own `COMMIT;` ran against nothing, raising the
+exact `cannot commit - no transaction is active` error the debug log showed.
+GeoIP lookup/storage architecture is unchanged, as the task required.
+
 ## How to update this file
 
 Update this document when a change materially alters the project's current architecture, active development state, or important known constraints. Do not turn it into a changelog or duplicate the source code.

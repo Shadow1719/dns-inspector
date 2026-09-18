@@ -15,15 +15,20 @@ import re
 # --- size + color traffic-intensity encoding --------------------------------
 
 
-def test_intensity_color_function_exists_and_spans_green_to_red(client):
+def test_intensity_color_function_exists_and_spans_green_to_red_for_the_default_theme(client):
+    """Issue #61: the flat MAP_INTENSITY_STOPS array became a per-Theme table
+    (MAP_THEME_INTENSITY_STOPS); the default BEMO Dark Accent theme keeps the
+    original green-to-red ramp."""
     body = client.get("/").data.decode("utf-8")
     assert "function mapIntensityColor(ratio){" in body
-    match = re.search(r"const MAP_INTENSITY_STOPS = \[(.*?)\];", body, re.S)
-    assert match, "MAP_INTENSITY_STOPS not found in rendered page"
-    stops = match.group(1)
-    # low = green (hue ~150), highest = red (hue ~0-10) -- lime/yellow and
-    # orange must appear as intermediate stops between them.
-    hues = [int(h) for h in re.findall(r"h:\s*(-?\d+)", stops)]
+    match = re.search(r"const MAP_THEME_INTENSITY_STOPS = \{(.*?)\n\};", body, re.S)
+    assert match, "MAP_THEME_INTENSITY_STOPS not found in rendered page"
+    table = match.group(1)
+    for theme in ("bemo-dark-accent", "indigo-gold", "cyan"):
+        assert f"'{theme}':" in table
+    bemo_match = re.search(r"'bemo-dark-accent':\s*\[(.*?)\],\n", table, re.S)
+    assert bemo_match, "bemo-dark-accent stops not found"
+    hues = [int(h) for h in re.findall(r"h:\s*(-?\d+)", bemo_match.group(1))]
     assert len(hues) >= 4
     assert hues[0] >= 140  # green
     assert hues[-1] <= 15  # red
@@ -33,12 +38,13 @@ def test_intensity_color_function_exists_and_spans_green_to_red(client):
 def test_country_and_cluster_markers_use_the_same_ratio_for_size_and_color(client):
     """Size (sqrt-scaled radius) and color (mapIntensityColor) must both be
     derived from the same value/max-in-view ratio, not two independent
-    computations that could disagree."""
+    computations that could disagree. Issue #61 moved the actual size/color
+    computation into the shared mapEntityMarkerSvg() builder both
+    renderCountriesMode()/renderDestinationsMode() call with that ratio."""
     body = client.get("/").data.decode("utf-8")
     assert "const ratio = mapMetricValue(c) / maxVal;" in body
-    assert "const color = mapIntensityColor(ratio);" in body
-    assert "Math.sqrt(ratio) * 18" in body  # countries
-    assert "Math.sqrt(ratio) * 15" in body  # destination clusters
+    assert "const color = mapIntensityColor(ratio);" in body  # inside mapEntityMarkerSvg
+    assert "(isCluster ? 15 : 18)" in body  # countries (18) vs destination clusters (15)
 
 
 def test_markers_render_with_inline_intensity_fill_and_stroke(client):
@@ -125,10 +131,13 @@ def test_widget_copy_directs_users_to_click_tap_rather_than_hover(client):
 # --- regression: existing map semantics/controls are unchanged --------------
 
 
-def test_existing_mode_metric_style_and_zoom_controls_still_present(client):
+def test_existing_mode_metric_basemap_theme_and_zoom_controls_still_present(client):
+    """Issue #61 renamed the single map-style-select into independent
+    map-basemap-select/map-theme-select controls; mode/metric/zoom are
+    unchanged."""
     body = client.get("/").data.decode("utf-8")
     for widget_id in (
-        "map-mode-select", "map-metric-select", "map-style-select",
+        "map-mode-select", "map-metric-select", "map-basemap-select", "map-theme-select",
         "map-zoom-in-btn", "map-zoom-out-btn", "map-fit-btn", "map-reset-btn",
     ):
         assert f'id="{widget_id}"' in body

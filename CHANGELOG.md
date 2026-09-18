@@ -2,6 +2,94 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.13]
+Analytics responsiveness fix (P0) plus a Basemap/Theme architectural split
+for the DNS Destinations map (Issue #61), scoped per
+`docs/tasks/ISSUE-61-ANALYTICS-MODERNIZATION.md`. Stays in the 0.8.5.x
+series per the roadmap gate; the full charts/gauges 2026 visual rewrite the
+issue also requested is explicitly deferred (see that task doc) rather than
+half-implemented in the same change as the performance fix and the map
+rework.
+
+- **Fixed the reported render-storm.** `fetchAnalyticsFull()` previously
+  called `fetchDestinationMap()` on every single `/api/analytics` poll tick,
+  with no in-flight guard, no cancellation and no check for unchanged data --
+  the actual root cause of clicks/selector changes feeling like they waited
+  5-10 seconds. The destination map now polls on its own bounded cadence
+  (`mapRefreshMs()`, at least `/api/analytics`'s own interval x3 and never
+  faster than 20s) via a separate timer. Both `fetchAnalyticsFull()` and
+  `fetchDestinationMap()` now use a real `AbortController` (cancelling their
+  own previous in-flight request) plus a monotonic sequence number, so a slow
+  response can never overwrite state a newer request already replaced;
+  `fetchDestinationMap()` also has an in-flight guard so a slow tick can't
+  pile up overlapping requests.
+- **No more redundant full-SVG rebuilds.** A new `mapPayloadFingerprint()`
+  lets a poll that returns identical aggregated data skip the expensive full
+  map re-render entirely -- interaction-triggered re-renders (mode/metric/
+  basemap/theme/zoom/pan/selection) are unaffected and still redraw
+  immediately.
+- **New client-side perf trace.** `window.__dnsInspectorPerf` and a new
+  "Analytics render performance" block in Settings > Diagnostics record HTTP
+  fetch time separately from in-browser render time for the last 20
+  analytics/map cycles, so a slow interaction can be attributed to network
+  vs. main-thread rendering without a browser profiler.
+- **Basemap split from Theme.** The DNS Destinations map's single "map
+  style" preference (BEMO Dark/Aurora/White/Minimal, one `--map-*` CSS
+  variable set) is replaced by two independent `dnsInspectorPrefs` keys and
+  selectors: **Basemap** (`mapBasemap` -- Dark NOC/Urban, Satellite Heat,
+  Satellite Density, Real Map/Pins) controls the background treatment *and*
+  a genuinely different marker rendering strategy per mode via a new shared
+  `mapEntityMarkerSvg()` builder (pulse-ring bubble, heat/glow blob,
+  deterministically-seeded particle field, or a real pin glyph -- not four
+  recolors of the same circle); **Theme** (`mapTheme` -- BEMO Dark Accent,
+  Indigo + Gold, Cyan) controls only the point/glow palette and its own
+  green-to-intensity color ramp (`MAP_THEME_INTENSITY_STOPS`), independent
+  of which Basemap is selected. A browser with an older saved `mapStyle`
+  preference migrates to a sensible `mapBasemap` default instead of silently
+  losing its choice.
+- **Configurable basemap tile-source abstraction (backend plumbing).** Two
+  new optional env vars, `MAP_TILE_URL_TEMPLATE`/`MAP_TILE_ATTRIBUTION`,
+  unset by default (no hard-coded vendor, no required API key, no runtime
+  network access unless an operator opts in), are surfaced additively on
+  `/api/analytics/map`'s new `basemap` field. **Actual online raster-tile
+  compositing is not wired into the widget in this release** -- see the task
+  doc's "Deferred" section for why (it needs a Mercator reprojection of the
+  map's current equirectangular pan/zoom math, which this hand-off's
+  sandbox had no way to execute or visually verify). The map continues to
+  render entirely from the bundled offline vector geometry.
+- **Two root-caused cleanup fixes.** `mapCompactNumber()`'s two regex
+  literals used inconsistent backslash escaping in the plain (non-raw)
+  `HTML` Python string (`\\.0$` vs. the invalid `\.0$`), which is exactly
+  the SyntaxWarning the issue's debug log showed -- now consistent, with no
+  change in the JS output. `refresh_trackerdb()`'s SQL-dump importer ran the
+  dump's own literal `BEGIN TRANSACTION;`/`COMMIT;` lines through
+  `executescript()` one statement at a time; since `executescript()` already
+  issues its own implicit commit before every call, the dump's `COMMIT;`
+  ran with nothing left to commit, raising the exact `cannot commit - no
+  transaction is active` error the debug log showed. Those transaction-
+  control statements are now skipped since `executescript()` already commits
+  per call.
+- New focused tests: `tests/test_analytics_polling_performance.py` (polling
+  cadence, in-flight guard, `AbortController`/stale-response protection,
+  fingerprint-based rebuild skip, perf trace), `tests/test_trackerdb_sql_dump_transaction.py`
+  (the exact `BEGIN`/`COMMIT` regression, executed against a real SQLite
+  connection), `tests/test_app_source_no_syntax_warnings.py` (compiles
+  `app.py`'s own source and asserts zero `SyntaxWarning`), and updates to
+  `tests/test_map_visual2_frontend.py`/`test_map_navigation_visual21.py`/
+  `test_map_infographic_visual3.py` for the Basemap/Theme split plus new
+  `tests/test_geoip_destinations_map.py` cases for the additive `basemap`
+  config field.
+**This hand-off's sandbox could not execute `pytest`/`python` at all**,
+matching the same limitation recorded against every 0.8.5.7-0.8.5.12
+hand-off in `docs/CURRENT_STATE.md`. The change is verified by direct code
+inspection and by independently grep-verifying every new string/attribute
+the new/updated tests assert on against the actual rendered `app.py`
+template in this session. The real CI run (`pytest` + Docker build/health
+smoke) must confirm the full suite, and a manual click/keyboard/basemap/
+theme/reduced-motion pass in a real browser is strongly recommended before
+merge given the size of the map rendering change and the lack of a
+headless-browser harness in this repository.
+
 ## [0.8.5.12]
 DNS Destinations map visual/interaction redesign (Issue #56): a data-driven
 traffic-intensity infographic, not a GeoIP/data-semantics rewrite.

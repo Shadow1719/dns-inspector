@@ -63,40 +63,55 @@ def test_existing_discrete_zoom_and_reset_buttons_still_work(client):
     assert "mapZoom = Math.max(1, mapZoom / 2)" in body
 
 
-# --- genuinely distinct map style presets (not just an accent color) --------
+# --- genuinely distinct basemap presets (not just an accent color) ----------
+# Issue #61 split the old single "map style" into independent Basemap
+# (`data-map-basemap`) and Theme (`data-map-theme`) axes -- see
+# test_map_visual2_frontend.py for the dedicated Basemap/Theme split tests.
+# The tests below still pin the Basemap axis's "far more than one accent
+# color" guarantee under its new attribute/values.
 
 
-def test_each_map_style_sets_far_more_than_a_single_accent_property(client):
+def test_each_basemap_sets_far_more_than_a_single_accent_property(client):
     """Issue #39's core complaint: changing style used to just recolor one
-    accent variable. Each style block must now set background gradient,
+    accent variable. Each basemap block must still set background gradient,
     land fill/glow, grid opacity, marker glow, vignette and banner treatment
     -- a double-digit number of distinct --map-* custom properties."""
     body = client.get("/").data.decode("utf-8")
-    for style in ("bemo-dark", "aurora", "white", "minimal"):
+    for basemap in ("dark-noc", "satellite-heat", "satellite-density", "real-pins"):
         match = re.search(
-            re.escape(f'.destination-map-wrap[data-map-style="{style}"]{{') + r'([^}]*)\}',
+            re.escape(f'.destination-map-wrap[data-map-basemap="{basemap}"]{{') + r'([^}]*)\}',
             body,
         )
-        assert match, f"no CSS rule found for map style {style}"
+        assert match, f"no CSS rule found for basemap {basemap}"
         props = set(re.findall(r'--map-[a-z0-9-]+(?=:)', match.group(1)))
-        assert len(props) >= 10, f"{style} only varies {len(props)} properties: {props}"
+        assert len(props) >= 10, f"{basemap} only varies {len(props)} properties: {props}"
 
 
-def test_minimal_style_disables_the_pulse_ring_for_a_lower_noise_empty_state(client):
+def test_real_pins_basemap_disables_css_marker_glow_for_a_cartographic_look(client):
     body = client.get("/").data.decode("utf-8")
-    match = re.search(r'\.destination-map-wrap\[data-map-style="minimal"\]\{([^}]*)\}', body)
+    match = re.search(r'\.destination-map-wrap\[data-map-basemap="real-pins"\]\{([^}]*)\}', body)
     assert match
-    assert "--map-pulse-display:none" in match.group(1)
+    assert "--map-point-glow:none" in match.group(1)
 
 
-def test_bemo_dark_and_aurora_styles_have_a_marker_glow_but_white_and_minimal_do_not(client):
+def test_dark_noc_and_satellite_basemaps_have_a_marker_glow_but_real_pins_does_not(client):
     body = client.get("/").data.decode("utf-8")
-    for style in ("bemo-dark", "aurora"):
-        match = re.search(re.escape(f'.destination-map-wrap[data-map-style="{style}"]{{') + r'([^}]*)\}', body)
+    for basemap in ("dark-noc", "satellite-heat", "satellite-density"):
+        match = re.search(re.escape(f'.destination-map-wrap[data-map-basemap="{basemap}"]{{') + r'([^}]*)\}', body)
         assert "drop-shadow" in match.group(1)
-    for style in ("white", "minimal"):
-        match = re.search(re.escape(f'.destination-map-wrap[data-map-style="{style}"]{{') + r'([^}]*)\}', body)
-        assert "--map-point-glow:none" in match.group(1)
+    match = re.search(re.escape('.destination-map-wrap[data-map-basemap="real-pins"]{') + r'([^}]*)\}', body)
+    assert "--map-point-glow:none" in match.group(1)
+
+
+def test_only_dark_noc_basemap_emits_the_pulse_ring_marker(client):
+    """The pulse-ring treatment is Dark NOC/Urban's distinctive marker (the
+    old default style); Satellite Heat/Density and Real Map/Pins render a
+    structurally different marker (heat glow, particle field, pin glyph)
+    that never emits a `.map-bubble-pulse-ring` element at all, rather than
+    creating and then CSS-hiding one."""
+    body = client.get("/").data.decode("utf-8")
+    assert "class=\"map-bubble-pulse-ring\"" in body
+    assert "// dark-noc (default): the original crisp pulse-ring bubble treatment." in body
 
 
 def test_map_background_is_a_gradient_driven_by_style_variables_not_a_flat_fill(client):
