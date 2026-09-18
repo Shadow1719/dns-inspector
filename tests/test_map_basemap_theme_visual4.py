@@ -62,7 +62,11 @@ def test_particle_placement_is_seeded_not_math_random(client):
     assert "function mapMulberry32(seed){" in body
     assert "function mapParticleOffsets(id, count, spread){" in body
     assert "mapMulberry32(mapSeedFromString(String(id)))" in body
-    assert "Math.random" not in body
+    # Explanatory comments legitimately mention "Math.random()" to document why
+    # placement is seeded instead; strip block comments so this only fails if
+    # the executable JS/CSS actually calls it.
+    without_comments = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    assert "Math.random(" not in without_comments
 
 
 def test_particle_count_scales_with_intensity_ratio_and_is_bounded_per_basemap(client):
