@@ -2,6 +2,38 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.11]
+
+Startup reachability fix (Issue #51): real TrueNAS evidence showed the
+container reporting RUNNING (socket bound) while `/health` stayed
+unanswered for several seconds once the 0.8.5.9/0.8.5.10 deferred initial
+GeoIP load started on a fixed 1s clock delay.
+
+- **Readiness gate replaces the fixed delay.** `_geoip_initial_load_worker()`
+  no longer sleeps a fixed `GEOIP_INITIAL_LOAD_DELAY_SECONDS` before
+  starting -- it waits on `_first_response_ready`, a `threading.Event` set
+  once by a new `after_request` hook (`_mark_first_response_ready()`) the
+  first time the HTTP service actually finishes serving any response.
+  `GEOIP_INITIAL_LOAD_DELAY_SECONDS` (same env var, same default) is now
+  only the safety ceiling for a deployment that never receives a single
+  request at all, not the thing every startup waits out.
+- **Explicit threaded serving.** `serve()` now runs `app.run(..., threaded=True)`,
+  so a request already in flight can no longer fully block a concurrent
+  request behind it.
+- **New `/api/observability` `startup` field** distinguishes "the process is
+  running" from "the HTTP service has proven it's ready": `http_ready`,
+  `first_response_seconds_after_start`, and `geoip_initial_load_started`/
+  `geoip_initial_load_complete`/`geoip_initial_load_seconds_after_start`/
+  `geoip_initial_load_duration_seconds`. `/health` itself is unchanged --
+  still a plain, fast, unconditional 200, never gated on GeoIP.
+- **TrackerDB confirmed already safe.** `refresh_trackerdb()` was already
+  started from its own daemon thread inside the `agh-ingest` background
+  worker, entirely off the request-serving path; no change was needed
+  there.
+- No change to GeoIP lookup/map-coverage semantics, the existing
+  `GEOIP_LOAD_CHUNK_ROWS`/`GEOIP_LOAD_YIELD_SECONDS` row throttle, or the
+  fixed five-long-lived-worker contract.
+
 ## [0.8.5.10]
 
 CI repair (Issue #50, CI run 35317057142) and low-impact GeoIP load throttling.

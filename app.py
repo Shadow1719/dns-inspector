@@ -4043,9 +4043,44 @@ _geoip_city_cache_lock = threading.Lock()
 # Flask server and makes a healthy container appear to hang at startup.
 # Providers start as explicit Null providers and are replaced by the first
 # background load once the application has started serving requests.
+#
+# Issue #51: a fixed clock delay before this load only ever proved that some
+# amount of wall-clock time had passed, not that the HTTP server had actually
+# managed to accept and answer a request -- real TrueNAS evidence showed the
+# container reporting RUNNING with the socket bound while `/health` itself
+# stayed unanswered for several more seconds once the deferred load started.
+# `_first_response_ready` is set exactly once, by `_mark_first_response_ready()`
+# (an `after_request` hook that fires for every response, success or error),
+# the first time the HTTP service actually finishes serving something.
+# `GEOIP_INITIAL_LOAD_DELAY_SECONDS` becomes a safety ceiling on that wait --
+# still the same env var and default as before, but now only the fallback for
+# an environment where nothing ever requests anything (e.g. no health
+# checker configured at all), not the thing that gates every startup.
+_first_response_ready = threading.Event()
+_first_response_monotonic = None
 GEOIP_INITIAL_LOAD_DELAY_SECONDS = max(
     0.0, float(os.getenv("GEOIP_INITIAL_LOAD_DELAY_SECONDS", "1"))
 )
+
+#: One-shot state for the deferred initial GeoIP load, surfaced via
+#: `/api/observability` (`_startup_readiness_diagnostics()`) so "the process
+#: is running" and "the HTTP service is ready" stay distinguishable there
+#: too, not just internally to the wait gate above.
+_geoip_initial_load_state_lock = threading.Lock()
+_geoip_initial_load_state = {"started_at": None, "completed_at": None, "error": None}
+
+
+@app.after_request
+def _mark_first_response_ready(response):
+    """Flip `_first_response_ready` the first time any response is actually
+    sent -- proof the HTTP service can serve a request, not just that the
+    process/socket exists. Cheap (an `Event` that's already set short-circuits
+    immediately) so this stays negligible on every later request."""
+    global _first_response_monotonic
+    if not _first_response_ready.is_set():
+        _first_response_monotonic = time.monotonic()
+        _first_response_ready.set()
+    return response
 
 
 def _geoip_initial_load_worker():
@@ -4055,9 +4090,21 @@ def _geoip_initial_load_worker():
     construction off module import means PID 1 can bind the HTTP server and
     report healthy status immediately; the map remains temporarily unmapped
     until this one-time background load completes.
+
+    Issue #51: this now waits for genuine proof of HTTP reachability
+    (`_first_response_ready`) instead of guessing a fixed delay is enough --
+    `GEOIP_INITIAL_LOAD_DELAY_SECONDS` bounds how long it will wait for that
+    proof before proceeding anyway, so a deployment that never receives a
+    single request still eventually gets a populated map.
     """
-    if GEOIP_INITIAL_LOAD_DELAY_SECONDS:
-        time.sleep(GEOIP_INITIAL_LOAD_DELAY_SECONDS)
+    served = _first_response_ready.wait(timeout=GEOIP_INITIAL_LOAD_DELAY_SECONDS)
+    if not served:
+        print(
+            "GeoIP initial load: no HTTP response observed within "
+            f"{GEOIP_INITIAL_LOAD_DELAY_SECONDS:.1f}s; proceeding without "
+            "further delay.",
+            flush=True,
+        )
 
     country_present = os.path.exists(GEOIP_DB_PATH)
     city_present = os.path.exists(GEOIP_CITY_DB_PATH)
@@ -4066,6 +4113,8 @@ def _geoip_initial_load_worker():
         return
 
     started = time.monotonic()
+    with _geoip_initial_load_state_lock:
+        _geoip_initial_load_state["started_at"] = started
     print(
         "GeoIP initial load: starting deferred background load "
         f"(country={country_present}, city={city_present})",
@@ -4078,11 +4127,48 @@ def _geoip_initial_load_worker():
             f"GeoIP initial load: complete in {elapsed:.1f}s",
             flush=True,
         )
+        with _geoip_initial_load_state_lock:
+            _geoip_initial_load_state["completed_at"] = time.monotonic()
     except Exception as e:
         print(
             f"GeoIP initial load error: keeping Null providers for now: {e!r}",
             flush=True,
         )
+        with _geoip_initial_load_state_lock:
+            _geoip_initial_load_state["completed_at"] = time.monotonic()
+            _geoip_initial_load_state["error"] = repr(e)
+
+
+def _startup_readiness_diagnostics():
+    """Issue #51: makes "the process/container is running" and "the HTTP
+    service has actually served a request" two distinguishable, observable
+    facts instead of conflating them. `/health` deliberately stays a plain,
+    fast, unconditional 200 -- this lives in `/api/observability` instead so
+    nothing here can make `/health` itself slower or gate on GeoIP."""
+    first_response_seconds = None
+    if _first_response_ready.is_set() and _first_response_monotonic is not None:
+        first_response_seconds = round(max(0.0, _first_response_monotonic - OBSERVABILITY_START_MONOTONIC), 3)
+    with _geoip_initial_load_state_lock:
+        state = dict(_geoip_initial_load_state)
+    started_at = state["started_at"]
+    completed_at = state["completed_at"]
+    geoip_initial_load_seconds_after_start = (
+        round(max(0.0, started_at - OBSERVABILITY_START_MONOTONIC), 3) if started_at is not None else None
+    )
+    geoip_initial_load_duration_seconds = (
+        round(max(0.0, completed_at - started_at), 3)
+        if started_at is not None and completed_at is not None
+        else None
+    )
+    return {
+        "http_ready": _first_response_ready.is_set(),
+        "first_response_seconds_after_start": first_response_seconds,
+        "geoip_initial_load_started": started_at is not None,
+        "geoip_initial_load_complete": completed_at is not None,
+        "geoip_initial_load_seconds_after_start": geoip_initial_load_seconds_after_start,
+        "geoip_initial_load_duration_seconds": geoip_initial_load_duration_seconds,
+        "geoip_initial_load_error": state["error"],
+    }
 
 
 def _geoip_diagnostics():
@@ -6233,6 +6319,7 @@ def _observability_payload():
         'geoip': _geoip_diagnostics(),
         'geoip_city': _geoip_city_diagnostics(),
         'geoip_update': _geoip_update_diagnostics(),
+        'startup': _startup_readiness_diagnostics(),
     }
 
 
@@ -6497,8 +6584,15 @@ def start_background_workers():
 
 
 def serve():
-    """Run the built-in Flask server. Blocks until the process is stopped."""
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+    """Run the built-in Flask server. Blocks until the process is stopped.
+
+    Issue #51: `threaded=True` lets the server accept and answer a request
+    (e.g. `/health`, or a normal UI request) that lands while another is
+    still being handled, instead of Flask's single-threaded default forcing
+    every request to wait its turn behind whichever one is currently in
+    flight -- real reachability, not just a bound listening socket.
+    """
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), threaded=True)
 
 
 def main():
