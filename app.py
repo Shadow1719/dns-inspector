@@ -589,91 +589,103 @@ html[data-motion="reduced"] .metric-sweep,html[data-motion="reduced"] .radar-swe
 .gauge-face{display:flex;flex-direction:column;align-items:center;gap:4px;min-width:180px}
 html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:transform .5s ease}
 
-/* ---- DNS Destinations map (Issue #33; Visual 2.0 in Issue #37/0.8.6): a
-   bundled/offline-safe stylized world-landmass silhouette (WORLD_LAND_D
-   below), a graticule and either a country-bubble or clustered-destination
-   overlay. The landmass path is a simplified, hand-authored equirectangular
-   outline -- not survey-accurate coastline data -- so the map always renders
-   something recognizable even with no GeoIP database configured and no
-   network access. Bubble/cluster size/position is entirely data-driven; only
-   the top country's pulse ring animates, and only when motion isn't
-   reduced. Map appearance (BEMO Dark/Aurora/White/Minimal) is a
-   `dnsInspectorPrefs.mapStyle` preference, independent of the application
-   theme -- it is expressed entirely through the `--map-*` custom properties
-   below, scoped under `[data-map-style]` on the wrap element, rather than
-   `html[data-theme]`. ---- */
+/* ---- DNS Destinations map (Issue #33; Visual 2.0 in Issue #37/0.8.6;
+   Issue #56 redesigned it into a traffic-intensity infographic). This
+   follow-up replaces the single `mapStyle` preset with two independent
+   preferences: `mapBasemap` (Satellite Heat / Satellite Density / Real Map
+   + Pins / Dark NOC -- structural rendering: background treatment plus how
+   observed activity is drawn) and `mapTheme` (Indigo + Gold / Cyan / BEMO
+   Dark Accent -- color ramp/palette only). Every combination renders the
+   same offline dot-matrix world (see mapWorldDots() below, sampled from the
+   bundled WORLD_LAND_D vector rings) instead of one flat filled silhouette
+   -- there is no bundled satellite/street raster asset, so "Satellite"/
+   "Real Map" are stylistic approximations rather than literal imagery,
+   which keeps the map fully offline/self-contained. Bubble/particle size
+   and position are entirely data-driven and deterministic (seeded, never
+   Math.random()); only markers at/above a high intensity ratio pulse, and
+   only when motion isn't reduced. ---- */
 .destination-map-wrap{
   position:relative;
   --map-bg-a:var(--surface-2); --map-bg-b:var(--surface-1);
-  --map-land:var(--surface-3); --map-land-stroke:var(--border-strong); --map-land-glow:none;
-  --map-border:var(--border); --map-grid:var(--border); --map-grid-strong:var(--border-strong); --map-grid-opacity:.5;
-  --map-point:var(--accent); --map-point-2:var(--accent); --map-point-opacity:.45; --map-point-glow:none;
+  --map-grid:var(--border); --map-grid-strong:var(--border-strong); --map-grid-opacity:.5;
+  --map-border:var(--border); --map-point-glow:none; --map-particle-glow:none;
   --map-vignette:none; --map-banner-bg:var(--surface-1); --map-pulse-display:block;
+  --map-dot:var(--accent); --map-dot-opacity:.4;
 }
-/* Issue #39: each style below now sets its own ocean gradient, land fill/
-   glow, grid opacity, marker glow, empty-state banner treatment and pulse
-   visibility -- not just an accent color -- so the four presets are
-   genuinely different map visuals rather than the same map recolored. */
-.destination-map-wrap[data-map-style="bemo-dark"]{
-  --map-bg-a:#0c1a2c; --map-bg-b:#03060b;
-  --map-land:#0f2036; --map-land-stroke:#2a4a70; --map-land-glow:blur(1.5px);
-  --map-border:#132338; --map-grid:#1c3350; --map-grid-strong:#2a4a70; --map-grid-opacity:.55;
-  --map-point:#2dd4c8; --map-point-2:#5eead4; --map-point-opacity:.6;
-  --map-point-glow:drop-shadow(0 0 4px rgba(45,212,200,.9)) drop-shadow(0 0 9px rgba(45,212,200,.4));
-  --map-vignette:inset 0 0 70px 12px rgba(0,0,0,.6); --map-banner-bg:rgba(6,11,20,.9); --map-pulse-display:block;
+/* Basemap = structural rendering (background gradient, grid, vignette,
+   pulse visibility and how activity particles/pins are drawn). */
+.destination-map-wrap[data-map-basemap="satellite-heat"]{
+  --map-bg-a:#241a0c; --map-bg-b:#0a0703;
+  --map-grid:#3a2c18; --map-grid-strong:#54401f; --map-grid-opacity:.35;
+  --map-vignette:inset 0 0 80px 16px rgba(0,0,0,.65); --map-banner-bg:rgba(10,7,3,.9); --map-pulse-display:block;
+  --map-point-glow:drop-shadow(0 0 6px rgba(255,176,64,.85)) drop-shadow(0 0 14px rgba(255,120,40,.5));
+  --map-particle-glow:blur(2.2px);
 }
-.destination-map-wrap[data-map-style="aurora"]{
-  --map-bg-a:#1a1044; --map-bg-b:#05030f;
-  --map-land:#1c1440; --map-land-stroke:#4c3c9a; --map-land-glow:blur(2px);
-  --map-border:#1c1440; --map-grid:#2c2160; --map-grid-strong:#4c3c9a; --map-grid-opacity:.5;
-  --map-point:#a78bfa; --map-point-2:#22d3ee; --map-point-opacity:.65;
-  --map-point-glow:drop-shadow(0 0 5px rgba(167,139,250,.95)) drop-shadow(0 0 12px rgba(34,211,238,.45));
-  --map-vignette:inset 0 0 80px 16px rgba(40,10,70,.55); --map-banner-bg:rgba(10,6,32,.88); --map-pulse-display:block;
+.destination-map-wrap[data-map-basemap="satellite-density"]{
+  --map-bg-a:#152018; --map-bg-b:#050b08;
+  --map-grid:#25382c; --map-grid-strong:#3a563f; --map-grid-opacity:.4;
+  --map-vignette:inset 0 0 70px 12px rgba(0,0,0,.6); --map-banner-bg:rgba(5,11,8,.9); --map-pulse-display:block;
+  --map-point-glow:none; --map-particle-glow:none;
 }
-.destination-map-wrap[data-map-style="white"]{
-  --map-bg-a:#ffffff; --map-bg-b:#e4ebf5;
-  --map-land:#dbe4ee; --map-land-stroke:#a9b8c9; --map-land-glow:none;
-  --map-border:#c7d2e0; --map-grid:#e2e8f0; --map-grid-strong:#c7d2e0; --map-grid-opacity:.7;
-  --map-point:#1d4ed8; --map-point-2:#0e7490; --map-point-opacity:.85; --map-point-glow:none;
-  --map-vignette:none; --map-banner-bg:rgba(255,255,255,.94); --map-pulse-display:block;
+.destination-map-wrap[data-map-basemap="real-pins"]{
+  --map-bg-a:#e8edf3; --map-bg-b:#c3cfdd;
+  --map-grid:#aebdd0; --map-grid-strong:#8ea0b8; --map-grid-opacity:.8;
+  --map-vignette:none; --map-banner-bg:rgba(255,255,255,.94); --map-pulse-display:none;
+  --map-point-glow:none; --map-particle-glow:none;
 }
-.destination-map-wrap[data-map-style="minimal"]{
-  --map-bg-a:#15171d; --map-bg-b:#0b0c0f;
-  --map-land:#1d2129; --map-land-stroke:#262b34; --map-land-glow:none;
-  --map-border:#1a1d24; --map-grid:transparent; --map-grid-strong:transparent; --map-grid-opacity:0;
-  --map-point:#e2e8f0; --map-point-2:#94a3b8; --map-point-opacity:.6; --map-point-glow:none;
-  --map-vignette:none; --map-banner-bg:rgba(21,23,29,.88); --map-pulse-display:none;
+.destination-map-wrap[data-map-basemap="dark-noc"]{
+  --map-bg-a:#050608; --map-bg-b:#000000;
+  --map-grid:#1c2430; --map-grid-strong:#324256; --map-grid-opacity:.75;
+  --map-vignette:inset 0 0 90px 18px rgba(0,0,0,.75); --map-banner-bg:rgba(0,0,0,.92); --map-pulse-display:block;
+  --map-point-glow:drop-shadow(0 0 5px rgba(255,80,60,.9)) drop-shadow(0 0 10px rgba(255,40,20,.5));
+  --map-particle-glow:none;
 }
+/* Theme = color ramp/palette only, independent of the basemap above -- see
+   mapThemeColor()/MAP_THEME_STOPS in the script. This block only sets the
+   muted (inactive) world-dot color; active/intensity colors are computed
+   per-marker in JS and applied inline. */
+.destination-map-wrap[data-map-theme="indigo-gold"]{ --map-dot:#4c3f8a; --map-dot-opacity:.5; }
+.destination-map-wrap[data-map-theme="cyan"]{ --map-dot:#0f5a68; --map-dot-opacity:.55; }
+.destination-map-wrap[data-map-theme="bemo-accent"]{ --map-dot:#2a4a70; --map-dot-opacity:.5; }
 .destination-map-svg{width:100%;height:auto;aspect-ratio:2/1;background:radial-gradient(ellipse at 50% 40%,var(--map-bg-a),var(--map-bg-b));box-shadow:var(--map-vignette);border:1px solid var(--map-border);border-radius:var(--radius-md);cursor:grab}
 .destination-map-svg.map-dragging{cursor:grabbing}
 html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s ease}
-.map-landmass{fill:var(--map-land);stroke:var(--map-land-stroke);stroke-width:.75;opacity:.92}
-.map-landmass-glow{fill:var(--map-land);stroke:none;opacity:.35;filter:var(--map-land-glow)}
+.map-world-dot{fill:var(--map-dot);opacity:var(--map-dot-opacity)}
+.map-world-dot-active{opacity:.95}
 .map-graticule .map-grid-line{stroke:var(--map-grid);stroke-width:1;opacity:var(--map-grid-opacity)}
 .map-graticule .map-grid-equator{opacity:calc(var(--map-grid-opacity) * 1.6);stroke:var(--map-grid-strong)}
 .map-status-banner{position:absolute;top:10px;left:10px;right:10px;margin:0 auto;padding:8px 12px;background:var(--map-banner-bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-secondary);font-size:.8rem;text-align:center;pointer-events:none;box-shadow:var(--shadow-sm,0 1px 4px rgba(0,0,0,.15))}
 .map-status-banner .map-status-action{margin-top:6px;pointer-events:auto}
-/* Issue #56: marker fill/stroke is now set inline per-bubble/cluster from
-   mapIntensityColor() (green -> lime/yellow -> orange -> red, driven by the
-   same relative-to-max ratio that already sized the bubble) rather than the
-   single flat `--map-point` accent -- traffic intensity is meant to be
-   readable from color alone, independent of the chosen map style. The
-   style-scoped glow/opacity/hover treatment below is unchanged. */
-.map-bubble{fill-opacity:var(--map-point-opacity);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
-.map-bubble:hover,.map-bubble-selected{fill-opacity:.9;stroke-width:2}
-.map-bubble-pulse-ring{fill:none;stroke:var(--map-point);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none;display:var(--map-pulse-display)}
+.map-entity{cursor:pointer}
+.map-entity:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.map-hit-area{fill:transparent;pointer-events:all}
+/* Issue #56: marker fill/stroke is set inline per-entity from
+   mapThemeColor() (the same relative-to-max ratio that already sizes the
+   marker) rather than a single flat accent -- traffic intensity is meant to
+   be readable from color alone, independent of the chosen basemap/theme. */
+.map-bubble{fill-opacity:.85;stroke-width:1;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
+.map-entity:hover .map-bubble,.map-bubble-selected{fill-opacity:1;stroke-width:2}
+.map-bubble-pulse-ring{fill:none;stroke:var(--accent);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none;display:var(--map-pulse-display)}
 html:not([data-motion="reduced"]) .map-bubble-pulse-ring{animation:dnsInspectorMapPulse 2.4s ease-out infinite}
 html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 @media(prefers-reduced-motion:reduce){
   .map-bubble-pulse-ring{display:none!important;animation:none!important}
-  .map-bubble,.map-cluster{transition:none!important}
+  .map-bubble{transition:none!important}
 }
 @keyframes dnsInspectorMapPulse{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.4);opacity:0}}
-.map-cluster{fill-opacity:var(--map-point-opacity);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
-.map-cluster:hover,.map-cluster-selected{fill-opacity:.95;stroke-width:2}
+/* Bounded, deterministic activity particles (Issue #56 follow-up): count and
+   spread come from mapParticleCount()/mapParticleOffsets() in the script,
+   seeded by each entity's own stable id -- never Math.random() -- so a
+   country/cluster's cloud looks the same on every refresh instead of
+   jittering, and grows denser/brighter with more observations rather than
+   just growing one giant circle. */
+.map-particle{pointer-events:none}
+.map-particle-heat{filter:var(--map-particle-glow);opacity:.55}
+.map-particle-density{opacity:.85}
+.map-particle-noc{opacity:.9}
+.map-pin{opacity:.95;pointer-events:none}
 .map-cluster-count{font-size:7px;fill:var(--map-bg-b);pointer-events:none;text-anchor:middle;dominant-baseline:central}
 .map-bubble-count{font-size:7px;fill:rgba(4,10,18,.85);font-weight:600;pointer-events:none;text-anchor:middle;dominant-baseline:central}
-.map-bubble:focus-visible,.map-cluster:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .map-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
 .map-controls .settings-select{padding:6px 8px;font-size:.78rem}
 .map-zoom-group{display:inline-flex;gap:4px}
@@ -862,7 +874,7 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
-const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapStyle:'bemo-dark'};
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent'};
 function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
 let prefs = loadPrefs();
@@ -1163,11 +1175,16 @@ function renderInstrumentGauges(data){
             <option value="unique_ips">Unique IPs</option>
             <option value="domains">Domains</option>
           </select>
-          <select class="settings-select" id="map-style-select" aria-label="Map style">
-            <option value="bemo-dark">BEMO Dark</option>
-            <option value="aurora">Aurora</option>
-            <option value="white">White</option>
-            <option value="minimal">Minimal</option>
+          <select class="settings-select" id="map-basemap-select" aria-label="Map basemap">
+            <option value="satellite-heat">Satellite Heat</option>
+            <option value="satellite-density">Satellite Density</option>
+            <option value="real-pins">Real Map / Pins</option>
+            <option value="dark-noc">Dark NOC / Urban</option>
+          </select>
+          <select class="settings-select" id="map-theme-select" aria-label="Map theme">
+            <option value="indigo-gold">Indigo + Gold</option>
+            <option value="cyan">Cyan</option>
+            <option value="bemo-accent">BEMO / Dark Accent</option>
           </select>
           <span class="map-zoom-group" role="group" aria-label="Map zoom">
             <button type="button" class="map-zoom-btn" id="map-zoom-out-btn" aria-label="Zoom out">&minus;</button>
@@ -1176,7 +1193,7 @@ function renderInstrumentGauges(data){
             <button type="button" class="map-zoom-btn" id="map-reset-btn" aria-label="Reset map view">Reset</button>
           </span>
         </div>
-        <div class="stats-note" style="margin-top:0">Click or tap a marker for details &mdash; they stay open until dismissed. Drag to pan, scroll/pinch to zoom, or use the buttons above. Tab to a marker and press Enter/Space to select it; arrow keys pan and +/- zoom when the map is focused.</div>
+        <div class="stats-note" style="margin-top:0">Click or tap a marker for details &mdash; they stay open until dismissed. Drag to pan, scroll/pinch to zoom, or use the buttons above. Tab to a marker and press Enter/Space to select it; arrow keys pan and +/- zoom when the map is focused. Basemap picks how activity is drawn (heat glow, density points, pins, or bright NOC points); theme only recolors the intensity ramp, independently of the basemap.</div>
         <div class="map-legend" id="destination-map-legend" role="note" aria-label="Map legend: marker size and color both scale with observation count">
           <div class="map-legend-group">
             <span class="map-legend-title">Marker size</span>
@@ -1189,8 +1206,12 @@ function renderInstrumentGauges(data){
           </div>
           <div class="map-legend-group">
             <span class="map-legend-title">Marker color</span>
-            <span class="map-legend-gradient"></span>
+            <span class="map-legend-gradient" id="map-legend-gradient"></span>
             <span class="map-legend-caption">Low intensity &rarr; high intensity</span>
+          </div>
+          <div class="map-legend-group">
+            <span class="map-legend-title">Particles</span>
+            <span class="map-legend-caption">More particles/brighter glow around a real observed location means more traffic there &mdash; they are an intensity visualization, not independent physical servers.</span>
           </div>
         </div>
         <div id="destination-map"></div>
@@ -1443,7 +1464,15 @@ async function fetchAnalyticsFull(){
    cluster sizing metric are `dnsInspectorPrefs` preferences, independent of
    the application theme/Analytics visual style. */
 const MAP_W = 720, MAP_H = 360;
-const MAP_STYLES = ['bemo-dark', 'aurora', 'white', 'minimal'];
+/* Issue #56 follow-up: two independent selectors replace the old single
+   `mapStyle` preset (BEMO Dark/Aurora/White/Minimal). MAP_BASEMAPS is the
+   structural rendering (background treatment plus how observed activity is
+   drawn: heat glow, scattered density particles, a pin glyph, or bright
+   NOC-grid points); MAP_THEMES only recolors the intensity ramp/palette on
+   top of whichever basemap is active -- see mapEntityMarkup()/
+   mapThemeColor() below for how they combine. */
+const MAP_BASEMAPS = ['satellite-heat', 'satellite-density', 'real-pins', 'dark-noc'];
+const MAP_THEMES = ['indigo-gold', 'cyan', 'bemo-accent'];
 const MAP_METRICS = ['observations', 'unique_ips', 'domains'];
 let mapSelectedCountry = null;
 let mapSelectedDestinationKey = null;
@@ -1451,6 +1480,8 @@ let mapZoom = 1;
 let mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
 let mapLastPayload = null;
 function mapProject(lat, lon){ return { x: (lon+180)/360*MAP_W, y: (90-lat)/180*MAP_H }; }
+function mapActiveBasemap(){ return MAP_BASEMAPS.includes(prefs.mapBasemap) ? prefs.mapBasemap : 'satellite-heat'; }
+function mapActiveTheme(){ return MAP_THEMES.includes(prefs.mapTheme) ? prefs.mapTheme : 'bemo-accent'; }
 /* Bundled/offline-safe world-landmass silhouette (Issue #33): a simplified,
    hand-authored equirectangular outline of the seven continents plus a few
    large islands, in the same 720x360 projection as mapProject()/the
@@ -1482,13 +1513,81 @@ const WORLD_LAND_D = [
   'M706,256 L716,256 L708,272 L696,270 Z',
   'M0,360 L0,344 L60,338 L150,346 L260,336 L380,344 L500,334 L620,344 L720,338 L720,360 Z'
 ].join(' ');
-function mapLandmassSvg(){
-  // A soft blurred duplicate behind the crisp fill gives the coastline real
-  // depth instead of reading as one flat cutout shape; --map-land-glow is
-  // `none` for the White/Minimal styles, so this stays inert there (Issue #39).
-  return `<path class="map-landmass-glow" d="${WORLD_LAND_D}"/><path class="map-landmass" d="${WORLD_LAND_D}"/>`;
+/* Issue #56 follow-up: the world is now rendered as a dense dot-matrix
+   sampled from WORLD_LAND_D's own vector rings, instead of one flat filled
+   silhouette (the low-poly look the issue asked to replace). Every ring is
+   a simple closed outline with no holes, so a plain ray-cast point-in-ring
+   test unioned across rings is enough -- no new geometry, no bundled
+   raster asset, no network access. The sample grid runs once per page load
+   and is memoized (WORLD_DOT_CACHE). */
+function mapLandRings(){
+  return WORLD_LAND_D.split('Z').map(seg => seg.trim()).filter(Boolean).map(seg => {
+    const nums = (seg.match(/-?\d+(?:\.\d+)?/g) || []).map(Number);
+    const pts = [];
+    for (let i = 0; i + 1 < nums.length; i += 2) pts.push([nums[i], nums[i + 1]]);
+    return pts;
+  });
 }
-function mapBaseLayers(){ return `${mapLandmassSvg()}${mapGraticule()}`; }
+function mapPointInRing(x, y, ring){
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++){
+    const xi = ring[i][0], yi = ring[i][1], xj = ring[j][0], yj = ring[j][1];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+let WORLD_DOT_CACHE = null;
+function mapWorldDots(){
+  if (WORLD_DOT_CACHE) return WORLD_DOT_CACHE;
+  const rings = mapLandRings();
+  const step = 6.2;
+  const dots = [];
+  for (let y = step / 2; y < MAP_H; y += step){
+    for (let x = step / 2; x < MAP_W; x += step){
+      for (let r = 0; r < rings.length; r++){
+        if (mapPointInRing(x, y, rings[r])){ dots.push({ x: +x.toFixed(1), y: +y.toFixed(1) }); break; }
+      }
+    }
+  }
+  WORLD_DOT_CACHE = dots;
+  return dots;
+}
+/* "The data is the map": observed activity recolors/brightens the real
+   world dots that fall within a ratio-scaled radius of each entity's own
+   real coordinate, instead of only drawing a separate overlay on top of an
+   inert background. `entities` is a small array of already-projected
+   {x, y, ratio} points -- never a fabricated location. */
+function mapActiveDotRatios(entities){
+  const active = new Map();
+  if (!entities || !entities.length) return active;
+  const dots = mapWorldDots();
+  entities.forEach(en => {
+    const influence = 6 + en.ratio * 16;
+    const inf2 = influence * influence;
+    for (let i = 0; i < dots.length; i++){
+      const dx = dots[i].x - en.x, dy = dots[i].y - en.y;
+      if (dx * dx + dy * dy <= inf2){
+        const prev = active.get(i) || 0;
+        if (en.ratio > prev) active.set(i, en.ratio);
+      }
+    }
+  });
+  return active;
+}
+function mapLandmassSvg(entities){
+  const dots = mapWorldDots();
+  const active = mapActiveDotRatios(entities);
+  const theme = mapActiveTheme();
+  let out = '';
+  for (let i = 0; i < dots.length; i++){
+    const d = dots[i];
+    const ratio = active.get(i);
+    if (ratio == null){ out += `<circle class="map-world-dot" cx="${d.x}" cy="${d.y}" r="1"/>`; continue; }
+    out += `<circle class="map-world-dot map-world-dot-active" cx="${d.x}" cy="${d.y}" r="${(1.2 + ratio * 1.4).toFixed(1)}" style="fill:${mapThemeColor(ratio, theme)}"/>`;
+  }
+  return `<g class="map-world-dots">${out}</g>`;
+}
+function mapBaseLayers(entities){ return `${mapLandmassSvg(entities)}${mapGraticule()}`; }
 function mapStatusBanner(text, actionHtml){
   if (!text) return '';
   return `<div class="map-status-banner">${text}${actionHtml ? `<div class="map-status-action">${actionHtml}</div>` : ''}</div>`;
@@ -1499,9 +1598,10 @@ function mapViewBoxAttr(){
   const vy = Math.min(Math.max(mapViewCenter.cy - vh / 2, 0), MAP_H - vh);
   return `${vx.toFixed(1)} ${vy.toFixed(1)} ${vw.toFixed(1)} ${vh.toFixed(1)}`;
 }
-function mapBaseSvg(label, inner){
-  const style = MAP_STYLES.includes(prefs.mapStyle) ? prefs.mapStyle : 'bemo-dark';
-  return `<div class="destination-map-wrap" data-map-style="${esc(style)}"><svg viewBox="${mapViewBoxAttr()}" class="destination-map-svg" role="img" aria-label="${esc(label)}" tabindex="0" style="touch-action:none">${mapBaseLayers()}${inner || ''}</svg></div>`;
+function mapBaseSvg(label, inner, entities){
+  const basemap = mapActiveBasemap();
+  const theme = mapActiveTheme();
+  return `<div class="destination-map-wrap" data-map-basemap="${esc(basemap)}" data-map-theme="${esc(theme)}"><svg viewBox="${mapViewBoxAttr()}" class="destination-map-svg" role="img" aria-label="${esc(label)}" tabindex="0" style="touch-action:none">${mapBaseLayers(entities)}${inner || ''}</svg></div>`;
 }
 function mapGraticule(){
   let lines = '';
@@ -1539,22 +1639,121 @@ const MAP_INTENSITY_STOPS = [
   {t: 0.65, h: 40, s: 92, l: 50},
   {t: 1, h: 2, s: 82, l: 52},
 ];
-function mapIntensityColor(ratio){
+/* Issue #56 follow-up: `mapTheme` remaps the same low->high intensity
+   ordering onto a different palette while keeping MAP_INTENSITY_STOPS (the
+   default "BEMO / Dark Accent" theme, and the literal stops the CSS legend
+   gradient is built from) unchanged in meaning. */
+const MAP_THEME_STOPS = {
+  'bemo-accent': MAP_INTENSITY_STOPS,
+  'indigo-gold': [
+    {t: 0, h: 248, s: 42, l: 34},
+    {t: 0.4, h: 235, s: 55, l: 46},
+    {t: 0.7, h: 46, s: 70, l: 55},
+    {t: 1, h: 45, s: 96, l: 62},
+  ],
+  'cyan': [
+    {t: 0, h: 199, s: 40, l: 26},
+    {t: 0.4, h: 192, s: 60, l: 40},
+    {t: 0.7, h: 186, s: 85, l: 52},
+    {t: 1, h: 178, s: 95, l: 66},
+  ],
+};
+function mapInterpolateStops(ratio, stops){
   const t = Math.max(0, Math.min(1, Number(ratio) || 0));
-  let a = MAP_INTENSITY_STOPS[0], b = MAP_INTENSITY_STOPS[MAP_INTENSITY_STOPS.length - 1];
-  for (let i = 0; i < MAP_INTENSITY_STOPS.length - 1; i++){
-    if (t >= MAP_INTENSITY_STOPS[i].t && t <= MAP_INTENSITY_STOPS[i + 1].t){ a = MAP_INTENSITY_STOPS[i]; b = MAP_INTENSITY_STOPS[i + 1]; break; }
+  let a = stops[0], b = stops[stops.length - 1];
+  for (let i = 0; i < stops.length - 1; i++){
+    if (t >= stops[i].t && t <= stops[i + 1].t){ a = stops[i]; b = stops[i + 1]; break; }
   }
   const span = (b.t - a.t) || 1;
   const f = (t - a.t) / span;
   const h = a.h + (b.h - a.h) * f, s = a.s + (b.s - a.s) * f, l = a.l + (b.l - a.l) * f;
   return `hsl(${h.toFixed(0)},${s.toFixed(0)}%,${l.toFixed(0)}%)`;
 }
+function mapIntensityColor(ratio){
+  return mapInterpolateStops(ratio, MAP_INTENSITY_STOPS);
+}
+function mapThemeColor(ratio, theme){
+  return mapInterpolateStops(ratio, MAP_THEME_STOPS[theme] || MAP_INTENSITY_STOPS);
+}
 function mapCompactNumber(n){
   n = Number(n) || 0;
   if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
   return String(n);
+}
+/* Deterministic, seeded particle placement (Issue #56 follow-up): particle
+   offsets derive from each entity's own stable id (country code or
+   destination-cluster grid key) via a tiny FNV-1a hash + mulberry32 PRNG --
+   never Math.random() -- so the same entity's "cloud" renders in the same
+   relative spots on every refresh instead of jumping around. Particles are
+   a bounded intensity visualization anchored on the entity's one real
+   coordinate; they never represent a fabricated location. */
+function mapSeedFromString(s){
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function mapMulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function mapParticleCap(basemap){
+  if (basemap === 'real-pins') return 1;
+  if (basemap === 'satellite-heat') return 5;
+  return 14; // satellite-density, dark-noc
+}
+function mapParticleCount(ratio, cap){
+  if (cap <= 1) return cap;
+  const n = 1 + Math.round(Math.pow(Math.max(0, Math.min(1, ratio)), 0.55) * (cap - 1));
+  return Math.max(1, Math.min(cap, n));
+}
+function mapParticleOffsets(id, count, spread){
+  const rnd = mapMulberry32(mapSeedFromString(String(id)));
+  const pts = [];
+  for (let i = 0; i < count; i++){
+    const angle = rnd() * Math.PI * 2;
+    const dist = Math.sqrt(rnd()) * spread;
+    pts.push({ dx: Math.cos(angle) * dist, dy: Math.sin(angle) * dist });
+  }
+  return pts;
+}
+/* One shared renderer for both Countries-mode bubbles and Destinations-mode
+   clusters: an invisible hit-area (a small marker's real click/tap target
+   should not depend on its visual size), the basemap-appropriate activity
+   particles/pin (all colored via mapThemeColor()), the existing anchor
+   circle (unchanged sqrt-scaled sizing), an optional pulse ring and an
+   optional compact count label. Everything lives inside one focusable
+   <g data-...> wrapper so clicking/tapping/keyboard-activating any particle
+   in a dense cluster resolves to the same real entity as the anchor. */
+function mapEntityMarkup(opts){
+  const { id, attr, x, y, ratio, color, r, selected, ariaSelected, label, countLabel } = opts;
+  const basemap = mapActiveBasemap();
+  const cap = mapParticleCap(basemap);
+  const count = mapParticleCount(ratio, cap);
+  const spread = 3 + ratio * (basemap === 'satellite-heat' ? 9 : 13);
+  const offsets = (basemap === 'real-pins') ? [] : mapParticleOffsets(id, count, spread);
+  let particles = '';
+  if (basemap === 'satellite-heat'){
+    particles = offsets.map(o => `<circle class="map-particle map-particle-heat" cx="${(x + o.dx).toFixed(1)}" cy="${(y + o.dy).toFixed(1)}" r="${(4 + ratio * 8).toFixed(1)}" style="fill:${color}"/>`).join('');
+  } else if (basemap === 'dark-noc'){
+    particles = offsets.map(o => `<rect class="map-particle map-particle-noc" x="${(x + o.dx - 1.1).toFixed(1)}" y="${(y + o.dy - 1.1).toFixed(1)}" width="2.2" height="2.2" style="fill:${color}"/>`).join('');
+  } else if (basemap === 'satellite-density'){
+    particles = offsets.map(o => `<circle class="map-particle map-particle-density" cx="${(x + o.dx).toFixed(1)}" cy="${(y + o.dy).toFixed(1)}" r="1.5" style="fill:${color}"/>`).join('');
+  }
+  const pin = basemap === 'real-pins'
+    ? `<path class="map-pin" d="M${x.toFixed(1)},${(y - Number(r) - 6).toFixed(1)} c-4,0 -6,3 -6,6 c0,4 6,10 6,10 c0,0 6,-6 6,-10 c0,-3 -2,-6 -6,-6 Z" style="fill:${color};stroke:${color}"/>`
+    : '';
+  const pulse = ratio >= 0.72
+    ? `<circle class="map-bubble-pulse-ring" style="stroke:${color}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>`
+    : '';
+  const hit = `<circle class="map-hit-area" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${Math.max(Number(r) + 4, 10)}"/>`;
+  const anchor = `<circle class="map-bubble${selected}" style="fill:${color};stroke:${color}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>`;
+  return `<g class="map-entity" ${attr}="${esc(id)}" tabindex="0" role="button" aria-pressed="${ariaSelected}" aria-label="${esc(label)}">${hit}${pulse}${particles}${pin}${anchor}${countLabel || ''}<title>${label}</title></g>`;
 }
 function renderMapDetail(entity, kind){
   const el = document.getElementById('destination-map-detail'); if (!el) return;
@@ -1654,27 +1853,33 @@ function renderCountriesMode(data){
     return;
   }
   const maxVal = Math.max(1, ...countries.map(c => mapMetricValue(c)));
+  const theme = mapActiveTheme();
   /* Issue #56: size and color are both driven by the same relative-to-max
      `ratio` -- size via sqrt (so one dominant country can't visually swallow
-     the map) and color via mapIntensityColor() (green=few -> red=many). A
-     ratio at/above 0.72 also gets the existing pulse ring (previously only
-     the single top country did), so "large + red" markers read as genuinely
-     high activity rather than being a decorative one-off. */
+     the map) and color via mapThemeColor() (low=few -> high=many, per the
+     selected theme). A ratio at/above 0.72 also gets the existing pulse
+     ring (previously only the single top country did), so "large + hot"
+     markers read as genuinely high activity rather than a decorative
+     one-off. Issue #56 follow-up: the same {x, y, ratio} feeds both the
+     entity marker below and the active-world-dot recoloring in mapBaseSvg(). */
+  const entitiesForDots = countries.map(c => {
+    const [lat, lon] = c.centroid; const {x, y} = mapProject(lat, lon);
+    return { x, y, ratio: mapMetricValue(c) / maxVal };
+  });
   const bubbles = countries.map(c => {
     const [lat, lon] = c.centroid;
     const {x, y} = mapProject(lat, lon);
     const ratio = mapMetricValue(c) / maxVal;
-    const color = mapIntensityColor(ratio);
+    const color = mapThemeColor(ratio, theme);
     const r = (4 + Math.sqrt(ratio) * 18).toFixed(1);
     const selected = mapSelectedCountry === c.country_code ? ' map-bubble-selected' : '';
-    const pulse = ratio >= 0.72 ? `<circle class="map-bubble-pulse-ring" style="stroke:${color}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>` : '';
     const label = `${c.country_name}: ${esc(c.observation_count)} destination observations, ${esc(c.domain_count)} domains`;
     const countLabel = Number(r) >= 9
       ? `<text class="map-bubble-count" x="${x.toFixed(1)}" y="${y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>`
       : '';
-    return `${pulse}<circle class="map-bubble${selected}" style="fill:${color};stroke:${color}" data-country="${esc(c.country_code)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}" tabindex="0" role="button" aria-pressed="${mapSelectedCountry === c.country_code}" aria-label="${esc(label)}"><title>${label}</title></circle>${countLabel}`;
+    return mapEntityMarkup({ id: c.country_code, attr: 'data-country', x, y, ratio, color, r, selected, ariaSelected: mapSelectedCountry === c.country_code, label, countLabel });
   }).join('');
-  el.innerHTML = mapBaseSvg('Observed DNS destinations by country', bubbles) + coverageNote;
+  el.innerHTML = mapBaseSvg('Observed DNS destinations by country', bubbles, entitiesForDots) + coverageNote;
   mapFinishRender(el);
   const activateCountry = (code) => {
     mapSelectedCountry = (mapSelectedCountry === code) ? null : code;
@@ -1721,22 +1926,24 @@ function renderDestinationsMode(data, capabilities){
   }
   const clusters = clusterDestinationPoints(points, mapZoom);
   const maxVal = Math.max(1, ...clusters.map(c => mapMetricValue(c)));
+  const theme = mapActiveTheme();
   const cov = data?.coverage || {};
   const coverageNote = `<div class="stats-note">${esc(cov.geolocated_pct ?? 0)}% of observed destinations geolocated &middot; ${esc(clusters.length)} cluster${clusters.length===1?'':'s'} &middot; ${esc(points.length)} destination point${points.length===1?'':'s'} plotted (bounded)</div>`;
+  const entitiesForDots = clusters.map(c => ({ x: c.x, y: c.y, ratio: mapMetricValue(c) / maxVal }));
   const bubbles = clusters.map(c => {
     const ratio = mapMetricValue(c) / maxVal;
-    const color = mapIntensityColor(ratio);
+    const color = mapThemeColor(ratio, theme);
     const r = (4 + Math.sqrt(ratio) * 15).toFixed(1);
-    const selected = mapSelectedDestinationKey === c.key ? ' map-cluster-selected' : '';
+    const selected = mapSelectedDestinationKey === c.key ? ' map-bubble-selected' : '';
     const label = c.unique_ip_count > 1
       ? `${esc(c.unique_ip_count)} destinations: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`
       : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`;
-    const badge = c.unique_ip_count > 1
+    const countLabel = c.unique_ip_count > 1
       ? `<text class="map-cluster-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${c.unique_ip_count > 99 ? '99+' : c.unique_ip_count}</text>`
       : (Number(r) >= 9 ? `<text class="map-bubble-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>` : '');
-    return `<circle class="map-cluster${selected}" style="fill:${color};stroke:${color}" data-cluster="${esc(c.key)}" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="${r}" tabindex="0" role="button" aria-pressed="${mapSelectedDestinationKey === c.key}" aria-label="${esc(label)}"><title>${label}</title></circle>${badge}`;
+    return mapEntityMarkup({ id: c.key, attr: 'data-cluster', x: c.x, y: c.y, ratio, color, r, selected, ariaSelected: mapSelectedDestinationKey === c.key, label, countLabel });
   }).join('');
-  el.innerHTML = mapBaseSvg('Observed DNS destinations by coordinate, clustered', bubbles) + coverageNote;
+  el.innerHTML = mapBaseSvg('Observed DNS destinations by coordinate, clustered', bubbles, entitiesForDots) + coverageNote;
   mapFinishRender(el);
   const activateCluster = (key) => {
     const cluster = clusters.find(c => c.key === key);
@@ -1920,16 +2127,33 @@ function mapAttachInteraction(el){
     svgEl.setAttribute('viewBox', mapViewBoxAttr());
   });
 }
+/* The legend's color-ramp swatch is a static CSS gradient for the default
+   "BEMO / Dark Accent" theme (see .map-legend-gradient); for the other two
+   themes it's overridden inline here from the exact same MAP_THEME_STOPS a
+   marker's color comes from, so the legend can never visually drift from
+   what markers actually render. */
+function mapSyncLegendGradient(){
+  const el = document.getElementById('map-legend-gradient'); if (!el) return;
+  const theme = mapActiveTheme();
+  if (theme === 'bemo-accent'){ el.style.background = ''; return; }
+  const stops = MAP_THEME_STOPS[theme] || MAP_INTENSITY_STOPS;
+  const css = stops.map(s => `hsl(${s.h},${s.s}%,${s.l}%)`).join(',');
+  el.style.background = `linear-gradient(90deg,${css})`;
+}
 function mapFinishRender(el){
   mapAttachInteraction(el);
+  mapSyncLegendGradient();
 }
 function syncMapControls(){
   const modeSel = document.getElementById('map-mode-select');
   const metricSel = document.getElementById('map-metric-select');
-  const styleSel = document.getElementById('map-style-select');
+  const basemapSel = document.getElementById('map-basemap-select');
+  const themeSel = document.getElementById('map-theme-select');
   if (modeSel) modeSel.value = prefs.mapMode || 'countries';
   if (metricSel) metricSel.value = prefs.mapMetric || 'observations';
-  if (styleSel) styleSel.value = prefs.mapStyle || 'bemo-dark';
+  if (basemapSel) basemapSel.value = mapActiveBasemap();
+  if (themeSel) themeSel.value = mapActiveTheme();
+  mapSyncLegendGradient();
 }
 syncMapControls();
 document.getElementById('map-mode-select')?.addEventListener('change', (e) => {
@@ -1943,9 +2167,16 @@ document.getElementById('map-metric-select')?.addEventListener('change', (e) => 
   savePrefs();
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
-document.getElementById('map-style-select')?.addEventListener('change', (e) => {
-  prefs.mapStyle = MAP_STYLES.includes(e.target.value) ? e.target.value : 'bemo-dark';
+document.getElementById('map-basemap-select')?.addEventListener('change', (e) => {
+  prefs.mapBasemap = MAP_BASEMAPS.includes(e.target.value) ? e.target.value : 'satellite-heat';
   savePrefs();
+  mapSyncLegendGradient();
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-theme-select')?.addEventListener('change', (e) => {
+  prefs.mapTheme = MAP_THEMES.includes(e.target.value) ? e.target.value : 'bemo-accent';
+  savePrefs();
+  mapSyncLegendGradient();
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-zoom-in-btn')?.addEventListener('click', () => {
