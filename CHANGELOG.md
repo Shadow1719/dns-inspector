@@ -2,6 +2,84 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.13]
+DNS Destinations map follow-up (Issue #56): splits the single 0.8.5.12
+`mapStyle` preset into two independent preferences and replaces the flat
+filled world silhouette with an offline dot-matrix world, without changing
+`/api/analytics/map`, GeoIP lookup/storage architecture, the bundled offline
+world geometry (`WORLD_LAND_D`, still the source data), pan/zoom/Fit/Reset/
+keyboard navigation, the Countries/Destinations modes, the Observations/
+Unique IPs/Domains metric selector, click/tap+keyboard marker activation, the
+persistent detail card or the DB-IP attribution footer.
+
+- **Two independent selectors replace the four flat style presets.**
+  `mapBasemap` (Satellite Heat/Satellite Density/Real Map + Pins/Dark NOC)
+  controls structural rendering -- background treatment plus how observed
+  activity is drawn (heat glow, scattered density particles, a pin glyph, or
+  bright NOC-grid points); `mapTheme` (Indigo + Gold/Cyan/BEMO Dark Accent)
+  only recolors the intensity ramp via a new `mapThemeColor()`/
+  `MAP_THEME_STOPS`, independently of the chosen basemap. `mapIntensityColor()`
+  is unchanged and is now simply the "BEMO / Dark Accent" theme's ramp.
+- **The world is now a dot matrix, not a flat filled silhouette.** A new
+  `mapWorldDots()` samples the same bundled `WORLD_LAND_D` vector rings on a
+  grid (plain ray-cast point-in-ring test, `mapPointInRing()`) instead of
+  filling one `<path>` -- no new geometry, no raster asset, no network
+  access. Observed activity recolors/brightens the real world dots within a
+  ratio-scaled radius of each entity's own coordinate ("the data is the
+  map"), rather than only drawing a separate overlay on top of an inert
+  background.
+- **Deterministic, bounded activity particles scale with observed volume.**
+  A shared `mapEntityMarkup()` renders both Countries-mode bubbles and
+  Destinations-mode clusters: the existing sqrt-scaled anchor circle,
+  optional pulse ring and count label are unchanged, plus new
+  basemap-appropriate particles/pin (`mapParticleCount()`/
+  `mapParticleOffsets()`, capped per basemap) placed around the entity's one
+  real coordinate. Placement is seeded from the entity's own stable id (a
+  tiny FNV-1a hash + mulberry32 PRNG) rather than `Math.random()`, so a
+  country/cluster's cloud renders in the same relative spots on every
+  refresh instead of jittering. Everything (hit-area, pulse, particles,
+  anchor, label) lives inside one focusable `<g data-country|data-cluster>`
+  wrapper, so clicking/tapping/keyboard-activating any particle in a dense
+  cluster resolves to the same real entity as before -- no fabricated
+  coordinates, and the legend explicitly discloses that particles are an
+  intensity visualization, not independent physical servers.
+- **True satellite/street raster imagery was judged infeasible and was not
+  attempted.** The task's own constraints (offline/self-contained, no
+  external tile/API dependency, prefer a compact bundled/vector/point
+  representation) rule out real satellite/street map art; all four basemaps
+  render the same offline dot-matrix world with a different background
+  gradient/grid treatment and activity-rendering style, so "Satellite"/
+  "Real Map" are stylistic approximations rather than literal imagery. This
+  is called out explicitly rather than silently shipping a mismatch with the
+  reference concepts' literal artwork.
+- New focused tests in `tests/test_map_basemap_theme_visual4.py` cover the
+  basemap/theme constant lists and CSS, the theme color-ramp ordering,
+  seeded/bounded particle placement and count, the shared entity-group click/
+  keyboard-resolution behavior, the active-dot-recoloring mechanism, the
+  "not independent physical servers" disclosure and `/api/analytics/map`
+  payload-shape regression. `tests/test_map_visual2_frontend.py`,
+  `tests/test_map_navigation_visual21.py`, `tests/test_geoip_destinations_map.py`
+  and `tests/test_map_infographic_visual3.py` were updated in place (not
+  duplicated) where they pinned the exact 0.8.5.12 `mapStyle`/flat-landmass
+  markup this follow-up intentionally replaces.
+- No GeoIP/backend change of any kind; stays in the 0.8.5.x series per the
+  roadmap gate (0.8.6 is not started).
+**This hand-off's sandbox could not execute `pytest`/`python`/`node` at all
+-- running any of them, with or without approval, was unavailable in this
+non-interactive session**, matching the same limitation recorded against
+several recent 0.8.5.x hand-offs (Issues #44, #47, #50, #51, #52, and 0.8.5.12
+itself). The change is verified by direct code inspection: every new string/
+attribute the new and updated tests assert on was independently
+grep-verified against the actual rendered `app.py` template in this session,
+and a whole-file brace-balance check (`{` vs `}` count delta) was confirmed
+unchanged from the pre-edit baseline despite the size of the diff. The real
+CI run (`pytest` + Docker build/health smoke) must confirm the full suite
+before this is relied upon, and a manual pass in a real browser (all four
+basemaps x three themes, click/keyboard activation on a dense particle
+cluster, reduced-motion toggle) is strongly recommended before merge, since
+this repository has no headless-browser harness to exercise the new
+rendering/interaction code paths automatically.
+
 ## [0.8.5.12]
 DNS Destinations map visual/interaction redesign (Issue #56): a data-driven
 traffic-intensity infographic, not a GeoIP/data-semantics rewrite.
