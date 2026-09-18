@@ -2,6 +2,16 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.9]
+
+Startup responsiveness fix for GeoIP-backed deployments.
+
+- GeoIP Country/City CSV databases are no longer parsed synchronously during Python module import.
+- The application now starts its HTTP server first and performs the initial GeoIP provider load in a background worker.
+- The map remains available during loading and reports no geolocation until the providers finish loading; existing lookup/map semantics are unchanged.
+- The deferred load can be tuned with `GEOIP_INITIAL_LOAD_DELAY_SECONDS` (default: 1 second).
+
+
 ## [0.8.5.8]
 
 CI repair (Issue #47): fixes the two real test failures left by the
