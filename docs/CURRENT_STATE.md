@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.12` (the `VERSION`
+- Foundation version: `0.8.0`, current release: `0.8.5.13` (the `VERSION`
   file is authoritative). The project stays in the `0.8.5.x` series
   deliberately until the UI/dashboard/operational work is fully resolved;
   0.8.6 is not to be started until that gate is explicitly lifted.
@@ -464,6 +464,54 @@ confirm the full suite, and a manual click/keyboard/legend/reduced-motion
 pass in a real browser is recommended before merge since this repository
 has no headless-browser test harness to exercise the new interaction code
 paths automatically.
+
+0.8.5.13 (Issue #56 follow-up) replaces 0.8.5.12's single `mapStyle` preset
+(BEMO Dark/Aurora/White/Minimal) with two independent preferences --
+`mapBasemap` (Satellite Heat/Satellite Density/Real Map + Pins/Dark NOC:
+structural rendering -- background treatment plus how observed activity is
+drawn) and `mapTheme` (Indigo + Gold/Cyan/BEMO Dark Accent: color ramp only,
+via a new `mapThemeColor()`/`MAP_THEME_STOPS`, with the existing
+`mapIntensityColor()` kept as the literal "BEMO / Dark Accent" ramp) -- and
+replaces the flat filled `WORLD_LAND_D` silhouette with an offline dot-matrix
+world (`mapWorldDots()`, sampled from the same bundled vector rings via a
+plain point-in-ring test, no new geometry/asset/network access). Observed
+activity now recolors/brightens the real world dots within a ratio-scaled
+radius of each entity's own coordinate rather than only drawing a separate
+overlay on top of an inert background. A shared `mapEntityMarkup()` renders
+both Countries-mode bubbles and Destinations-mode clusters with the unchanged
+sqrt-scaled anchor/pulse/count-label plus new basemap-appropriate activity
+particles/pin whose count scales with observed volume (deterministic,
+seeded from the entity's own stable id via a small FNV-1a+mulberry32 PRNG,
+never `Math.random()`, so a cluster's cloud doesn't jitter between refreshes)
+-- all inside one focusable `<g data-country|data-cluster>` wrapper, so
+clicking/tapping/keyboard-activating any particle resolves to the same real
+entity as before. `/api/analytics/map`'s payload shape, GeoIP lookup/storage
+architecture, pan/zoom/Fit/Reset/keyboard navigation, the Countries/
+Destinations modes, the Observations/Unique IPs/Domains metric selector and
+the DB-IP attribution footer are all unchanged. Literal satellite/street
+raster imagery was judged infeasible under the task's own offline/no-
+external-tile constraint and was not attempted; all four basemaps render the
+same offline dot-matrix world with a different background/activity-rendering
+treatment, which is called out explicitly as a scope interpretation rather
+than silently shipping a mismatch with the reference concepts' literal
+artwork. New tests: `tests/test_map_basemap_theme_visual4.py`; the four
+existing map test files that pinned the exact 0.8.5.12 `mapStyle`/flat-
+landmass markup this follow-up intentionally replaces
+(`tests/test_map_visual2_frontend.py`, `tests/test_map_navigation_visual21.py`,
+`tests/test_geoip_destinations_map.py`, `tests/test_map_infographic_visual3.py`)
+were updated in place rather than duplicated.
+**This hand-off's sandbox could not execute `pytest`/`python`/`node` at all**
+(matching the same limitation recorded against the 0.8.5.12 and several
+earlier 0.8.5.x hand-offs above) -- the change is verified by direct code
+inspection, with every new/changed string the tests assert on independently
+grep-verified against the actual rendered `app.py` template, plus a whole-
+file brace-balance sanity check against the pre-edit baseline. The real CI
+run (`pytest` + Docker build/health smoke) must confirm the full suite, and
+a manual browser pass across all four basemaps x three themes (click/
+keyboard activation on a dense particle cluster, reduced-motion toggle) is
+strongly recommended before merge, since this repository has no headless-
+browser test harness to exercise the new rendering/interaction code paths
+automatically.
 
 ## How to update this file
 

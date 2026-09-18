@@ -63,39 +63,45 @@ def test_existing_discrete_zoom_and_reset_buttons_still_work(client):
     assert "mapZoom = Math.max(1, mapZoom / 2)" in body
 
 
-# --- genuinely distinct map style presets (not just an accent color) --------
+# --- genuinely distinct basemap presets (not just an accent color) ----------
+#
+# Issue #56 follow-up replaced the single `mapStyle` preset (BEMO Dark/
+# Aurora/White/Minimal) with two independent preferences: `mapBasemap`
+# (structural rendering) and `mapTheme` (color ramp only). These tests were
+# updated in place to match the new selector, testing the same underlying
+# "genuinely different visuals, not just a recolor" property Issue #39
+# originally established.
 
 
-def test_each_map_style_sets_far_more_than_a_single_accent_property(client):
-    """Issue #39's core complaint: changing style used to just recolor one
-    accent variable. Each style block must now set background gradient,
-    land fill/glow, grid opacity, marker glow, vignette and banner treatment
-    -- a double-digit number of distinct --map-* custom properties."""
+def test_each_basemap_sets_far_more_than_a_single_accent_property(client):
+    """Each basemap block must set its own background gradient, grid
+    opacity, vignette, banner treatment, marker glow and particle glow --
+    a double-digit number of distinct --map-* custom properties."""
     body = client.get("/").data.decode("utf-8")
-    for style in ("bemo-dark", "aurora", "white", "minimal"):
+    for basemap in ("satellite-heat", "satellite-density", "real-pins", "dark-noc"):
         match = re.search(
-            re.escape(f'.destination-map-wrap[data-map-style="{style}"]{{') + r'([^}]*)\}',
+            re.escape(f'.destination-map-wrap[data-map-basemap="{basemap}"]{{') + r'([^}]*)\}',
             body,
         )
-        assert match, f"no CSS rule found for map style {style}"
+        assert match, f"no CSS rule found for basemap {basemap}"
         props = set(re.findall(r'--map-[a-z0-9-]+(?=:)', match.group(1)))
-        assert len(props) >= 10, f"{style} only varies {len(props)} properties: {props}"
+        assert len(props) >= 8, f"{basemap} only varies {len(props)} properties: {props}"
 
 
-def test_minimal_style_disables_the_pulse_ring_for_a_lower_noise_empty_state(client):
+def test_real_pins_basemap_disables_the_pulse_ring_for_a_lower_noise_readable_map(client):
     body = client.get("/").data.decode("utf-8")
-    match = re.search(r'\.destination-map-wrap\[data-map-style="minimal"\]\{([^}]*)\}', body)
+    match = re.search(r'\.destination-map-wrap\[data-map-basemap="real-pins"\]\{([^}]*)\}', body)
     assert match
     assert "--map-pulse-display:none" in match.group(1)
 
 
-def test_bemo_dark_and_aurora_styles_have_a_marker_glow_but_white_and_minimal_do_not(client):
+def test_satellite_heat_and_dark_noc_basemaps_have_a_marker_glow_but_the_others_do_not(client):
     body = client.get("/").data.decode("utf-8")
-    for style in ("bemo-dark", "aurora"):
-        match = re.search(re.escape(f'.destination-map-wrap[data-map-style="{style}"]{{') + r'([^}]*)\}', body)
+    for basemap in ("satellite-heat", "dark-noc"):
+        match = re.search(re.escape(f'.destination-map-wrap[data-map-basemap="{basemap}"]{{') + r'([^}]*)\}', body)
         assert "drop-shadow" in match.group(1)
-    for style in ("white", "minimal"):
-        match = re.search(re.escape(f'.destination-map-wrap[data-map-style="{style}"]{{') + r'([^}]*)\}', body)
+    for basemap in ("satellite-density", "real-pins"):
+        match = re.search(re.escape(f'.destination-map-wrap[data-map-basemap="{basemap}"]{{') + r'([^}]*)\}', body)
         assert "--map-point-glow:none" in match.group(1)
 
 
@@ -118,10 +124,15 @@ def test_world_landmass_has_a_meaningfully_denser_point_count_than_visual_2_0(cl
         assert 0 <= float(y) <= 360
 
 
-def test_landmass_renders_a_blurred_depth_layer_behind_the_crisp_coastline(client):
+def test_landmass_is_a_dense_sampled_dot_matrix_not_a_flat_fill(client):
+    """An Issue #56 follow-up replaced the flat filled silhouette (with its
+    blurred depth-layer duplicate) with a dot matrix sampled from the same
+    WORLD_LAND_D vector rings -- denser and more detailed than a couple of
+    filled `<path>` elements, and still fully offline/self-generated."""
     body = client.get("/").data.decode("utf-8")
-    assert 'class="map-landmass-glow"' in body
-    assert ".map-landmass-glow{" in body
+    assert "function mapWorldDots(){" in body
+    assert "function mapPointInRing(x, y, ring){" in body
+    assert ".map-world-dot{" in body
 
 
 # --- honest instructions for the new interaction model -----------------------

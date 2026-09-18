@@ -31,12 +31,12 @@ def test_intensity_color_function_exists_and_spans_green_to_red(client):
 
 
 def test_country_and_cluster_markers_use_the_same_ratio_for_size_and_color(client):
-    """Size (sqrt-scaled radius) and color (mapIntensityColor) must both be
+    """Size (sqrt-scaled radius) and color (mapThemeColor) must both be
     derived from the same value/max-in-view ratio, not two independent
     computations that could disagree."""
     body = client.get("/").data.decode("utf-8")
     assert "const ratio = mapMetricValue(c) / maxVal;" in body
-    assert "const color = mapIntensityColor(ratio);" in body
+    assert "const color = mapThemeColor(ratio, theme);" in body
     assert "Math.sqrt(ratio) * 18" in body  # countries
     assert "Math.sqrt(ratio) * 15" in body  # destination clusters
 
@@ -125,10 +125,10 @@ def test_widget_copy_directs_users_to_click_tap_rather_than_hover(client):
 # --- regression: existing map semantics/controls are unchanged --------------
 
 
-def test_existing_mode_metric_style_and_zoom_controls_still_present(client):
+def test_existing_mode_metric_basemap_theme_and_zoom_controls_still_present(client):
     body = client.get("/").data.decode("utf-8")
     for widget_id in (
-        "map-mode-select", "map-metric-select", "map-style-select",
+        "map-mode-select", "map-metric-select", "map-basemap-select", "map-theme-select",
         "map-zoom-in-btn", "map-zoom-out-btn", "map-fit-btn", "map-reset-btn",
     ):
         assert f'id="{widget_id}"' in body
@@ -151,9 +151,13 @@ def test_reduced_motion_still_suppresses_the_pulse_ring(client):
 
 
 def test_bundled_offline_world_landmass_is_unchanged(client):
+    """The vector source geometry (WORLD_LAND_D) is unchanged; the follow-up
+    redesign only changed how it's rendered (a sampled dot-matrix world,
+    mapWorldDots(), instead of one flat filled silhouette)."""
     body = client.get("/").data.decode("utf-8")
     assert "const WORLD_LAND_D" in body
-    assert 'class="map-landmass"' in body
+    assert "function mapWorldDots(){" in body
+    assert 'class="map-world-dot"' in body
 
 
 def test_db_ip_attribution_footer_is_preserved(client):

@@ -649,11 +649,14 @@ def test_reduced_motion_suppresses_gauge_needle_and_map_pulse_animation(client):
 
 def test_world_landmass_asset_is_bundled_and_offline_safe(client):
     """The map background must ship as a static asset in the page itself --
-    no fetch to a CDN/external map provider, no GeoIP database required."""
+    no fetch to a CDN/external map provider, no GeoIP database required.
+    An Issue #56 follow-up changed the rendering from a flat filled
+    silhouette to a dot matrix sampled from the same bundled WORLD_LAND_D
+    vector rings at render time (still fully offline/self-generated)."""
     body = client.get("/").data.decode("utf-8")
     assert "const WORLD_LAND_D" in body
-    assert ".map-landmass{" in body
-    assert 'class="map-landmass"' in body
+    assert ".map-world-dot{" in body
+    assert 'class="map-world-dot"' in body
 
 
 def test_world_landmass_coordinates_stay_within_the_map_viewbox(client):
@@ -693,4 +696,4 @@ def test_map_stays_visible_with_a_non_blocking_banner_when_geoip_not_configured(
 
 def test_map_configured_state_still_renders_the_bundled_background_behind_bubbles(client):
     body = client.get("/").data.decode("utf-8")
-    assert "mapBaseSvg('Observed DNS destinations by country', bubbles)" in body
+    assert "mapBaseSvg('Observed DNS destinations by country', bubbles, entitiesForDots)" in body
