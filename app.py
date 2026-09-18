@@ -3731,6 +3731,49 @@ def _iter_csv_rows_throttled(reader, chunk_rows=None, yield_seconds=None):
             time.sleep(yield_seconds)
 
 
+class _CompactRangeTableBuilder:
+    """Streams IPv4 start/end/extra-column rows directly into `array.array`
+    columns of primitives while a GeoIP CSV is parsed, instead of buffering a
+    Python list of millions of row tuples first and only compacting it
+    afterwards (Issue #52 -- the previous `v4_rows`/`self._v4` staging lists
+    were the primary suspect behind multi-GB peak RSS while loading a real
+    multi-million-row DB-IP City Lite export).
+
+    A real DB-IP Lite export is already sorted by start IP, so the common
+    case is a single append-only pass with no extra buffering at all:
+    `append()` tracks whether input stayed non-decreasing by start, and
+    `finalize()` is a no-op when it did. If the input was *not* sorted,
+    `finalize()` reorders the already-compact primitive columns via one
+    index-permutation pass -- still bounded by primitive int/float memory,
+    never a list of Python tuples/strings.
+    """
+
+    def __init__(self, extra_typecodes):
+        self.start = array.array('Q')
+        self.end = array.array('Q')
+        self.extra = [array.array(tc) for tc in extra_typecodes]
+        self._sorted = True
+        self._last_start = -1
+
+    def append(self, start, end, *extra_values):
+        if start < self._last_start:
+            self._sorted = False
+        self._last_start = start
+        self.start.append(start)
+        self.end.append(end)
+        for col, value in zip(self.extra, extra_values):
+            col.append(value)
+
+    def finalize(self):
+        """Must be called once, after every row has been appended."""
+        if self._sorted or len(self.start) <= 1:
+            return
+        order = sorted(range(len(self.start)), key=self.start.__getitem__)
+        self.start = array.array('Q', (self.start[i] for i in order))
+        self.end = array.array('Q', (self.end[i] for i in order))
+        self.extra = [array.array(col.typecode, (col[i] for i in order)) for col in self.extra]
+
+
 class GeoIPProvider:
     """Abstraction over a local/offline IP -> country lookup source, so the
     backing database can be swapped later without touching call sites."""
@@ -3771,18 +3814,39 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
     header row) into sorted per-address-family range tables and answers
     lookups with a binary search. See docs/GEOIP.md for the schema and how to
     build this file from a licensed offline GeoIP database.
+
+    IPv4 ranges (the overwhelming majority of rows, even in a country-level
+    database) are streamed directly into parallel fixed-width `array.array`
+    columns via `_CompactRangeTableBuilder` -- 8-byte integer start/end keys
+    plus a small integer index into an interned country-code/name table --
+    rather than a Python list of millions of `(start, end, code, name)`
+    tuples (Issue #52). IPv6 ranges are far fewer in a real export, so they
+    stay a plain sorted list of tuples referencing the same interned table.
     """
 
     def __init__(self, path):
         self._path = path
-        self._v4 = []  # sorted [(start_int, end_int, country_code, country_name), ...]
-        self._v6 = []
-        self._v4_starts = []  # r[0] for each entry in self._v4, precomputed for bisect
+        self._v4_start = array.array('Q')
+        self._v4_end = array.array('Q')
+        self._v4_country_idx = array.array('H')
+        self._v6 = []  # sorted [(start_int, end_int, country_idx), ...]
         self._v6_starts = []
+        self._countries = []  # [(country_code, country_name), ...], interned
+        self._country_index = {}
         self._loaded = False
         self._load()
 
+    def _intern_country(self, code, name):
+        idx = self._country_index.get(code)
+        if idx is None:
+            idx = len(self._countries)
+            self._countries.append((code, name))
+            self._country_index[code] = idx
+        return idx
+
     def _load(self):
+        v4_builder = _CompactRangeTableBuilder(('H',))
+        v6_rows = []
         try:
             with open(self._path, "r", encoding="utf-8", newline="") as f:
                 for row in _iter_csv_rows_throttled(csv.reader(f)):
@@ -3798,15 +3862,19 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
                         continue
                     if start_addr.version != end_addr.version or not code:
                         continue
-                    bucket = self._v4 if start_addr.version == 4 else self._v6
-                    bucket.append((int(start_addr), int(end_addr), code, name or code))
-            self._v4.sort(key=lambda r: r[0])
-            self._v6.sort(key=lambda r: r[0])
-            # Precomputed once at load time so `lookup()` can bisect directly
-            # instead of rebuilding this list on every call.
-            self._v4_starts = [r[0] for r in self._v4]
-            self._v6_starts = [r[0] for r in self._v6]
-            self._loaded = bool(self._v4 or self._v6)
+                    country_idx = self._intern_country(code, name or code)
+                    if start_addr.version == 4:
+                        v4_builder.append(int(start_addr), int(end_addr), country_idx)
+                    else:
+                        v6_rows.append((int(start_addr), int(end_addr), country_idx))
+            v4_builder.finalize()
+            self._v4_start = v4_builder.start
+            self._v4_end = v4_builder.end
+            self._v4_country_idx = v4_builder.extra[0]
+            v6_rows.sort(key=lambda r: r[0])
+            self._v6 = v6_rows
+            self._v6_starts = [r[0] for r in v6_rows]
+            self._loaded = bool(len(self._v4_start) or self._v6)
         except (OSError, csv.Error):
             self._loaded = False
 
@@ -3816,7 +3884,7 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
 
     @property
     def range_count(self):
-        return len(self._v4) + len(self._v6)
+        return len(self._v4_start) + len(self._v6)
 
     @property
     def path(self):
@@ -3827,19 +3895,23 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
             addr = ipaddress.ip_address(ip)
         except ValueError:
             return None, None
-        if addr.version == 4:
-            bucket, starts = self._v4, self._v4_starts
-        else:
-            bucket, starts = self._v6, self._v6_starts
-        if not bucket:
-            return None, None
         value = int(addr)
-        idx = bisect.bisect_right(starts, value) - 1
+        if addr.version == 4:
+            starts = self._v4_start
+            if not starts:
+                return None, None
+            idx = bisect.bisect_right(starts, value) - 1
+            if idx < 0 or not (starts[idx] <= value <= self._v4_end[idx]):
+                return None, None
+            return self._countries[self._v4_country_idx[idx]]
+        if not self._v6:
+            return None, None
+        idx = bisect.bisect_right(self._v6_starts, value) - 1
         if idx < 0:
             return None, None
-        start, end, code, name = bucket[idx]
+        start, end, country_idx = self._v6[idx]
         if start <= value <= end:
-            return code, name
+            return self._countries[country_idx]
         return None, None
 
 
@@ -3941,7 +4013,12 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
         return idx
 
     def _load(self):
-        v4_rows = []
+        # Streamed directly into compact `array.array` columns via
+        # `_CompactRangeTableBuilder` (Issue #52) instead of buffering a
+        # `v4_rows` list of millions of Python tuples before sorting it --
+        # that temporary list was the primary suspect behind multi-GB peak
+        # RSS while loading a real multi-million-row DB-IP City Lite export.
+        v4_builder = _CompactRangeTableBuilder(('H', 'I', 'f', 'f'))
         try:
             with open(self._path, "r", encoding="utf-8", newline="") as f:
                 for row in _iter_csv_rows_throttled(csv.reader(f)):
@@ -3969,17 +4046,16 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
                     country_idx = self._intern_country(code, name or code)
                     city_idx = self._intern_city(city)
                     if start_addr.version == 4:
-                        v4_rows.append((int(start_addr), int(end_addr), country_idx, city_idx, lat, lon))
+                        v4_builder.append(int(start_addr), int(end_addr), country_idx, city_idx, lat, lon)
                     else:
                         self._v6.append((int(start_addr), int(end_addr), code, name or code, city, lat, lon))
-            v4_rows.sort(key=lambda r: r[0])
-            for start, end, country_idx, city_idx, lat, lon in v4_rows:
-                self._v4_start.append(start)
-                self._v4_end.append(end)
-                self._v4_country_idx.append(country_idx)
-                self._v4_city_idx.append(city_idx)
-                self._v4_lat.append(lat)
-                self._v4_lon.append(lon)
+            v4_builder.finalize()
+            self._v4_start = v4_builder.start
+            self._v4_end = v4_builder.end
+            self._v4_country_idx = v4_builder.extra[0]
+            self._v4_city_idx = v4_builder.extra[1]
+            self._v4_lat = v4_builder.extra[2]
+            self._v4_lon = v4_builder.extra[3]
             self._v6.sort(key=lambda r: r[0])
             self._v6_starts = [r[0] for r in self._v6]
             self._loaded = bool(len(self._v4_start) or self._v6)
@@ -4234,6 +4310,27 @@ def _log_geoip_status():
         )
 
 
+def _trim_allocator_memory():
+    """Best-effort secondary mitigation only (Issue #52's required direction
+    explicitly rules this out as *the* fix): after a GeoIP provider swap, the
+    old provider's `array.array` columns/interned string tables are garbage,
+    but glibc's allocator does not always return freed heap memory to the OS
+    on its own, which can leave process RSS sitting at a high watermark even
+    once the compact-storage redesign above has already cut the actual live
+    footprint. `gc.collect()` clears any reference cycles immediately instead
+    of waiting for a generational sweep; `malloc_trim(0)` (Linux glibc only)
+    then asks the allocator to release freed arenas back to the OS. Both are
+    no-ops if there is nothing to reclaim, and any failure (non-glibc libc,
+    non-Linux platform) is silently ignored -- this must never raise."""
+    gc.collect()
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _reload_geoip_providers():
     """Reconstruct the country/city GeoIP providers from whatever is on disk
     right now and swap them in, so a completed auto-update (or a manually
@@ -4241,18 +4338,28 @@ def _reload_geoip_providers():
     the per-IP lookup caches, since they may hold answers resolved against
     the previous database. Safe to call at any time -- the previous provider
     instances simply become unreferenced once every in-flight lookup that
-    already grabbed them returns."""
+    already grabbed them returns.
+
+    The two providers are constructed and swapped in one at a time (not both
+    built up-front) so the old provider plus a second full provider are never
+    both required to be memory-resident for longer than necessary; each
+    provider's own `_load()` (see `CsvRangeGeoIPProvider`/`CsvCityGeoIPProvider`)
+    already streams its CSV into compact storage without ever staging the
+    whole database as Python row objects (Issue #52)."""
     global _geoip_provider, _geoip_city_provider
     new_country = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if os.path.exists(GEOIP_DB_PATH) else NullGeoIPProvider()
-    new_city = CsvCityGeoIPProvider(GEOIP_CITY_DB_PATH) if os.path.exists(GEOIP_CITY_DB_PATH) else NullCityGeoIPProvider()
     with _geoip_cache_lock:
         _geoip_provider = new_country
         _geoip_cache.clear()
         _geoip_cache_order.clear()
+    del new_country
+    new_city = CsvCityGeoIPProvider(GEOIP_CITY_DB_PATH) if os.path.exists(GEOIP_CITY_DB_PATH) else NullCityGeoIPProvider()
     with _geoip_city_cache_lock:
         _geoip_city_provider = new_city
         _geoip_city_cache.clear()
         _geoip_city_cache_order.clear()
+    del new_city
+    _trim_allocator_memory()
     _log_geoip_status()
 
 
