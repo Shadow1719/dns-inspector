@@ -743,8 +743,9 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 /* Issue #63: country breakdown/ranking beside the map on desktop, below it
    on narrower widgets -- same payload as the map itself (data.countries),
    no second backend query. */
-.destination-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:12px;align-items:stretch}
+.destination-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:12px;align-items:stretch;container-type:inline-size}
 @media(max-width:900px){.destination-map-layout{grid-template-columns:minmax(0,1fr);align-items:start}}
+@media(min-width:901px){.map-breakdown{height:max(320px,calc((100cqw - 292px)/2))}}
 .map-breakdown{display:flex;flex-direction:column;min-width:0;height:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
 .map-breakdown-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);flex:0 0 auto}
 .map-breakdown-title{font-size:.78rem;font-weight:600;color:var(--text-primary)}
