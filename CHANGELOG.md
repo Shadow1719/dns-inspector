@@ -2,6 +2,14 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.10]
+
+CI repair (Issue #50, CI run 35317057142) and low-impact GeoIP load throttling.
+
+- **CI fix:** the 0.8.5.9 deferred initial GeoIP load (`_geoip_initial_load_worker()`) was declared in `BACKGROUND_WORKERS` alongside the five long-lived workers, which broke `test_background_workers_are_declared`/`test_start_background_workers_starts_daemon_threads`'s fixed five-worker contract (371 passed / 2 failed). It is now started as its own one-shot daemon thread directly from `main()`, preserving both the deferred-startup behaviour and the original worker contract.
+- **GeoIP CSV parse/reload throttling:** `CsvRangeGeoIPProvider`/`CsvCityGeoIPProvider` now parse their CSV database through a new `_iter_csv_rows_throttled()` hook that sleeps briefly after every bounded chunk of rows, so a multi-million-row database (DB-IP City Lite in particular) doesn't monopolize CPU/disk on a modest host during the initial load or a post-update reload. Configurable via `GEOIP_LOAD_CHUNK_ROWS` (default 5000 rows) and `GEOIP_LOAD_YIELD_SECONDS` (default 0.01s); set the latter to 0 to disable throttling. Download bandwidth is unthrottled by design -- the scheduled 03:00/30-day updater (Issue #44) still downloads/converts in its own isolated subprocess, unchanged.
+- No change to lookup/ordering/map coverage semantics, the destination map UI, or the Issue #44 scheduled updater's own behaviour.
+
 ## [0.8.5.9]
 
 Startup responsiveness fix for GeoIP-backed deployments.

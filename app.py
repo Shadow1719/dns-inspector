@@ -136,6 +136,20 @@ GEOIP_CITY_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CITY_CACHE_MAX_ENTR
 # regardless of this cap (see geoip_map_payload()).
 GEOIP_MAP_DESTINATION_POINTS_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DESTINATION_POINTS_LIMIT", "600")))
 
+# Issue #50 / 0.8.5.10: the CSV parse phase inside `CsvRangeGeoIPProvider`/
+# `CsvCityGeoIPProvider` (below) is the actual CPU/disk-heavy step in both the
+# deferred initial load (`_geoip_initial_load_worker()`) and a completed
+# auto-update's in-process reload (`_reload_geoip_providers()`) -- a real
+# DB-IP City Lite export is several million rows. Parsing it in one unbroken
+# loop can peg a CPU core for the whole load, which is noticeable on a modest
+# host even off the request path. Bandwidth is deliberately not throttled
+# here (the download itself is a separate, already-isolated subprocess step,
+# see GEOIP_AUTO_UPDATE_WATCHDOG_SECONDS above); instead `_iter_csv_rows_throttled()`
+# below sleeps briefly after every bounded chunk of parsed rows so the rest
+# of the process gets scheduled in between chunks.
+GEOIP_LOAD_CHUNK_ROWS = max(1, int(os.getenv("GEOIP_LOAD_CHUNK_ROWS", "5000")))
+GEOIP_LOAD_YIELD_SECONDS = max(0.0, float(os.getenv("GEOIP_LOAD_YIELD_SECONDS", "0.01")))
+
 # Automatic DB-IP Lite updates (Issue #42 / 0.8.5.5): a background worker
 # checks for a newer monthly DB-IP Country/City Lite release on this cadence
 # and, if found, downloads/validates/converts it via `scripts/geoip_updater.py`
@@ -3698,6 +3712,25 @@ COUNTRY_CENTROIDS = {
 }
 
 
+def _iter_csv_rows_throttled(reader, chunk_rows=None, yield_seconds=None):
+    """Yield rows from a `csv.reader` in bounded chunks, sleeping briefly
+    between chunks (Issue #50 / 0.8.5.10) so parsing a multi-million-row
+    GeoIP database doesn't monopolize CPU/disk for the whole load. Row order
+    and content are unchanged -- this only inserts idle gaps into an
+    otherwise tight loop. `chunk_rows`/`yield_seconds` default to the
+    `GEOIP_LOAD_CHUNK_ROWS`/`GEOIP_LOAD_YIELD_SECONDS` module config (env-
+    overridable) but are accepted as arguments so tests can exercise the
+    chunk boundary without waiting on real sleeps."""
+    chunk_rows = GEOIP_LOAD_CHUNK_ROWS if chunk_rows is None else chunk_rows
+    yield_seconds = GEOIP_LOAD_YIELD_SECONDS if yield_seconds is None else yield_seconds
+    count = 0
+    for row in reader:
+        yield row
+        count += 1
+        if chunk_rows and yield_seconds and count % chunk_rows == 0:
+            time.sleep(yield_seconds)
+
+
 class GeoIPProvider:
     """Abstraction over a local/offline IP -> country lookup source, so the
     backing database can be swapped later without touching call sites."""
@@ -3752,7 +3785,7 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
     def _load(self):
         try:
             with open(self._path, "r", encoding="utf-8", newline="") as f:
-                for row in csv.reader(f):
+                for row in _iter_csv_rows_throttled(csv.reader(f)):
                     if not row or len(row) < 4:
                         continue
                     start_raw, end_raw, code, name = row[0].strip(), row[1].strip(), row[2].strip().upper(), row[3].strip()
@@ -3911,7 +3944,7 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
         v4_rows = []
         try:
             with open(self._path, "r", encoding="utf-8", newline="") as f:
-                for row in csv.reader(f):
+                for row in _iter_csv_rows_throttled(csv.reader(f)):
                     if not row or len(row) < 7:
                         continue
                     start_raw, end_raw = row[0].strip(), row[1].strip()
@@ -6434,8 +6467,17 @@ def api_system_restart():
 # future module boundaries have something explicit to call.
 
 #: Long-lived background threads, in the order 0.7.14 started them.
+#
+# `_geoip_initial_load_worker()` is deliberately NOT one of these (Issue #50
+# / 0.8.5.10, CI run 35317057142): every entry here is a long-lived loop that
+# runs for the life of the process, while the initial GeoIP load is a
+# one-shot task that does its work once and returns. Declaring it alongside
+# the long-lived workers made `test_background_workers_are_declared`/
+# `test_start_background_workers_starts_daemon_threads` (which assert the
+# fixed five-worker contract) fail, and conflated two different lifecycles
+# that deserve to stay explicit. It is started separately, directly from
+# `main()`, below.
 BACKGROUND_WORKERS = (
-    ("geoip-initial-load", _geoip_initial_load_worker),
     ("agh-ingest", worker),
     ("enrichment-queue", _enrichment_worker),
     ("device-ip-cleanup", _device_ip_cleanup_worker),
@@ -6464,10 +6506,15 @@ def main():
     init_db()
     if os.path.exists(GEOIP_DB_PATH) or os.path.exists(GEOIP_CITY_DB_PATH):
         print(
-            "GeoIP: database detected; deferring initial load to the background "
-            "worker so the HTTP server can start immediately.",
+            "GeoIP: database detected; deferring initial load to a one-shot "
+            "background thread so the HTTP server can start immediately.",
             flush=True,
         )
+        # One-shot, not a long-lived BACKGROUND_WORKERS entry -- see the
+        # comment above BACKGROUND_WORKERS for why.
+        threading.Thread(
+            target=_geoip_initial_load_worker, daemon=True, name="geoip-initial-load",
+        ).start()
     else:
         _log_geoip_status()
     _prune_stale_device_ips()
