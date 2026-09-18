@@ -3995,15 +3995,61 @@ class CsvCityGeoIPProvider(CityGeoIPProvider):
         return {"country_code": code, "country_name": name, "city": city or None, "lat": lat, "lon": lon}
 
 
-_geoip_provider = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if os.path.exists(GEOIP_DB_PATH) else NullGeoIPProvider()
+_geoip_provider = NullGeoIPProvider()
 _geoip_cache = {}
 _geoip_cache_order = deque()
 _geoip_cache_lock = threading.Lock()
 
-_geoip_city_provider = CsvCityGeoIPProvider(GEOIP_CITY_DB_PATH) if os.path.exists(GEOIP_CITY_DB_PATH) else NullCityGeoIPProvider()
+_geoip_city_provider = NullCityGeoIPProvider()
 _geoip_city_cache = {}
 _geoip_city_cache_order = deque()
 _geoip_city_cache_lock = threading.Lock()
+
+# GeoIP databases can contain millions of rows. They must never be parsed
+# synchronously during module import: doing so blocks PID 1 from reaching the
+# Flask server and makes a healthy container appear to hang at startup.
+# Providers start as explicit Null providers and are replaced by the first
+# background load once the application has started serving requests.
+GEOIP_INITIAL_LOAD_DELAY_SECONDS = max(
+    0.0, float(os.getenv("GEOIP_INITIAL_LOAD_DELAY_SECONDS", "1"))
+)
+
+
+def _geoip_initial_load_worker():
+    """Load persistent GeoIP databases after the web server startup path.
+
+    The database files can be very large, especially DB-IP City Lite. Keeping
+    construction off module import means PID 1 can bind the HTTP server and
+    report healthy status immediately; the map remains temporarily unmapped
+    until this one-time background load completes.
+    """
+    if GEOIP_INITIAL_LOAD_DELAY_SECONDS:
+        time.sleep(GEOIP_INITIAL_LOAD_DELAY_SECONDS)
+
+    country_present = os.path.exists(GEOIP_DB_PATH)
+    city_present = os.path.exists(GEOIP_CITY_DB_PATH)
+    if not country_present and not city_present:
+        print("GeoIP initial load: no local databases found; keeping Null providers.", flush=True)
+        return
+
+    started = time.monotonic()
+    print(
+        "GeoIP initial load: starting deferred background load "
+        f"(country={country_present}, city={city_present})",
+        flush=True,
+    )
+    try:
+        _reload_geoip_providers()
+        elapsed = time.monotonic() - started
+        print(
+            f"GeoIP initial load: complete in {elapsed:.1f}s",
+            flush=True,
+        )
+    except Exception as e:
+        print(
+            f"GeoIP initial load error: keeping Null providers for now: {e!r}",
+            flush=True,
+        )
 
 
 def _geoip_diagnostics():
@@ -6389,6 +6435,7 @@ def api_system_restart():
 
 #: Long-lived background threads, in the order 0.7.14 started them.
 BACKGROUND_WORKERS = (
+    ("geoip-initial-load", _geoip_initial_load_worker),
     ("agh-ingest", worker),
     ("enrichment-queue", _enrichment_worker),
     ("device-ip-cleanup", _device_ip_cleanup_worker),
@@ -6415,7 +6462,14 @@ def serve():
 def main():
     """The single startup path for DNS Inspector."""
     init_db()
-    _log_geoip_status()
+    if os.path.exists(GEOIP_DB_PATH) or os.path.exists(GEOIP_CITY_DB_PATH):
+        print(
+            "GeoIP: database detected; deferring initial load to the background "
+            "worker so the HTTP server can start immediately.",
+            flush=True,
+        )
+    else:
+        _log_geoip_status()
     _prune_stale_device_ips()
     start_background_workers()
     serve()
