@@ -664,6 +664,10 @@ html:not([data-motion="reduced"]) .destination-map-svg{transition:background .2s
 .map-bubble-pulse-ring{fill:none;stroke:var(--map-point);stroke-width:1.5;opacity:.5;transform-box:fill-box;transform-origin:center;pointer-events:none;display:var(--map-pulse-display)}
 html:not([data-motion="reduced"]) .map-bubble-pulse-ring{animation:dnsInspectorMapPulse 2.4s ease-out infinite}
 html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
+@media(prefers-reduced-motion:reduce){
+  .map-bubble-pulse-ring{display:none!important;animation:none!important}
+  .map-bubble,.map-cluster{transition:none!important}
+}
 @keyframes dnsInspectorMapPulse{0%{transform:scale(1);opacity:.5}100%{transform:scale(2.4);opacity:0}}
 .map-cluster{fill-opacity:var(--map-point-opacity);stroke-width:1;cursor:pointer;filter:var(--map-point-glow);transition:fill-opacity .3s ease,stroke-width .3s ease,r .3s ease}
 .map-cluster:hover,.map-cluster-selected{fill-opacity:.95;stroke-width:2}
