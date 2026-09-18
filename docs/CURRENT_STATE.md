@@ -6,11 +6,10 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.7` (the `VERSION` file
-  is authoritative; a prior hand-off left this line reading `0.8.6` after the
-  `0.8.6` work was deliberately kept in the `0.8.5.x` series -- see the
-  "fix: keep map visual build in 0.8.5.x series" commit -- without this line
-  being corrected at the time)
+- Foundation version: `0.8.0`, current release: `0.8.5.10` (the `VERSION`
+  file is authoritative). The project stays in the `0.8.5.x` series
+  deliberately until the UI/dashboard/operational work is fully resolved;
+  0.8.6 is not to be started until that gate is explicitly lifted.
 - AI collaboration contract: `AGENTS.md`
 - Claude Code instructions: `CLAUDE.md`
 
@@ -283,6 +282,47 @@ bodies in `tests/test_geoip_updater.py` rather than an actual local test
 run; the repository owner or the real CI run should confirm the full suite
 and the Docker smoke path referenced in the issue before relying on this
 fix.
+
+0.8.5.9 (no tracked issue) deferred the initial GeoIP provider load
+(`_geoip_initial_load_worker()`) off Python module import and off `main()`'s
+synchronous startup path into a background worker, tunable via
+`GEOIP_INITIAL_LOAD_DELAY_SECONDS` (default 1s), so a large configured
+database can no longer block PID 1 from reaching a healthy `/health`. It
+declared that worker inside `BACKGROUND_WORKERS`, which broke the fixed
+five-long-lived-worker contract two `tests/test_startup.py` tests assert
+(CI run `35317057142`: 371 passed, 2 failed) -- fixed in 0.8.5.10 below.
+
+0.8.5.10 (Issue #50) is a CI repair plus the requested GeoIP load
+throttling, staying in the 0.8.5.x series per the roadmap gate (0.8.6 is not
+to start until the UI/dashboard/operational work is fully resolved).
+`_geoip_initial_load_worker()` is no longer declared in `BACKGROUND_WORKERS`
+-- it is a one-shot task, not a long-lived loop like the other five workers
+-- and is instead started as its own daemon thread directly from `main()`
+when a GeoIP database file is present, preserving both the deferred-startup
+behaviour and the original fixed-worker-set test contract.
+`CsvRangeGeoIPProvider`/`CsvCityGeoIPProvider`'s CSV parse loop (the actual
+CPU/disk-heavy step behind both the initial load and a completed
+auto-update's in-process reload via `_reload_geoip_providers()`) now runs
+through a new `_iter_csv_rows_throttled()` generator that sleeps briefly
+after every bounded chunk of rows -- `GEOIP_LOAD_CHUNK_ROWS` (default 5000)
+and `GEOIP_LOAD_YIELD_SECONDS` (default 0.01s, `0` disables throttling) --
+so a multi-million-row City Lite database doesn't monopolize CPU/disk for
+the whole load on a modest host. Download bandwidth is deliberately left
+unthrottled; the Issue #44 scheduled 03:00/30-day updater still
+downloads/converts in its own isolated subprocess, unchanged. No lookup,
+ordering, map-coverage, or destination-map-UI semantics changed.
+
+Runtime evidence (Issue #50, real TrueNAS deployment logs, 2026-09-18
+10:03-10:04 local / 07:03-07:04 UTC, reviewed against the 0.8.5.9 startup
+fix already in place at that time): `/health`, `/api/analytics`,
+`/api/analytics/map`, `/api/state`, `/api/ip/ping/status`, and `/search` all
+returned HTTP 200 with no GeoIP-updater error/hang messages in the
+excerpt, consistent with the deferred-load fix keeping Flask responsive.
+Every HTTP request line and ingest message in that excerpt appeared exactly
+3 times with identical timestamp/microsecond and content, which reads as
+log aggregation/duplication rather than three real requests; no code change
+was made on the strength of the duplication alone, since nothing in the
+excerpt indicates the app itself issued or received triplicate calls.
 
 ## How to update this file
 

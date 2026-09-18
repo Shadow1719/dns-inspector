@@ -64,6 +64,56 @@ def test_start_background_workers_starts_daemon_threads(app_module, monkeypatch)
             thread.join(timeout=5)
 
 
+def test_geoip_initial_load_worker_is_not_a_background_worker(app_module):
+    """Issue #50 (CI run 35317057142): the one-shot initial GeoIP load must
+    not be counted alongside the five long-lived workers -- it does its work
+    once and returns, unlike every entry in BACKGROUND_WORKERS."""
+    declared = dict(app_module.BACKGROUND_WORKERS)
+    assert "geoip-initial-load" not in declared
+    assert app_module._geoip_initial_load_worker not in declared.values()
+
+
+def test_main_starts_geoip_initial_load_as_a_separate_one_shot_thread(app_module, monkeypatch, tmp_path):
+    """main() still defers the initial GeoIP load off the startup path when a
+    database is present, but as its own thread rather than a
+    BACKGROUND_WORKERS entry (see the comment above BACKGROUND_WORKERS)."""
+    monkeypatch.setattr(app_module, "GEOIP_DB_PATH", str(tmp_path / "geoip_country_ranges.csv"))
+    monkeypatch.setattr(app_module, "GEOIP_CITY_DB_PATH", str(tmp_path / "missing_city.csv"))
+    (tmp_path / "geoip_country_ranges.csv").write_text("start_ip,end_ip,country_code,country_name\n")
+    monkeypatch.setattr(app_module, "init_db", lambda: None)
+    monkeypatch.setattr(app_module, "_prune_stale_device_ips", lambda: None)
+    monkeypatch.setattr(app_module, "start_background_workers", lambda: [])
+    monkeypatch.setattr(app_module, "serve", lambda: None)
+
+    ran = threading.Event()
+    monkeypatch.setattr(app_module, "_geoip_initial_load_worker", ran.set)
+
+    app_module.main()
+
+    assert ran.wait(timeout=5), "main() did not start the geoip-initial-load thread"
+
+
+def test_main_skips_geoip_thread_when_no_database_is_configured(app_module, monkeypatch, tmp_path):
+    """No GeoIP database on disk: main() must log status directly instead of
+    spinning up a thread that would immediately no-op."""
+    monkeypatch.setattr(app_module, "GEOIP_DB_PATH", str(tmp_path / "missing_country.csv"))
+    monkeypatch.setattr(app_module, "GEOIP_CITY_DB_PATH", str(tmp_path / "missing_city.csv"))
+    monkeypatch.setattr(app_module, "init_db", lambda: None)
+    monkeypatch.setattr(app_module, "_prune_stale_device_ips", lambda: None)
+    monkeypatch.setattr(app_module, "start_background_workers", lambda: [])
+    monkeypatch.setattr(app_module, "serve", lambda: None)
+
+    started = threading.Event()
+    monkeypatch.setattr(app_module, "_geoip_initial_load_worker", started.set)
+    logged = threading.Event()
+    monkeypatch.setattr(app_module, "_log_geoip_status", logged.set)
+
+    app_module.main()
+
+    assert not started.is_set()
+    assert logged.is_set()
+
+
 def test_all_routes_are_registered(app_module):
     rules = {rule.rule for rule in app_module.app.url_map.iter_rules()}
     missing = EXPECTED_ROUTES - rules

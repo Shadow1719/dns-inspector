@@ -431,6 +431,9 @@ disabled and returns immediately without ever making a network request.
 | --- | --- | --- |
 | `GEOIP_DB_PATH` | `/data/geoip_country_ranges.csv` | Path to the country CSV database above. |
 | `GEOIP_CACHE_MAX_ENTRIES` | `8192` | Bounded FIFO cache size for per-IP country lookup results. |
+| `GEOIP_INITIAL_LOAD_DELAY_SECONDS` | `1` | Delay before the deferred initial GeoIP provider load starts, giving the HTTP server time to finish binding first. |
+| `GEOIP_LOAD_CHUNK_ROWS` | `5000` | Row count per throttled chunk while parsing a GeoIP CSV database (initial load and reload after an auto-update both use this). |
+| `GEOIP_LOAD_YIELD_SECONDS` | `0.01` | Sleep inserted after every `GEOIP_LOAD_CHUNK_ROWS` chunk during CSV parsing, so a large database (city-level in particular) doesn't monopolize CPU/disk for the whole load. Set to `0` to disable throttling. |
 | `GEOIP_MAP_CACHE_SECONDS` | `30` | How long an aggregated map payload is reused before recomputing. |
 | `GEOIP_MAP_DOMAIN_LIMIT` | `1500` | Upper bound on domains scanned per aggregation pass (most-recently-active first). |
 | `GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT` | `32` | Upper bound on distinct observed destination IPs retained per domain. |
