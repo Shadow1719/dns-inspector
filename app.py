@@ -225,7 +225,7 @@ IP_RE = re.compile(r"^[0-9a-f:.]+$")
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
 <!-- Issue #69: Leaflet + OpenStreetMap is the DNS Destinations map's real
-     geographic viewport (supersedes the amCharts experiment). The legacy
+     geographic viewport (replacing the previous experimental renderer). The legacy
      SVG renderer further below in this template remains the automatic
      fallback whenever this library/tiles can't load -- see
      static/leaflet-map.js. -->
