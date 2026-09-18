@@ -50,12 +50,15 @@ def is_development_environment():
     return RUNTIME_ENV == "development"
 
 
+AMCHARTS_MAP_ENABLED = os.getenv("AMCHARTS_MAP_ENABLED", "0").strip().lower() not in {"0", "false", "no", "off"}
+
 def _environment_render_context():
     dev = is_development_environment()
     return {
         "is_dev_environment": dev,
         "favicon_path": "/static/favicon-dev.svg" if dev else "/static/favicon.svg",
         "page_title": f"DNS Inspector DEV v{APP_VERSION}" if dev else "DNS Inspector",
+        "amcharts_map_enabled": AMCHARTS_MAP_ENABLED,
     }
 
 
@@ -224,6 +227,11 @@ IP_RE = re.compile(r"^[0-9a-f:.]+$")
 
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
+{% if amcharts_map_enabled %}
+<script src="https://cdn.amcharts.com/lib/version/5.20.6/index.js"></script>
+<script src="https://cdn.amcharts.com/lib/version/5.20.6/map.js"></script>
+<script src="https://cdn.amcharts.com/lib/5/geodata/worldLow.js"></script>
+{% endif %}
 <script>
 /* Applied before first paint so a saved theme/density/accent never flashes
    the default look first. Kept intentionally tiny and self-contained (the
@@ -1283,6 +1291,7 @@ function renderInstrumentGauges(data){
           </div>
         </div>
         <div class="stats-note" style="margin-top:0" id="destination-map-history"></div>
+        {% if amcharts_map_enabled %}<div class="stats-note" style="margin-top:0">amCharts map POC enabled via <code>AMCHARTS_MAP_ENABLED=1</code> — experimental; legacy SVG remains the default.</div>{% endif %}
         <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
       </div>
     </div>
@@ -2982,7 +2991,10 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
 
   syncControls();
 })();
-</script></body></html>
+</script></body>{% if amcharts_map_enabled %}
+<script src="/static/amcharts-map-poc.js"></script>
+{% endif %}
+</html>
 """
 
 
