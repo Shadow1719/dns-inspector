@@ -737,14 +737,15 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 /* Issue #63: country breakdown/ranking beside the map on desktop, below it
    on narrower widgets -- same payload as the map itself (data.countries),
    no second backend query. */
-.destination-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:12px;align-items:start}
-@media(max-width:900px){.destination-map-layout{grid-template-columns:minmax(0,1fr)}}
-.map-breakdown{display:flex;flex-direction:column;min-width:0;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
-.map-breakdown-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)}
+.destination-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:12px;align-items:stretch}
+@media(max-width:900px){.destination-map-layout{grid-template-columns:minmax(0,1fr);align-items:start}}
+.map-breakdown{display:flex;flex-direction:column;min-width:0;height:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.map-breakdown-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);flex:0 0 auto}
 .map-breakdown-title{font-size:.78rem;font-weight:600;color:var(--text-primary)}
 .map-breakdown-sort-btn{padding:3px 8px;font-size:.72rem;border-radius:var(--radius-sm);background:var(--surface-3);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
 .map-breakdown-sort-btn:hover{background:var(--surface-1)}
-.map-breakdown-list{list-style:none;margin:0;padding:0;max-height:340px;overflow-y:auto}
+.map-breakdown-list{list-style:none;margin:0;padding:0;flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto}
+@media(max-width:900px){.map-breakdown{height:auto}.map-breakdown-list{flex:0 1 auto;max-height:340px}}
 .map-breakdown-row{display:block;width:100%;text-align:left;padding:7px 10px;border:none;border-bottom:1px solid var(--border);background:transparent;color:var(--text-primary);cursor:pointer;font:inherit}
 .map-breakdown-row:last-child{border-bottom:none}
 .map-breakdown-row:hover{background:var(--surface-3)}
