@@ -239,18 +239,52 @@ def test_csv_range_provider_skips_malformed_rows_without_failing(tmp_path, app_m
 
 
 def test_csv_range_provider_precomputes_start_key_arrays_for_bisect(tmp_path, app_module):
-    """lookup() must bisect a precomputed start-key array (built once at load
-    time) rather than rebuilding `[r[0] for r in bucket]` on every call --
-    otherwise each lookup does O(n) work despite the binary search."""
+    """lookup() must bisect a precomputed, sorted start-key array (built once
+    at load time, directly -- not a duplicate list re-derived from a second
+    row store, see Issue #52) rather than rebuilding a starts list on every
+    call -- otherwise each lookup does O(n) work despite the binary search."""
     csv_path = tmp_path / "geoip.csv"
     csv_path.write_text(
         "203.0.113.0,203.0.113.63,US,United States\n"
         "198.51.100.0,198.51.100.63,DE,Germany\n"
     )
     provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
-    assert provider._v4_starts == [r[0] for r in provider._v4]
+    assert list(provider._v4_start) == sorted(provider._v4_start)
+    assert len(provider._v4_start) == len(provider._v4_end) == len(provider._v4_country_idx) == 2
     assert provider.lookup("198.51.100.10") == ("DE", "Germany")
     assert provider.lookup("203.0.113.10") == ("US", "United States")
+
+
+def test_csv_range_provider_interns_repeated_country_names(tmp_path, app_module):
+    """A real country database repeats the same country code across many
+    ranges -- the provider must intern it once, not store a fresh
+    code/name pair per row (Issue #52's compact-storage requirement, mirrored
+    from the equivalent city-provider test)."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "203.0.113.0,203.0.113.63,US,United States\n"
+        "203.0.113.64,203.0.113.127,US,United States\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert len(provider._countries) == 1
+    assert provider.range_count == 2
+
+
+def test_csv_range_provider_sorts_out_of_order_ipv4_rows_correctly(tmp_path, app_module):
+    """A source CSV is not guaranteed to already be sorted by start IP; the
+    compact-array builder's index-permutation fallback (Issue #52) must still
+    produce correct lookups when rows arrive out of order."""
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text(
+        "198.51.100.0,198.51.100.63,DE,Germany\n"
+        "10.0.0.0,10.0.0.63,US,United States\n"
+        "203.0.113.0,203.0.113.63,FR,France\n"
+    )
+    provider = app_module.CsvRangeGeoIPProvider(str(csv_path))
+    assert list(provider._v4_start) == sorted(provider._v4_start)
+    assert provider.lookup("10.0.0.10") == ("US", "United States")
+    assert provider.lookup("198.51.100.10") == ("DE", "Germany")
+    assert provider.lookup("203.0.113.10") == ("FR", "France")
 
 
 def test_geoip_lookup_is_cached_and_bounded(app_module, monkeypatch):
