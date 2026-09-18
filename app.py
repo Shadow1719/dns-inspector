@@ -1552,7 +1552,7 @@ function mapIntensityColor(ratio){
 }
 function mapCompactNumber(n){
   n = Number(n) || 0;
-  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\\.0$/, '') + 'M';
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
   return String(n);
 }
@@ -1682,7 +1682,10 @@ function renderCountriesMode(data){
     renderMapDetail(mapSelectedCountry ? countries.find(c => c.country_code === mapSelectedCountry) : null, 'country');
   };
   el.querySelectorAll('[data-country]').forEach(node => {
-    node.addEventListener('click', () => { if (!mapWasDragging) activateCountry(node.getAttribute('data-country')); });
+    node.addEventListener('click', () => {
+      if (mapWasDragging) return;
+      activateCountry(node.getAttribute('data-country'));
+    });
     node.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
       e.preventDefault();
@@ -1752,7 +1755,10 @@ function renderDestinationsMode(data, capabilities){
     renderMapDetail(mapSelectedDestinationKey ? cluster : null, 'destination');
   };
   el.querySelectorAll('[data-cluster]').forEach(node => {
-    node.addEventListener('click', () => { if (!mapWasDragging) activateCluster(node.getAttribute('data-cluster')); });
+    node.addEventListener('click', () => {
+      if (mapWasDragging) return;
+      activateCluster(node.getAttribute('data-cluster'));
+    });
     node.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
       e.preventDefault();
