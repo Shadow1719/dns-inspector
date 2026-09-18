@@ -623,7 +623,20 @@ html:not([data-motion="reduced"]) .instrument-gauge .gauge-needle{transition:tra
 .leaflet-status-banner{z-index:1000}
 .leaflet-dns-marker{cursor:pointer}
 .leaflet-dns-marker span{display:flex;width:100%;height:100%;align-items:center;justify-content:center;border-radius:50%;color:#0b0f14;font-size:.68rem;font-weight:700;border:1.5px solid rgba(255,255,255,.55);box-shadow:0 0 0 1px rgba(0,0,0,.25)}
-.leaflet-dns-marker-selected span{outline:2px solid #fff;outline-offset:1px}
+/* Issue #72: the previous single 2px white outline was reported as too
+   subtle to spot against a busy OSM/Tracestrack tile. A white-then-dark
+   double ring reads as high-contrast against both light and dark tile
+   imagery (unlike a single-color outline, which can disappear against a
+   same-color background); the marker is also drawn above its neighbors via
+   a higher L.Marker zIndexOffset (see bubbleIcon() in leaflet-map.js) so it
+   is never occluded by an adjacent unselected marker. */
+.leaflet-dns-marker-selected{z-index:1000!important}
+.leaflet-dns-marker-selected span{outline:none;box-shadow:0 0 0 3px #fff,0 0 0 6px #0b0f14,0 0 14px 3px rgba(0,0,0,.6)}
+/* Issue #72: DTC pins are a distinct shape/color from the round country and
+   destination bubbles above so the two datasets (observed DNS activity vs.
+   static known infrastructure locations) are never visually confused. */
+.leaflet-dtc-marker{cursor:pointer}
+.leaflet-dtc-marker span{display:block;width:100%;height:100%;background:#f5b93d;border:1.5px solid #0b0f14;border-radius:3px;transform:rotate(45deg);box-shadow:0 0 0 1px rgba(255,255,255,.6)}
 .destination-map-wrap{
   position:relative;
   --map-bg-a:var(--surface-2); --map-bg-b:var(--surface-1);
@@ -950,7 +963,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
-const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent'};
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent', tracestrackApiKey:''};
 function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
 let prefs = loadPrefs();
@@ -1262,6 +1275,7 @@ function renderInstrumentGauges(data){
             <option value="cyan">Cyan</option>
             <option value="bemo-accent">BEMO / Dark Accent</option>
           </select>
+          <input type="text" class="settings-select" id="map-tracestrack-key-input" placeholder="Tracestrack API key (optional)" aria-label="Tracestrack API key" autocomplete="off" spellcheck="false" style="min-width:190px">
           <span class="map-zoom-group" role="group" aria-label="Map zoom">
             <button type="button" class="map-zoom-btn" id="map-zoom-out-btn" aria-label="Zoom out">&minus;</button>
             <button type="button" class="map-zoom-btn" id="map-zoom-in-btn" aria-label="Zoom in">+</button>
@@ -1269,7 +1283,7 @@ function renderInstrumentGauges(data){
             <button type="button" class="map-zoom-btn" id="map-reset-btn" aria-label="Reset map view">Reset</button>
           </span>
         </div>
-        <div class="stats-note" style="margin-top:0">Click or tap a marker for details &mdash; they stay open until dismissed. Drag to pan, scroll/pinch to zoom, or use the buttons above. Tab to a marker and press Enter/Space to select it; arrow keys pan and +/- zoom when the map is focused. Basemap picks how activity is drawn (heat glow, density points, pins, or bright NOC points); theme only recolors the intensity ramp, independently of the basemap.</div>
+        <div class="stats-note" style="margin-top:0">Click or tap a marker for details &mdash; they stay open until dismissed. Drag to pan, scroll/pinch to zoom, or use the buttons above. Tab to a marker and press Enter/Space to select it; arrow keys pan and +/- zoom when the map is focused. Basemap picks how activity is drawn (heat glow, density points, pins, or bright NOC points); theme only recolors the intensity ramp, independently of the basemap. Double-click a country in the breakdown list to pan/zoom the map to it. On the real (Leaflet) map, use the layer control in the map's corner to switch between OpenStreetMap Standard and Tracestrack Topo (paste a free Tracestrack API key above to enable it) and to toggle the optional Data Centers layer.</div>
         <div class="map-legend" id="destination-map-legend" role="note" aria-label="Map legend: marker size and color both scale with observation count">
           <div class="map-legend-group">
             <span class="map-legend-title">Marker size</span>
@@ -2099,6 +2113,18 @@ function renderMapBreakdown(data){
   }).join('');
   list.querySelectorAll('[data-breakdown-country]').forEach(btn => {
     btn.addEventListener('click', () => mapSelectCountry(btn.getAttribute('data-breakdown-country'), { toggle: false, centerZoom: true }));
+    /* Issue #72: a single click keeps the existing Issue #63 selection/detail
+       behavior unchanged above (and, on the legacy SVG fallback, already
+       recenters via centerZoom); double-click additionally pans/zooms the
+       real Leaflet viewport to the country's centroid, which centerZoom
+       alone does not do for Leaflet (see docs/LEAFLET_MAP.md -- Leaflet
+       owns its own pan/zoom state, not mapZoom/mapViewCenter). Guarded by
+       typeof so this is a no-op if Leaflet never initialized. */
+    btn.addEventListener('dblclick', () => {
+      const code = btn.getAttribute('data-breakdown-country');
+      mapSelectCountry(code, { toggle: false, centerZoom: true });
+      if (typeof window.leafletFocusCountryOnMap === 'function') window.leafletFocusCountryOnMap(code);
+    });
   });
 }
 document.getElementById('map-breakdown-sort-btn')?.addEventListener('click', () => {
@@ -2486,10 +2512,12 @@ function syncMapControls(){
   const metricSel = document.getElementById('map-metric-select');
   const basemapSel = document.getElementById('map-basemap-select');
   const themeSel = document.getElementById('map-theme-select');
+  const tracestrackKeyInput = document.getElementById('map-tracestrack-key-input');
   if (modeSel) modeSel.value = prefs.mapMode || 'countries';
   if (metricSel) metricSel.value = prefs.mapMetric || 'observations';
   if (basemapSel) basemapSel.value = mapActiveBasemap();
   if (themeSel) themeSel.value = mapActiveTheme();
+  if (tracestrackKeyInput && document.activeElement !== tracestrackKeyInput) tracestrackKeyInput.value = prefs.tracestrackApiKey || '';
   mapSyncLegendGradient();
 }
 syncMapControls();
@@ -2515,6 +2543,18 @@ document.getElementById('map-theme-select')?.addEventListener('change', (e) => {
   savePrefs();
   mapSyncLegendGradient();
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+/* Issue #72: Tracestrack Topo needs a per-operator API key; stored as a
+   plain client-side-only dnsInspectorPrefs field (same architecture as
+   every other map preference -- no new persistence layer, no backend env
+   var/secret plumbing). leaflet-map.js reads it live via Leaflet's own
+   {key} URL-template substitution, so typing/pasting a key here updates the
+   already-added Tracestrack base layer in place instead of requiring a
+   reload. */
+document.getElementById('map-tracestrack-key-input')?.addEventListener('input', (e) => {
+  prefs.tracestrackApiKey = e.target.value.trim();
+  savePrefs();
+  if (typeof window.mapUpdateTracestrackKey === 'function') window.mapUpdateTracestrackKey(prefs.tracestrackApiKey);
 });
 document.getElementById('map-zoom-in-btn')?.addEventListener('click', () => {
   mapZoom = Math.min(8, mapZoom * 2);

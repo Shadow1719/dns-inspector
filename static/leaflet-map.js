@@ -47,7 +47,68 @@
   const OSM_ATTRIBUTION =
     '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
 
-  const state = { map: null, layers: null, initialized: false, failed: false };
+  /* Issue #72: basemap layer control. OpenStreetMap Standard stays the
+   * always-on, no-key default; Tracestrack Topo is a second selectable
+   * basemap (Tracestrack's topo style is itself rendered from OpenStreetMap
+   * data, so both OSM and Tracestrack attribution are required together).
+   * Tracestrack requires a free personal API key (registration at
+   * https://tracestrack.com/) -- there is no working no-key tile URL for it,
+   * so the key is read live from Leaflet's own `{key}` URL-template
+   * substitution (options.key) rather than baked into the URL string; see
+   * the Settings-adjacent "Tracestrack API key" field in the map controls
+   * and mapUpdateTracestrackKey() below, which updates this layer in place
+   * when that field changes.
+   *
+   * **Unverified in this sandbox**: this session's sandbox had no outbound
+   * network access to re-confirm Tracestrack's exact current tile URL
+   * path/style token/file extension or attribution wording live against
+   * https://tracestrack.com/ (the same disclosed limitation recorded
+   * against numerous other 0.8.5.x hand-offs in docs/CURRENT_STATE.md, e.g.
+   * the DB-IP update URL templates). TRACESTRACK_TILE_URL_TEMPLATE is a
+   * single overridable constant specifically so an operator/maintainer can
+   * correct it without touching any other map code once confirmed against
+   * Tracestrack's current documentation.
+   *
+   * This object is the extension point for Section 5 of Issue #72 ("future
+   * layer architecture"): add another `{ name: { url, options } }` entry
+   * here to register a further basemap without touching ensureMap()'s
+   * control-building logic below. */
+  const TRACESTRACK_TILE_URL_TEMPLATE = "https://tile.tracestrack.com/topo__/{z}/{x}/{y}.png?key={key}";
+  const TRACESTRACK_ATTRIBUTION =
+    '&copy; <a href="https://www.tracestrack.com/" target="_blank" rel="noopener noreferrer">Tracestrack</a>, map data ' +
+    '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+  const LEAFLET_BASEMAPS = {
+    "OpenStreetMap Standard": { url: OSM_TILE_URL, options: { maxZoom: 19, attribution: OSM_ATTRIBUTION } },
+    "Tracestrack Topo": {
+      url: TRACESTRACK_TILE_URL_TEMPLATE,
+      options: { maxZoom: 18, attribution: TRACESTRACK_ATTRIBUTION, key: "" },
+    },
+  };
+
+  /* Section 3 (Issue #72): Data Centre / DTC pins -- an additive, off-by-
+   * default overlay layer, completely independent of Countries/Destinations
+   * mode and of /api/analytics/map. This is a small, explicit, hand-
+   * maintained seed list (not a claim of comprehensive coverage) of major
+   * public cloud regions/PoPs, at city-level precision only (never a
+   * specific building/address) with each entry citing the provider's own
+   * public documentation as its source, per this issue's explicit
+   * instruction not to invent DTC locations. **This session's sandbox had
+   * no outbound network access to re-verify these entries live** -- an
+   * operator/maintainer should confirm them against each cited source
+   * before relying on this layer in production, the same disclosed-
+   * limitation pattern used elsewhere in this project. Extend this array
+   * (or replace it with a fetch from a future backend
+   * `infrastructure_locations` table) to add more providers/PoPs -- no
+   * rendering code below needs to change to do so. */
+  const DTC_LOCATIONS = [
+    { id: "aws-us-east-1", provider: "AWS", label: "AWS us-east-1 (N. Virginia)", city: "Ashburn, Virginia, US", lat: 39.04, lon: -77.49, source: "https://aws.amazon.com/about-aws/global-infrastructure/regions_az/" },
+    { id: "aws-eu-west-1", provider: "AWS", label: "AWS eu-west-1 (Ireland)", city: "Dublin, Ireland", lat: 53.35, lon: -6.26, source: "https://aws.amazon.com/about-aws/global-infrastructure/regions_az/" },
+    { id: "gcp-us-central1", provider: "Google Cloud", label: "GCP us-central1", city: "Council Bluffs, Iowa, US", lat: 41.26, lon: -95.86, source: "https://cloud.google.com/about/locations" },
+    { id: "azure-eastus", provider: "Azure", label: "Azure East US", city: "Boydton, Virginia, US", lat: 36.67, lon: -78.39, source: "https://azure.microsoft.com/en-us/explore/global-infrastructure/geographies/" },
+    { id: "cloudflare-ams", provider: "Cloudflare", label: "Cloudflare Amsterdam PoP", city: "Amsterdam, Netherlands", lat: 52.37, lon: 4.9, source: "https://www.cloudflare.com/network/" },
+  ];
+
+  const state = { map: null, layers: null, initialized: false, failed: false, tracestrackLayer: null };
 
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const reducedMotion = () =>
@@ -61,6 +122,29 @@
   const metricValue = (entity) => (typeof mapMetricValue === "function" ? mapMetricValue(entity) : num(entity.observation_count));
   const themeColor = (ratio, theme) => (typeof mapThemeColor === "function" ? mapThemeColor(ratio, theme) : "#58a6ff");
   const escapeHtml = (v) => (typeof esc === "function" ? esc(v) : String(v == null ? "" : v));
+  const tracestrackApiKey = () => (typeof prefs !== "undefined" && prefs.tracestrackApiKey ? String(prefs.tracestrackApiKey).trim() : "");
+
+  function renderDtcPins() {
+    if (!state.layers) return;
+    state.layers.dtc.clearLayers();
+    DTC_LOCATIONS.forEach((dtc) => {
+      const marker = L.marker([dtc.lat, dtc.lon], {
+        icon: L.divIcon({
+          className: "leaflet-dtc-marker",
+          html: '<span></span>',
+          iconSize: [14, 14],
+        }),
+        title: `${dtc.label} — ${dtc.city}`,
+        alt: dtc.label,
+        keyboard: true,
+      });
+      marker.bindPopup(
+        `<strong>${escapeHtml(dtc.label)}</strong><br>${escapeHtml(dtc.city)}<br>` +
+          `<a href="${escapeHtml(dtc.source)}" target="_blank" rel="noopener noreferrer">source</a>`
+      );
+      state.layers.dtc.addLayer(marker);
+    });
+  }
 
   function ensureMap() {
     if (state.initialized) return true;
@@ -76,21 +160,38 @@
         markerZoomAnimation: !reducedMotion(),
       }).setView([20, 0], 2);
 
-      L.tileLayer(OSM_TILE_URL, {
-        maxZoom: 19,
-        attribution: OSM_ATTRIBUTION,
-      }).addTo(map);
+      // Issue #72: a real Leaflet layer control (native UI, top-right by
+      // default) replaces the previous single hard-coded tile layer, built
+      // from the LEAFLET_BASEMAPS registry above so more basemaps can be
+      // added later without touching this function.
+      const baseLayers = {};
+      let defaultBaseLayer = null;
+      Object.keys(LEAFLET_BASEMAPS).forEach((name) => {
+        const def = LEAFLET_BASEMAPS[name];
+        const layer = L.tileLayer(def.url, Object.assign({}, def.options));
+        baseLayers[name] = layer;
+        if (name === "OpenStreetMap Standard") defaultBaseLayer = layer;
+        if (name === "Tracestrack Topo") state.tracestrackLayer = layer;
+      });
+      (defaultBaseLayer || baseLayers[Object.keys(baseLayers)[0]]).addTo(map);
+      if (state.tracestrackLayer) state.tracestrackLayer.options.key = tracestrackApiKey();
 
-      // Future-ready layer-group structure (Issue #69): only the two
-      // datasets that already exist (country aggregates, observed
-      // destination coordinates) are populated. Additional infrastructure
-      // datasets (Google/AWS/Azure/Cloudflare/CDN PoPs etc.), if they are
-      // ever added to the backend, can register another named L.layerGroup()
+      // Future-ready layer-group structure (Issue #69, extended by Issue
+      // #72's DTC pins): countries/destinations are the two datasets that
+      // already exist; dtc is a small additive, off-by-default overlay (not
+      // added to the map here, so its layer-control checkbox starts
+      // unchecked). Additional infrastructure datasets, if they are ever
+      // added to the backend, can register another named L.layerGroup()
       // here the same way, without replacing the map engine.
       state.layers = {
         countries: L.layerGroup().addTo(map),
         destinations: L.layerGroup(),
+        dtc: L.layerGroup(),
       };
+
+      const overlayLayers = { "Data Centers (beta)": state.layers.dtc };
+      L.control.layers(baseLayers, overlayLayers, { position: "topright", collapsed: true }).addTo(map);
+      renderDtcPins();
 
       map.on("zoomend moveend", () => {
         if (!mapLastPayload) return;
@@ -181,6 +282,7 @@
         title: `${c.country_name || c.country_code}: ${num(c.observation_count)} observations`,
         alt: c.country_name || c.country_code || "",
         keyboard: true,
+        zIndexOffset: selected ? 1000 : 0,
       });
       marker.on("click", () => mapSelectCountry(c.country_code));
       state.layers.countries.addLayer(marker);
@@ -261,6 +363,7 @@
         icon: bubbleIcon(size, color, selected),
         title: label,
         keyboard: true,
+        zIndexOffset: selected ? 1000 : 0,
       });
       marker.on("click", () => activateCluster(c, data, capabilities));
       state.layers.destinations.addLayer(marker);
@@ -359,4 +462,30 @@
   document.getElementById("map-reset-btn")?.addEventListener("click", () => {
     state.map?.setView([20, 0], 2);
   });
+
+  /* Issue #72: called by the "Tracestrack API key" input's change handler in
+   * the main inline <script> so pasting/editing a key updates the already-
+   * created Tracestrack base layer in place (via Leaflet's own {key} URL-
+   * template substitution) instead of requiring a reload. No-op if Leaflet
+   * never initialized or Tracestrack isn't in LEAFLET_BASEMAPS. */
+  window.mapUpdateTracestrackKey = function (key) {
+    if (!state.tracestrackLayer) return;
+    state.tracestrackLayer.options.key = key || "";
+    state.tracestrackLayer.redraw();
+  };
+
+  /* Issue #72: called by a double-click on a country row in the breakdown
+   * panel (app.py's renderMapBreakdown()) to additionally pan/zoom the real
+   * Leaflet viewport to that country's centroid -- centerZoom alone (passed
+   * on both single- and double-click, unchanged) only affects the legacy
+   * SVG renderer's own mapZoom/mapViewCenter state, never this map. A
+   * single click's selection/detail behavior is untouched; this only adds a
+   * viewport move on top of it. */
+  window.leafletFocusCountryOnMap = function (code) {
+    if (!state.map || !mapLastPayload) return;
+    const entity = (mapLastPayload.countries || []).find((c) => c.country_code === code);
+    if (!entity || !entity.centroid) return;
+    const [lat, lon] = entity.centroid;
+    state.map.setView([lat, lon], Math.max(state.map.getZoom(), 5), { animate: !reducedMotion() });
+  };
 })();

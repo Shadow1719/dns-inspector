@@ -6,7 +6,7 @@
 
 - Repository: `Shadow1719/dns-inspector`
 - Working branch: `dev`
-- Foundation version: `0.8.0`, current release: `0.8.5.15` (the `VERSION`
+- Foundation version: `0.8.0`, current release: `0.8.5.16` (the `VERSION`
   file is authoritative). The project stays in the `0.8.5.x` series
   deliberately until the UI/dashboard/operational work is fully resolved;
   0.8.6 is not to be started until that gate is explicitly lifted.
@@ -708,6 +708,58 @@ confirm a marker click and a breakdown-row click open the identical detail
 card, toggle Countries/Destinations mode, and confirm the reduced-motion
 preference disables Leaflet's zoom/pan animation.
 
+
+0.8.5.16 (Issue #72 follow-up) extends the 0.8.5.15 Leaflet map with country-
+list UX, a real basemap layer control, and an investigation into Destinations
+mode, without changing `/api/analytics/map`'s payload, the GeoIP lookup/
+storage architecture or the observed-DNS-destination semantics.
+`.leaflet-dns-marker-selected`'s previous single 2px white outline (reported
+as too subtle against a busy tile) is now a white-then-dark double ring plus
+a higher Leaflet `zIndexOffset`, legible against both light and dark tile
+imagery. A country row's single click keeps its existing Issue #63
+selection/detail behavior; a new double-click additionally pans/zooms the
+real Leaflet viewport to that country's centroid via
+`window.leafletFocusCountryOnMap()`, since the existing `centerZoom` option
+only ever drove the *legacy SVG renderer's* own `mapZoom`/`mapViewCenter`
+state, never Leaflet's independent viewport. `ensureMap()` now builds a real
+`L.control.layers()` from an extensible `LEAFLET_BASEMAPS` registry instead
+of one hard-coded OSM tile layer: OpenStreetMap Standard stays the default,
+and Tracestrack Topo is a second selectable basemap gated on a new
+client-side-only `tracestrackApiKey` preference (a personal Tracestrack key,
+free registration required) that updates the already-created layer in place
+via Leaflet's own `{key}` URL-template substitution -- no new backend
+secret-plumbing was added. A new additive, off-by-default "Data Centers
+(beta)" overlay layer (`state.layers.dtc`) plots a small, explicit,
+source-cited seed list of five major public cloud provider regions
+(`DTC_LOCATIONS` in `static/leaflet-map.js`) at city-level precision, per the
+issue's explicit instruction not to invent locations; it is a proof-of-
+concept seed, not comprehensive coverage. Destinations mode was investigated
+per the issue's request but deliberately not removed or replaced -- it
+answers a different question (real observed DNS traffic vs. known public
+infrastructure) than DTC pins do, and removing a working, data-backed mode
+needs its own explicit decision rather than folding into this pass; see
+`docs/LEAFLET_MAP.md` for the full write-up and the proposed smallest safe
+migration path if removal is still wanted later. Optional traffic/network
+arcs (curved lines from a "server public location" to destinations, colored
+by observed volume) were assessed and explicitly deferred with a written
+rationale rather than shipped half-working: this codebase has no existing
+concept of "the server's own public location" (by design -- no path makes a
+live outbound geolocation call, see `docs/GEOIP.md`), and no geodesic-arc
+renderer has been written or reviewed yet. New tests were added to
+`tests/test_map_leaflet_renderer.py`.
+**This session's sandbox could not execute `pytest`/`python` or make any
+outbound network request at all** (matching numerous 0.8.5.x hand-offs
+above) -- the Tracestrack tile URL/style token and every DTC seed-list
+coordinate are therefore unverified against their live/current sources and
+flagged as such in `docs/LEAFLET_MAP.md`; the change is otherwise verified
+by direct code inspection, with every string the new tests assert on
+independently grep-verified against the actual `app.py`/
+`static/leaflet-map.js` source. The real CI run (`pytest` + Docker build/
+health smoke) must confirm the full suite, and a manual browser pass
+(selected-marker contrast on both basemaps, double-click centroid focus, the
+native layer control switching basemaps, the DTC overlay toggle, and a real
+Tracestrack API key actually rendering tiles) is strongly recommended before
+merge.
 
 ## How to update this file
 

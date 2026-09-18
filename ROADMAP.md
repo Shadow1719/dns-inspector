@@ -338,8 +338,22 @@ scope decisions, and `CHANGELOG.md`/`docs/CURRENT_STATE.md` for the full
 `{ countries, destinations }` layer-group structure so future infrastructure-
 location datasets (Google/AWS/Azure/Cloudflare/CDN PoPs, a possible future
 `infrastructure_locations` table) can be added as additional layers later
-without replacing the map engine -- none of those datasets exist in the
+without replacing the map engine -- none of those datasets existed in the
 repository yet and none were added by this issue.
+
+0.8.5.16 (Issue #72 follow-up) used exactly that extension point: a small,
+explicit, source-cited seed list of major public cloud regions now plots as
+an additive, off-by-default "Data Centers (beta)" layer (`state.layers.dtc`
+in `static/leaflet-map.js`), and a real `L.control.layers()` basemap
+selector (OpenStreetMap Standard + Tracestrack Topo) replaced the single
+hard-coded OSM tile layer. This is a 5-entry proof of concept, not a
+comprehensive infrastructure-location dataset -- comprehensive
+Google/AWS/Azure/Cloudflare/CDN PoP coverage (and the optional traffic/
+network-arc overlay Issue #72 also explored, which needs a "server public
+location" concept this codebase deliberately does not have) remain
+unimplemented follow-ups. See `docs/LEAFLET_MAP.md`'s Issue #72 section for
+the full write-up, including why Destinations mode was investigated but not
+removed.
 
 ---
 

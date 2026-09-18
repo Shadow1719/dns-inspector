@@ -2,6 +2,44 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.16]
+Issue #72 follow-up on the 0.8.5.15 Leaflet map: the previous single 2px
+white selected-marker outline is now a white-then-dark double ring (plus a
+higher Leaflet `zIndexOffset`) that stays legible against both light and
+dark tile imagery. Double-clicking a country in the breakdown panel now
+additionally pans/zooms the real Leaflet viewport to that country's
+centroid via a new `window.leafletFocusCountryOnMap()`, while a single click
+keeps its existing Issue #63 selection/detail behavior unchanged. A real
+Leaflet layer control (`L.control.layers()`) replaces the single hard-coded
+OSM tile layer, offering OpenStreetMap Standard (default) and Tracestrack
+Topo (needs a personal API key, entered in a new client-side-only
+`tracestrackApiKey` preference field next to the other map controls) from
+an extensible `LEAFLET_BASEMAPS` registry; **the Tracestrack tile URL was
+not independently re-verified against Tracestrack's live documentation in
+this sandbox (no outbound network access)** and is a single overridable
+constant pending operator confirmation. A new additive, off-by-default "Data
+Centers (beta)" overlay layer plots a small, explicit, source-cited seed
+list of major public cloud regions (`DTC_LOCATIONS`) -- Destinations mode
+was investigated per the issue's request but deliberately **not** removed
+(it answers a different question -- real observed traffic vs. known public
+infrastructure -- and removing a working, data-backed mode needs its own
+sign-off); see `docs/LEAFLET_MAP.md` for the full write-up and the proposed
+smallest safe migration path. Optional traffic/network arcs (Section 4)
+were assessed and deferred with a written rationale (no existing "server
+public location" concept in this codebase, and no reviewed geodesic-arc
+renderer) rather than shipped half-working. `/api/analytics/map`'s payload,
+the GeoIP lookup/storage architecture and the observed-DNS-destination
+semantics are all unchanged. New tests added to
+`tests/test_map_leaflet_renderer.py`. **This session's sandbox could not
+execute `pytest`/`python` or make any outbound network request at all**
+(matching numerous prior 0.8.5.x hand-offs) -- verified by direct code
+inspection and by grep-checking every string the new tests assert on
+against the actual `app.py`/`static/leaflet-map.js` source. The real CI run
+must confirm the full suite, and a manual browser pass (selected-marker
+contrast on both basemaps, double-click centroid focus, the layer control
+switching basemaps, the DTC overlay toggle) is strongly recommended before
+merge.
+
 ## [0.8.5.15]
 Issue #69: the DNS Destinations map's renderer is now Leaflet with
 OpenStreetMap standard tiles as its real geographic viewport, superseding

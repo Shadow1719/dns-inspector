@@ -117,6 +117,108 @@ self-hosted or commercial tile source if warranted.
   dependency for a widget whose destination-point count is already bounded
   server-side (`GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT`, `GEOIP_MAP_DOMAIN_LIMIT`, etc.).
 
+## Issue #72 follow-up: country list UX, basemap layer control, DTC pins
+
+- **Selected-marker contrast.** The previous `.leaflet-dns-marker-selected`
+  style was a single 2px white outline, reported as too subtle to see
+  against a busy OSM/Tracestrack tile. It's now a white-then-dark double
+  ring plus a soft shadow (`box-shadow:0 0 0 3px #fff,0 0 0 6px #0b0f14,...`),
+  which stays legible against both light and dark tile imagery, and the
+  selected marker is drawn above its neighbors via a real Leaflet
+  `zIndexOffset`, not CSS `z-index` alone.
+- **Double-click to focus.** A single click on a country row in the
+  breakdown panel keeps its existing Issue #63 selection/detail behavior
+  unchanged. A **double**-click additionally pans/zooms the real Leaflet
+  viewport to that country's centroid via a new exported
+  `window.leafletFocusCountryOnMap(code)`, called from the row's `dblclick`
+  handler in `app.py`. This was necessary because `mapSelectCountry()`'s
+  existing `centerZoom` option only ever updates `mapZoom`/`mapViewCenter`,
+  the *legacy SVG renderer's* own pan/zoom state -- Leaflet owns its own
+  independent viewport and was never looking at those variables, which is
+  why the scope decision above ("breakdown click does not recenter Leaflet")
+  was correct for single-click but needed an explicit additional path for
+  the new double-click requirement.
+- **Basemap layer control.** `ensureMap()` now builds Leaflet's own native
+  `L.control.layers()` (a real, built-in layer-switcher UI in the map's
+  corner) from a small `LEAFLET_BASEMAPS` registry, instead of a single
+  hard-coded OSM tile layer. OpenStreetMap Standard remains the default,
+  always-available, no-key basemap. **Tracestrack Topo** is a second
+  selectable basemap; because it requires a personal Tracestrack API key
+  (free registration at <https://tracestrack.com/>) and DNS Inspector has no
+  existing backend secret-plumbing pattern for third-party map keys, the key
+  is a new plain client-side-only `dnsInspectorPrefs.tracestrackApiKey`
+  field (same architecture as every other map preference -- no new
+  persistence layer), entered via a "Tracestrack API key" text field next to
+  the other map controls. Leaflet's own `{key}` URL-template substitution
+  (`options.key`) reads it, and `window.mapUpdateTracestrackKey(key)`
+  updates the already-created layer in place when the field changes, so no
+  reload is required. **This session's sandbox had no outbound network
+  access to re-confirm Tracestrack's exact current tile URL path/style
+  token/file extension or attribution wording live** -- the same disclosed
+  limitation recorded against numerous other 0.8.5.x hand-offs in
+  `docs/CURRENT_STATE.md` (e.g. the DB-IP update URL templates). The URL
+  lives in one overridable constant, `TRACESTRACK_TILE_URL_TEMPLATE` in
+  `static/leaflet-map.js`, specifically so an operator/maintainer can
+  correct it without touching any other map code once confirmed against
+  Tracestrack's current documentation. `LEAFLET_BASEMAPS` is the extension
+  point for adding further basemaps later (Issue #72 Section 5).
+- **DTC / Data Centre pins (Section 3 investigation).** A new, additive,
+  off-by-default overlay layer (`state.layers.dtc`, toggled via the same
+  layer control's overlay checkbox, labeled "Data Centers (beta)") plots a
+  small, explicit, hand-maintained seed list (`DTC_LOCATIONS` in
+  `static/leaflet-map.js`) of major public cloud provider regions/PoPs at
+  city-level precision, each citing the provider's own public documentation
+  page as its source -- per the issue's explicit instruction not to invent
+  DTC locations. **This is a proof-of-concept seed list (5 entries), not a
+  claim of comprehensive coverage, and this session's sandbox had no
+  outbound network access to re-verify the cited entries live** -- an
+  operator/maintainer should confirm them against each cited source before
+  relying on this layer in production. This layer is completely independent
+  of `/api/analytics/map`, the GeoIP lookup/storage architecture and the
+  observed-DNS-destination semantics; it never touches Countries or
+  Destinations mode. It uses a visually distinct diamond marker
+  (`.leaflet-dtc-marker`) so the three datasets (countries, destinations,
+  DTC pins) are never confused with each other.
+- **Destinations mode: investigated, not removed.** The issue asked whether
+  Destinations mode (real observed destination coordinates, requiring an
+  optional city/coordinate GeoIP database) should be removed in favor of
+  DTC pins. Those are answering two different questions -- Destinations mode
+  shows *where DNS Inspector's own observed traffic actually resolved to*;
+  DTC pins show *where a small set of known public infrastructure is
+  located*, independent of any observed traffic -- so removing one is not a
+  substitute for the other. Destinations mode is also an existing,
+  presumably-in-use feature for any operator who already configured a city
+  GeoIP database (Issue #37/#39/#42/#52), and AGENTS.md's task discipline
+  ("do not invent architecture... report a mismatch rather than silently
+  choosing") means a removal is a decision that needs its own explicit
+  sign-off, not something to fold into this pass. **Smallest safe migration
+  path, if removal is still wanted**: add DTC pins first as a fully additive
+  layer (done here), let it run alongside Destinations mode for a release or
+  two, and only then decide whether to demote/hide Destinations mode behind
+  an explicit opt-in once real usage evidence (or its absence) is available
+  -- never a same-PR delete of a working, data-backed mode in favor of an
+  unverified static seed list. Countries mode, Destinations mode and
+  `/api/analytics/map`'s payload are all unchanged by this release.
+- **Traffic/network arcs: deferred.** Section 4 (curved traffic-volume
+  arcs from "the BEMO/server public location" to destination/DTC locations)
+  was not implemented this pass. It depends on a piece of data this codebase
+  does not currently have: DNS Inspector is self-hosted per-operator with no
+  existing concept of "the server's own public location" (no outbound
+  geolocation call is made anywhere in this codebase, by design -- see
+  `docs/GEOIP.md`'s "no path ever makes a live GeoIP network request"
+  principle) -- inventing one would mean either a new outbound network call
+  every operator would need to opt into, or a guessed/hard-coded origin,
+  neither of which is a small, safe addition. It also depends on the DTC
+  layer above maturing past a 5-entry proof of concept, and on a real
+  geodesic-arc renderer (great-circle waypoints reprojected correctly under
+  Leaflet's own pan/zoom, most reliably via the `Leaflet.Geodesic` plugin or
+  an equivalent hand-rolled implementation) that has not been written or
+  reviewed. Rather than ship a partial/guessed version, this is recorded
+  here as a follow-up recommendation for its own dedicated issue, matching
+  this project's established pattern of deferring speculative,
+  rendering-sensitive features with a written rationale (e.g. 0.8.6's
+  heatmap mode, 0.8.5.14's full tile-source abstraction).
+
 ## Verification status
 
 **This implementation's sandbox could not execute `pytest`/`python` or make
