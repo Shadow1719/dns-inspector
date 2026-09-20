@@ -198,6 +198,10 @@ last_ingest_at = 0.0
 neighbors_lock = threading.Lock()
 neighbors_cache = {}
 neighbors_mtime = None
+#: mtime of neighbors.txt as of the last successful `reconcile_neighbors()`
+#: full pass (Issue #73) -- lets that function skip its O(all DNS history)
+#: table scan on ticks where neighbors.txt hasn't changed at all.
+_neighbors_reconciled_mtime = None
 enrichment_lock = threading.Lock()
 enrichment_refreshing = set()
 
@@ -6527,9 +6531,31 @@ def client_display(c, device_key, count):
 
 
 def reconcile_neighbors():
-    """Merge legacy IP-keyed devices into MAC-keyed devices using neighbors.txt."""
+    """Merge legacy IP-keyed devices into MAC-keyed devices using neighbors.txt.
+
+    Issue #73: `ingest()` calls this once per poll cycle (every `POLL_SECONDS`,
+    forever), but the full `domains`/`devices` table scan below -- a
+    `fetchall()` of every historical row plus a JSON decode/re-encode of each
+    row's `clients_json` -- only has anything to migrate when neighbors.txt
+    itself has changed since the last pass: `extract_identity()` already
+    resolves a query's device key straight to `"mac:"` via
+    `neighbor_mac_for_ips()` at ingestion time whenever neighbors.txt already
+    covers that IP, so a domain can only pick up a new `"ip:"`-keyed client
+    while that IP is still missing from the current neighbors.txt snapshot.
+    Re-running the full scan unconditionally therefore re-read and
+    re-JSON-decoded an ever-growing, never-pruned `domains` table on every
+    single tick regardless of DNS history size -- the real long-run RAM
+    growth this issue reported. Skipping the scan whenever the neighbors
+    mapping is unchanged since the last successful reconciliation keeps
+    migration timing identical (it still runs the same poll cycle a changed
+    neighbors.txt is first observed) while making steady-state cost
+    independent of how much DNS history has accumulated.
+    """
+    global _neighbors_reconciled_mtime
     neighbors = load_neighbors()
     if not neighbors:
+        return 0
+    if neighbors_mtime is not None and neighbors_mtime == _neighbors_reconciled_mtime:
         return 0
     changed = 0
     now = utcnow()
@@ -6595,6 +6621,7 @@ def reconcile_neighbors():
             ips = [r[0] for r in c.execute("SELECT ip FROM device_ips WHERE device_key=? ORDER BY last_seen DESC LIMIT 6", (dkey,)).fetchall()]
             enrich_device_network_identity(c, dkey, ips, dmac, dhost)
         c.commit()
+    _neighbors_reconciled_mtime = neighbors_mtime
     if changed:
         print(f"Reconciled {changed} legacy IP device(s) using neighbors.txt.", flush=True)
     return changed
@@ -7321,7 +7348,19 @@ def _observability_safe_config():
 @app.route('/debug/bundle')
 def debug_bundle():
     try:
-        runtime = _observability_payload()
+        # Issue #73: the full `_observability_payload()` (via `_memory_diagnostics()`)
+        # and `_deep_debug_memory_snapshot_safe()` each independently call
+        # `tracemalloc.take_snapshot()` and `gc.get_objects()` -- both scale with
+        # however many allocations/objects are currently live in the process, so
+        # calling both back-to-back in one request roughly doubled an already
+        # expensive snapshot for no new information: `memory-deep.json`'s own
+        # `tracemalloc`/`python_object_types` collectors already report a
+        # superset (full traceback-grouped top 40, complete GC type counts) of
+        # what `_memory_diagnostics()`'s lineno-grouped top 25/`large_globals`
+        # scan would add. `runtime.json` therefore uses the pre-memory-
+        # diagnostics payload, and the deep tracemalloc/GC snapshot is taken
+        # exactly once per bundle via `deep_memory` below.
+        runtime = _original_observability_payload()
         deep_memory = _deep_debug_memory_snapshot_safe()
         bundle = io.BytesIO()
         with zipfile.ZipFile(bundle, 'w', compression=zipfile.ZIP_DEFLATED) as z:
