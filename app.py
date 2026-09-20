@@ -7,6 +7,7 @@ import json
 import os
 import re
 import queue
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -539,10 +540,10 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
 .settings-kv span{font-family:var(--font-mono)}
 .settings-foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--border)}
 .settings-restart-block{margin-top:16px;padding-top:14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px;align-items:flex-start}
-#system-restart-btn{border-color:var(--sem-crit);color:var(--sem-crit);background:transparent}
-#system-restart-btn:hover{background:var(--sem-crit);color:#fff}
-#system-restart-btn.confirming{background:var(--sem-crit);color:#fff}
-#system-restart-btn:disabled{opacity:.6;cursor:wait;background:transparent;color:var(--sem-crit)}
+#system-restart-btn,#system-stop-btn{border-color:var(--sem-crit);color:var(--sem-crit);background:transparent}
+#system-restart-btn:hover,#system-stop-btn:hover{background:var(--sem-crit);color:#fff}
+#system-restart-btn.confirming,#system-stop-btn.confirming{background:var(--sem-crit);color:#fff}
+#system-restart-btn:disabled,#system-stop-btn:disabled{opacity:.6;cursor:wait;background:transparent;color:var(--sem-crit)}
 .settings-restart-note{color:var(--text-tertiary);font-size:.78rem}
 @media(max-width:640px){.settings-body{flex-direction:column;max-height:70vh}.settings-nav{flex-direction:row;flex-wrap:wrap;flex:0 0 auto;border-right:0;border-bottom:1px solid var(--border)}.settings-row{flex-direction:column;align-items:flex-start}.settings-control{justify-content:flex-start}}
 
@@ -925,6 +926,10 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
         <div class="settings-restart-block">
           <button type="button" id="system-restart-btn">Restart DNS Inspector</button>
           <span class="settings-restart-note" id="system-restart-note">Restarts the running application/container. In-progress requests are dropped; persisted data in <code>/data</code> is unaffected.</span>
+        </div>
+        <div class="settings-restart-block">
+          <button type="button" id="system-stop-btn">Stop Application</button>
+          <span class="settings-restart-note" id="system-stop-note">Gracefully shuts down the running application/container. The web UI will be unavailable until it is started again manually; persisted data in <code>/data</code> is unaffected.</span>
         </div>
       </section>
       <section class="settings-section" data-settings-panel="about">
@@ -3010,6 +3015,79 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       clearTimeout(confirmTimer);
       awaitingConfirm = false;
       triggerRestart();
+    });
+  })();
+
+  /* ---- Stop control (Issue #78) ----
+     Same two-step in-panel confirm pattern as the Restart control above, but
+     Stop performs a graceful shutdown (a self-delivered SIGTERM, not a hard
+     kill -- see `_perform_self_stop()`/`POST /api/system/stop`) and the
+     process does not come back on its own, so unlike Restart there is no
+     waitForServerAndReload() poll loop here: once the request is accepted,
+     the control just reports that the application has stopped and the web
+     UI will stay unavailable until the container/application is started
+     again. */
+  (function wireStopControl(){
+    const btn = document.getElementById('system-stop-btn');
+    const note = document.getElementById('system-stop-note');
+    if (!btn) return;
+    const originalLabel = btn.textContent;
+    const originalNote = note ? note.textContent : '';
+    let confirmTimer = null;
+    let awaitingConfirm = false;
+
+    function resetButton(){
+      awaitingConfirm = false;
+      confirmTimer = null;
+      btn.classList.remove('confirming');
+      btn.textContent = originalLabel;
+      if (note) note.textContent = originalNote;
+    }
+
+    async function triggerStop(){
+      btn.disabled = true;
+      btn.classList.remove('confirming');
+      btn.textContent = 'Stopping…';
+      if (note) note.textContent = 'Stopping DNS Inspector…';
+      try{
+        const r = await fetch('/api/system/stop', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({confirm: true}),
+        });
+        if (r.status === 409){
+          if (note) note.textContent = 'A restart or stop is already in progress.';
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          return;
+        }
+        if (!r.ok){
+          if (note) note.textContent = 'Stop request failed. Check the server logs.';
+          btn.disabled = false;
+          btn.textContent = originalLabel;
+          return;
+        }
+      }catch(e){
+        // The connection can legitimately drop once the process actually
+        // receives the signal and exits -- that is expected, not a failure.
+      }
+      btn.textContent = 'Stopped';
+      if (note) note.textContent = 'DNS Inspector has been stopped. The web UI will stay unavailable until the container/application is started again.';
+    }
+
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      if (!awaitingConfirm){
+        awaitingConfirm = true;
+        btn.classList.add('confirming');
+        btn.textContent = 'Click again to confirm stop';
+        if (note) note.textContent = 'This gracefully shuts down the running application/container. The web UI will be unavailable until it is started again. Click again within 5 seconds to confirm.';
+        confirmTimer = setTimeout(resetButton, 5000);
+        return;
+      }
+      clearTimeout(confirmTimer);
+      awaitingConfirm = false;
+      triggerStop();
     });
   })();
 
@@ -7443,7 +7521,11 @@ def debug_bundle():
 # listening socket), and `/data` -- a bind-mounted volume the process itself
 # never touches -- is completely unaffected.
 RESTART_DELAY_SECONDS = max(0.1, float(os.getenv("RESTART_DELAY_SECONDS", "0.75")))
-_restart_lock = threading.Lock()
+# Restart and Stop (below) both act on this same process's lifecycle, so they
+# share one lock -- guarding both `_restart_in_progress` and
+# `_stop_in_progress` -- rather than each taking their own lock and risking a
+# lock-ordering deadlock between two concurrent requests.
+_lifecycle_lock = threading.Lock()
 _restart_in_progress = False
 
 
@@ -7459,7 +7541,7 @@ def _perform_self_restart():
         os.execv(sys.executable, [sys.executable] + sys.argv)
     except OSError as e:
         print(f"Self-restart failed: {e!r}", flush=True)
-        with _restart_lock:
+        with _lifecycle_lock:
             _restart_in_progress = False
 
 
@@ -7468,18 +7550,76 @@ def api_system_restart():
     """Restart control backing the Settings > System panel's Restart button.
     Requires an explicit `{"confirm": true}` JSON body -- an accidental or
     blind POST (a health checker, a replayed request) can never trigger a
-    real restart -- and rejects a second request while one is already in
-    flight instead of queuing or double-executing it."""
+    real restart -- and rejects a second request while a restart or a Stop
+    (below) is already in flight instead of queuing or double-executing it,
+    since both ultimately act on the same process lifecycle."""
     global _restart_in_progress
     payload = request.get_json(silent=True) or {}
     if payload.get('confirm') is not True:
         return jsonify({'ok': False, 'error': 'restart requires {"confirm": true} in the request body'}), 400
-    with _restart_lock:
+    with _lifecycle_lock:
         if _restart_in_progress:
             return jsonify({'ok': False, 'error': 'a restart is already in progress'}), 409
+        if _stop_in_progress:
+            return jsonify({'ok': False, 'error': 'a stop is already in progress'}), 409
         _restart_in_progress = True
     threading.Thread(target=_perform_self_restart, daemon=True, name='self-restart').start()
     return jsonify({'ok': True, 'status': 'restarting'}), 202
+
+
+# === Stop control (Issue #78) ===
+# Complementary to the Restart control above: a graceful application
+# shutdown/termination rather than a hard kill, and rather than a periodic
+# restart/watchdog/RSS workaround. The container's own documented lifecycle
+# already treats SIGTERM as the graceful-stop signal (see the Dockerfile --
+# `docker stop`/an orchestrator sends SIGTERM to PID 1, which is this same
+# `python /app/app.py` process, with no custom handler installed, so the
+# default disposition -- immediate termination, not SIGKILL -- applies); this
+# control reuses that exact same lifecycle path by having the process send
+# itself that signal, instead of inventing a second shutdown mechanism.
+# Unlike Restart, the process does not come back on its own: the container/
+# application must be started again for the web UI to become reachable.
+STOP_DELAY_SECONDS = max(0.1, float(os.getenv("STOP_DELAY_SECONDS", "0.75")))
+_stop_in_progress = False
+
+
+def _perform_self_stop():
+    """Runs in its own daemon thread, started only after `api_system_stop`
+    has already built its HTTP response. The short delay gives the
+    single-threaded dev server time to flush that response over the socket
+    before the process is signaled to terminate -- without it, the client
+    could see the connection drop before ever learning the stop was
+    accepted."""
+    global _stop_in_progress
+    time.sleep(STOP_DELAY_SECONDS)
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+    except OSError as e:
+        print(f"Self-stop failed: {e!r}", flush=True)
+        with _lifecycle_lock:
+            _stop_in_progress = False
+
+
+@app.route('/api/system/stop', methods=['POST'])
+def api_system_stop():
+    """Stop control backing the Settings > System panel's Stop Application
+    button. Requires an explicit `{"confirm": true}` JSON body -- an
+    accidental or blind POST (a health checker, a replayed request) can
+    never trigger a real shutdown -- and rejects a second request while a
+    stop or restart is already in flight instead of queuing or
+    double-executing it."""
+    global _stop_in_progress
+    payload = request.get_json(silent=True) or {}
+    if payload.get('confirm') is not True:
+        return jsonify({'ok': False, 'error': 'stop requires {"confirm": true} in the request body'}), 400
+    with _lifecycle_lock:
+        if _stop_in_progress:
+            return jsonify({'ok': False, 'error': 'a stop is already in progress'}), 409
+        if _restart_in_progress:
+            return jsonify({'ok': False, 'error': 'a restart is already in progress'}), 409
+        _stop_in_progress = True
+    threading.Thread(target=_perform_self_stop, daemon=True, name='self-stop').start()
+    return jsonify({'ok': True, 'status': 'stopping'}), 202
 
 
 # === APPLICATION ENTRY POINT (0.8.0) ===

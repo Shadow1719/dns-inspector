@@ -877,6 +877,48 @@ next investigation should capture an actual `tracemalloc`/`objgraph` snapshot
 diff from the live container (impossible from this sandbox) rather than
 re-deriving further hypotheses from static code reading alone.
 
+0.8.5.18 (Issue #78) adds a "Stop Application" control to Settings > System,
+alongside the existing Restart control (Issue #43/0.8.5.6), without changing
+Restart's own route/behaviour or any background worker. Stop performs a real
+graceful shutdown rather than a hard kill: `_perform_self_stop()` (`app.py`)
+has the process send itself `SIGTERM` via `os.kill(os.getpid(), signal.SIGTERM)`
+-- reusing the container's own existing lifecycle contract, since `docker
+stop`/an orchestrator already sends SIGTERM to PID 1 (the same
+`python /app/app.py` process, per the Dockerfile) and no custom signal
+handler is installed anywhere in `app.py`, so the default disposition
+(immediate termination, not `SIGKILL`) already applies -- rather than
+inventing a second shutdown mechanism, a periodic restart, a watchdog, or an
+RSS workaround. `POST /api/system/stop` requires an explicit
+`{"confirm": true}` JSON body (matching `/api/system/restart`'s own
+contract) and rejects a second stop-or-restart request while one is already
+in flight (409); Restart and Stop now share one lock, `_lifecycle_lock`
+(replacing Restart's previous standalone `_restart_lock`), guarding both
+`_restart_in_progress` and `_stop_in_progress` so the two controls can
+reject each other without two separate locks risking a lock-ordering
+deadlock between concurrent requests. The Settings > System button uses the
+same two-step in-panel confirm pattern as Restart (no native `confirm()`
+dialog), but -- unlike Restart -- does not poll `/health` and reload
+afterwards, since a stopped process is not expected to come back on its own;
+the confirmation copy and the button's final state both say the web UI will
+stay unavailable until the container/application is started again. New
+tests: `tests/test_system_stop.py` (UI presence, confirmation requirement,
+the exact `os.kill(pid, SIGTERM)` call, duplicate-request rejection, the new
+restart/stop mutual exclusion in both directions, and `_stop_in_progress`
+recovery if signaling the process fails), plus two new cases in
+`tests/test_system_restart.py`-equivalent coverage for restart-vs-stop
+mutual exclusion.
+**This hand-off's sandbox could not execute `pytest`/`python` at all**
+(matching essentially every 0.8.5.x hand-off above) -- the change is
+verified by direct code inspection (tracing every reference to the renamed
+`_lifecycle_lock`, confirming no other code referenced the removed
+`_restart_lock`) and a whole-file brace-balance count against the pre-edit
+baseline. The real CI run (`pytest` + Docker build/health smoke) must
+confirm the full suite before merge, and an operator should confirm in a
+real deployment that `POST /api/system/stop` followed by a `docker
+logs`/process-exit check actually terminates the container the same way
+`docker stop` already does, since this sandbox could not start the real
+Flask dev server to observe a live SIGTERM termination end-to-end.
+
 ## How to update this file
 
 Update this document when a change materially alters the project's current architecture, active development state, or important known constraints. Do not turn it into a changelog or duplicate the source code.

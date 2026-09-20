@@ -2,6 +2,44 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.18]
+Issue #78: a "Stop Application" control in Settings > System, alongside the
+existing Restart control (Issue #43/0.8.5.6). Stop performs a graceful
+application shutdown -- the process sends itself `SIGTERM`, the same signal
+`docker stop`/an orchestrator already sends to PID 1 and the container has
+no custom handler installed for, so the default disposition terminates the
+process -- rather than a hard kill (`SIGKILL`/`os._exit`), and rather than a
+periodic restart/watchdog/RSS workaround. Unlike Restart, the process does
+not come back on its own: the web UI stays unavailable until the
+container/application is started again, which the confirmation copy states
+explicitly.
+
+- **Added:** `POST /api/system/stop`, requiring an explicit
+  `{"confirm": true}` JSON body (an accidental or blind POST, e.g. a health
+  checker or replayed request, can never trigger a real shutdown) and
+  rejecting a second stop-or-restart request while one is already in
+  flight (409) instead of queuing or double-executing it.
+  `_perform_self_stop()` runs in its own daemon thread, delayed
+  (`STOP_DELAY_SECONDS`, default 0.75s) so the single-threaded dev server
+  can flush the HTTP response before the process is signaled.
+- **Added:** a "Stop Application" button in Settings > System, next to
+  Restart, using the same two-step in-panel confirm pattern (no native
+  `confirm()` dialog). Unlike Restart's control, it does not poll `/health`
+  and reload afterwards, since the process is not expected to come back on
+  its own.
+- **Changed:** Restart and Stop now share one lock (`_lifecycle_lock`)
+  guarding both `_restart_in_progress` and `_stop_in_progress`, so a restart
+  request is rejected while a stop is in flight and vice versa, without two
+  separate locks risking a lock-ordering deadlock between concurrent
+  requests.
+- **Added:** `tests/test_system_stop.py`, covering the UI control's
+  presence, the confirmation requirement, the exact `os.kill(pid, SIGTERM)`
+  call, duplicate-request rejection, the new restart/stop mutual exclusion,
+  and recovery of `_stop_in_progress` if signaling the process fails.
+- **Not changed:** the Restart control's own behaviour/route
+  (`/api/system/restart`, `_perform_self_restart()`), background workers,
+  and every other lifecycle/observability path.
+
 ## [0.8.5.17]
 Issue #76: a second, independent long-run RAM growth fix on top of Issue
 #73/0.8.5.16, after real DEV evidence showed ~3.5 GB of RSS growth in ~35
