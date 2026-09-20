@@ -708,6 +708,98 @@ confirm a marker click and a breakdown-row click open the identical detail
 card, toggle Countries/Destinations mode, and confirm the reduced-motion
 preference disables Leaflet's zoom/pan animation.
 
+**Documentation gap noted, not fixed as part of this entry:** `7567baf`
+("fix: constrain DNS map country breakdown (#71)"), merged to `dev` after
+0.8.5.15/Issue #69 above, has no corresponding `CURRENT_STATE.md` entry or
+`VERSION` bump of its own; this hand-off bumps `VERSION` from the pre-existing
+`0.8.5.15` straight to `0.8.5.16` rather than guessing at an intermediate
+number that was never recorded.
+
+0.8.5.16 (Issue #73) fixes two separate, code-confirmed causes of long-run
+RAM growth ("~240 MB short-run baseline growing to ~17 GB after ~12h of
+normal runtime", plus a further "~5 GB" transient spike specifically from
+Generate Debug Bundle) reported against a real DEV container. Both root
+causes were identified by reading the actual `dev` code paths the symptoms
+implicate, not by guessing or by simply capping/restarting the process.
+
+**Normal-runtime growth:** `ingest()` called `reconcile_neighbors()`
+unconditionally at the end of *every* poll cycle (every `POLL_SECONDS`,
+default 10s, for the life of the process). `reconcile_neighbors()`'s own
+domain-side pass does a full `SELECT domain,clients_json FROM domains`
+`fetchall()` -- every historical row, no `LIMIT` -- and JSON-decodes/re-
+encodes each one, looking for legacy `"ip:"`-keyed clients to migrate to a
+`"mac:"` key. `domains` is a plain persistent table with no pruning (see the
+0.8.5.14/Issue #63 entry above), so this full-table JSON scan's cost grows
+with total DNS history and it never stops running: over a busy 12h period
+that is thousands of repeated large-temporary-allocation passes over an
+ever-larger table on a background thread, which is exactly the class of
+workload that inflates long-run RSS in CPython through allocator/arena
+fragmentation even without a genuine reference leak -- worsened further by
+`MEMORY_DIAGNOSTICS_ENABLED` defaulting to on, since tracemalloc's own
+bookkeeping scales with however many of those allocations are alive at any
+given instant. Critically, this full scan very rarely had anything to do:
+`extract_identity()` already resolves a query's device key straight to
+`"mac:..."` via `neighbor_mac_for_ips()` at ingestion time whenever
+neighbors.txt already covers that IP, so a domain can only pick up a fresh
+`"ip:"`-keyed client while that IP is still missing from the *current*
+neighbors.txt snapshot -- there is nothing new to migrate between two calls
+where neighbors.txt itself hasn't changed. `reconcile_neighbors()` now
+tracks the neighbors.txt mtime it last successfully reconciled against
+(`_neighbors_reconciled_mtime`) and returns immediately, before touching the
+database at all, whenever that mtime is unchanged -- collapsing the
+steady-state cost from "every ~10s, forever, scaling with all DNS history"
+to "once, the poll cycle after neighbors.txt actually changes" (in practice
+about once a day, per the file's own "daily TrueNAS IP->MAC snapshot"
+comment), with migration timing otherwise unchanged. `refresh_runtime_clients()`
+was inspected and left alone: it scans `client_cache`, which is bounded by
+the number of distinct clients AdGuard has ever reported, not by DNS/domain
+history.
+
+**Debug Bundle transient spike:** `/debug/bundle` built `runtime.json` from
+`_observability_payload()` (which, since the memory-diagnostics extension,
+always runs `_memory_diagnostics()`) *and* `memory-deep.json` from
+`_deep_debug_memory_snapshot_safe()` -- and both independently called
+`tracemalloc.take_snapshot()` (cost proportional to however many allocations
+are currently traced -- unbounded by design, tracemalloc keeps one traceback
+per currently-live traced block) and `gc.get_objects()` (cost proportional to
+however many objects are currently live), back to back, in the same request.
+`memory-deep.json`'s own `tracemalloc`/`python_object_types` collectors
+already report a superset (full traceback-grouped top 40, complete GC
+type/count breakdown) of what `_memory_diagnostics()`'s lineno-grouped top
+25/`large_globals` scan added, so the second pair of snapshots was pure
+duplicate cost with no new information -- doubling the bundle's own peak
+transient memory use for nothing. `debug_bundle()` now builds `runtime.json`
+from the pre-memory-diagnostics `_original_observability_payload()` instead,
+so each of `tracemalloc.take_snapshot()`/`gc.get_objects()` runs exactly once
+per bundle; the bundle's actual diagnostic content is unchanged (still the
+same `manifest.txt`/`runtime.json`/`memory-deep.json`/`config-safe.json`/
+`logs-note.txt`/`storage.json` members), just without doing the same two
+expensive full-process scans twice.
+
+Both fixes are scoped exactly to the confirmed root causes: no polling
+cadence, cache size, GeoIP/enrichment/HTTP-session behaviour, or Issue #61
+polling protection (`AbortController`/monotonic-sequence/in-flight guard/
+fingerprint skip on `/api/analytics` and `/api/analytics/map`) was touched.
+New tests: `tests/test_reconcile_neighbors_scan_bound.py` (pins that a
+second `reconcile_neighbors()` call with an unchanged neighbors.txt performs
+no domain migration at all, and that a genuine neighbors.txt change still
+triggers one), `tests/test_debug_bundle_memory_spike.py` (pins that
+`/debug/bundle` calls `tracemalloc.take_snapshot()`/`gc.get_objects()`
+exactly once each, and that `runtime.json` no longer carries a duplicate
+`memory_diagnostics` block).
+**This hand-off's sandbox could not execute `pytest`/`python` at all**
+(matching essentially every 0.8.5.x hand-off above, e.g. Issues #44/#50/#52/
+#56/#61/#63/#69) -- the change is verified by direct code inspection: tracing
+every caller of `reconcile_neighbors()` and confirming `extract_identity()`'s
+ingestion-time neighbor resolution makes the mtime-gate safe, tracing every
+caller of `tracemalloc.take_snapshot()`/`gc.get_objects()` reachable from
+`/debug/bundle` before and after the change, and a full manual re-read of the
+edited functions for brace/indentation/control-flow correctness. The real CI
+run (`pytest` + Docker build/health smoke) must confirm the full suite, and
+an operator should re-check real container RSS over a comparable 12h+ window
+before the measured RAM reduction this issue asks for is treated as
+confirmed rather than a code-inspection-only claim.
+
 
 ## How to update this file
 
