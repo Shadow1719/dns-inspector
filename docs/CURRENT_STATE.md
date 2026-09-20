@@ -808,6 +808,75 @@ before the measured RAM reduction this issue asks for is treated as
 confirmed rather than a code-inspection-only claim.
 
 
+0.8.5.17 (Issue #76) is a second-stage fix for the long-run RAM growth Issue
+#73/PR #74 (0.8.5.16) did not fully resolve: real DEV evidence on
+`bafd5dd`/0.8.5.16 still showed roughly 3.5 GB of RSS growth in ~35 minutes of
+normal (non-debug-bundle) runtime. `reconcile_neighbors()`'s mtime-gate from
+0.8.5.16 was re-inspected against the current code and is correct as written
+(a stable `neighbors.txt` mtime does make it return immediately without
+touching the database), so this release looked for a second, independent
+cause rather than assuming that fix was wrong.
+
+Every module-level mutable container in `app.py` was enumerated by hand
+(`neighbors_cache`, `enrichment_refreshing`, `_status_inflight`,
+`_enrich_inflight`, `_geoip_cache`/`_geoip_cache_order`,
+`_geoip_city_cache`/`_geoip_city_cache_order`, `_enrichment_queued`,
+`_enrichment_retry_until`, `_enrichment_retry_loaded`). All but the last two
+are already either a bounded FIFO (the GeoIP lookup caches, capped by
+`GEOIP_CACHE_MAX_ENTRIES`/`GEOIP_CITY_CACHE_MAX_ENTRIES`) or an add/discard
+pair that never outlives a single in-flight lookup. `_enrichment_retry_until`
+(domain -> next-allowed-retry timestamp) and `_enrichment_retry_loaded`
+(domains whose retry state has been read from the persistent
+`enrichment_attempts` table at least once) had no eviction at all:
+`_enrichment_retry_allowed()`/`_mark_enrichment_attempt()`, called from
+`_queue_domain_enrichment()` for every domain `ingest()` discovers as new
+(plus every domain a user opens the detail page for), added an entry and
+never removed it, growing both structures for the entire lifetime of the
+process by one entry per distinct domain ever seen -- exactly the "global/
+module-level ... caches ... that can grow with query volume" pattern the
+issue asked to look for, and a plausible driver on a busy network where
+ad/tracking infrastructure frequently mints a unique subdomain per request
+specifically to defeat blocklists and caching. `_bound_enrichment_retry_cache()`
+now evicts the oldest tracked domain once a new shared FIFO
+(`_enrichment_retry_order`) exceeds `ENRICHMENT_RETRY_CACHE_MAX_ENTRIES`
+(default 8192, same default/env-var convention as
+`GEOIP_CACHE_MAX_ENTRIES`) -- the identical bounding pattern the GeoIP lookup
+caches already used elsewhere in this file. An evicted domain is simply
+re-read from `enrichment_attempts` on its next check, so eviction changes
+memory bound only, never which domains are actually allowed to retry; no
+enrichment scheduling/backoff timing, queue, or worker behaviour changed.
+
+**Scope note:** every other candidate the issue's checklist named was
+inspected and ruled out on this pass without code changes: `fetch_querylog()`
+is bounded to 500 entries per poll; `refresh_runtime_clients()` scans
+`client_cache`, bounded by distinct-client count, not DNS history;
+`geoip_map_payload()` is bounded to `GEOIP_MAP_DOMAIN_LIMIT` domains and
+cached for `GEOIP_MAP_CACHE_SECONDS`; `_schedule_adguard_status()` explicitly
+bounds concurrent status-refresh threads via a semaphore plus an in-flight
+set; `_status_executor`/`_enrichment_worker`/`_ip_ping_worker`/
+`_device_ip_cleanup_worker`/`geoip_auto_update_worker` were all inspected and
+do not perform an unbounded per-poll scan. `MEMORY_DIAGNOSTICS_ENABLED`
+defaulting to on (tracemalloc tracing every allocation for the life of the
+process) was also inspected: it adds real per-allocation bookkeeping overhead
+but is not itself a growing collection, and `/api/observability`'s
+`_memory_diagnostics()` already discards its snapshot immediately after each
+call (0.8.5.16 already deduplicated the debug-bundle path's own double
+snapshot). **This hand-off's sandbox could not execute `pytest`/`python` at
+all** (matching essentially every 0.8.5.x hand-off above) -- the change is
+verified by direct code inspection and manual dry-run tracing of the new
+test's control flow against the edited functions, not an actual local test
+run. New tests: `tests/test_enrichment_retry_cache_bound.py`. **The real CI
+run (`pytest` + Docker build/health smoke) must confirm the full suite, and
+an operator should re-check real container RSS over a comparable 35+ minute
+window of normal runtime before the measured RAM reduction this issue asks
+for is treated as confirmed** -- this fix removes a genuine, previously
+undocumented unbounded growth path, but this hand-off cannot prove by itself
+that it fully accounts for the entire previously-observed ~100 MB/min rate;
+if real-DEV evidence after this ships still shows comparable growth, the
+next investigation should capture an actual `tracemalloc`/`objgraph` snapshot
+diff from the live container (impossible from this sandbox) rather than
+re-deriving further hypotheses from static code reading alone.
+
 ## How to update this file
 
 Update this document when a change materially alters the project's current architecture, active development state, or important known constraints. Do not turn it into a changelog or duplicate the source code.
