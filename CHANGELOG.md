@@ -2,6 +2,30 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [0.8.5.17]
+Issue #76: a second, independent long-run RAM growth fix on top of Issue
+#73/0.8.5.16, after real DEV evidence showed ~3.5 GB of RSS growth in ~35
+minutes of normal runtime even with that fix in place. `reconcile_neighbors()`'s
+mtime-gate was re-verified and is correct; the actual second cause was
+`_enrichment_retry_until`/`_enrichment_retry_loaded`, two module-level
+dict/set caches that grew by one entry per distinct domain ever seen, for
+the life of the process, with no eviction. See `docs/CURRENT_STATE.md` for
+the full root-cause writeup.
+
+- **Fixed:** `_enrichment_retry_until`/`_enrichment_retry_loaded` are now
+  bounded to `ENRICHMENT_RETRY_CACHE_MAX_ENTRIES` (default 8192) via a new
+  `_bound_enrichment_retry_cache()` FIFO eviction helper, the same pattern
+  already used by `_geoip_cache`/`_geoip_city_cache`. An evicted domain is
+  simply re-read from the persistent `enrichment_attempts` table on its next
+  check, so enrichment retry/backoff timing is unchanged.
+- **Added:** `tests/test_enrichment_retry_cache_bound.py`, pinning both the
+  bound itself and that eviction never lets a domain bypass its real,
+  persisted retry-until timestamp.
+- **Not changed:** ingestion, enrichment worker/queue behaviour, GeoIP/map
+  caches, and every other background worker were inspected against the
+  issue's checklist and ruled out on this pass; see `docs/CURRENT_STATE.md`
+  for the full list of what was checked.
+
 ## [0.8.5.15]
 Issue #69: the DNS Destinations map's renderer is now Leaflet with
 OpenStreetMap standard tiles as its real geographic viewport, superseding

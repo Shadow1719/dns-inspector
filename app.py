@@ -95,6 +95,14 @@ NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "4320"))  # 180 days
 RDAP_CACHE_HOURS = int(os.getenv("RDAP_CACHE_HOURS", "720"))  # 30 days
 DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "240"))  # 10 days
 ENRICHMENT_RETRY_HOURS = max(24.0, float(os.getenv("ENRICHMENT_RETRY_HOURS", "24")))
+# Issue #76: `_enrichment_retry_until`/`_enrichment_retry_loaded` are an
+# in-memory front-cache over the persistent `enrichment_attempts` table, keyed
+# by every domain `_queue_domain_enrichment()` has ever been asked about (every
+# newly-discovered domain from `ingest()`, plus every domain a user opens the
+# detail page for). Unlike every other in-process cache in this module, that
+# cache had no eviction at all, so it grew for the lifetime of the process by
+# one entry per distinct domain ever seen -- see the FIFO bound below.
+ENRICHMENT_RETRY_CACHE_MAX_ENTRIES = max(256, int(os.getenv("ENRICHMENT_RETRY_CACHE_MAX_ENTRIES", "8192")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
 # GeoIP is always a local/offline lookup against an operator-supplied CIDR
@@ -5612,6 +5620,25 @@ _enrichment_queue_lock = threading.Lock()
 _enrichment_queued = set()
 _enrichment_retry_until = {}
 _enrichment_retry_loaded = set()
+_enrichment_retry_cache_lock = threading.Lock()
+_enrichment_retry_order = deque()
+
+def _bound_enrichment_retry_cache(domain):
+    """Keep `_enrichment_retry_until`/`_enrichment_retry_loaded` bounded the
+    same way the GeoIP lookup caches (`_geoip_cache`, `_geoip_city_cache`) are
+    bounded -- a FIFO of at most `ENRICHMENT_RETRY_CACHE_MAX_ENTRIES` domains.
+    Both dicts were previously an unbounded, never-evicted, in-memory cache
+    keyed by every domain `_queue_domain_enrichment()` was ever asked about
+    (every newly-discovered domain from `ingest()`, for the lifetime of the
+    process). An evicted domain is simply re-read from the persistent
+    `enrichment_attempts` table on its next check -- a cache miss, not a
+    correctness change."""
+    with _enrichment_retry_cache_lock:
+        _enrichment_retry_order.append(domain)
+        while len(_enrichment_retry_order) > ENRICHMENT_RETRY_CACHE_MAX_ENTRIES:
+            stale = _enrichment_retry_order.popleft()
+            _enrichment_retry_until.pop(stale, None)
+            _enrichment_retry_loaded.discard(stale)
 
 def _enrichment_retry_allowed(domain, now_ts=None):
     now_ts = time.time() if now_ts is None else now_ts
@@ -5631,12 +5658,17 @@ def _enrichment_retry_allowed(domain, now_ts=None):
     except Exception:
         until = 0.0
     _enrichment_retry_loaded.add(domain)
+    _bound_enrichment_retry_cache(domain)
     return until <= now_ts
 
 def _mark_enrichment_attempt(domain, now_ts=None):
     now_ts = time.time() if now_ts is None else now_ts
     next_ts = now_ts + ENRICHMENT_RETRY_HOURS * 3600.0
+    is_new = domain not in _enrichment_retry_until
     _enrichment_retry_until[domain] = next_ts
+    if is_new and domain not in _enrichment_retry_loaded:
+        _enrichment_retry_loaded.add(domain)
+        _bound_enrichment_retry_cache(domain)
     try:
         with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute(
@@ -7334,6 +7366,7 @@ def _observability_safe_config():
         'TRACKERDB_DOWNLOAD_CHUNK_SIZE','MACVENDOR_CACHE_HOURS',
         'HOSTNAME_CACHE_HOURS','NETIFY_CACHE_HOURS','RDAP_CACHE_HOURS',
         'DNS_RECORDS_CACHE_HOURS','ENRICHMENT_RETRY_HOURS',
+        'ENRICHMENT_RETRY_CACHE_MAX_ENTRIES',
         'ENRICHMENT_DELAY_SECONDS','DEVICE_IP_RETENTION_HOURS',
         'DEVICE_IP_CLEANUP_INTERVAL_MINUTES','IP_PING_INTERVAL_HOURS',
         'IP_PING_INITIAL_DELAY_SECONDS','IP_PING_TIMEOUT_SECONDS'
