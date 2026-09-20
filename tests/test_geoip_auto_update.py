@@ -18,6 +18,7 @@ output capture) against a genuine child process, not a mock.
 import importlib
 import os
 import sys
+import threading
 import time
 
 import pytest
@@ -370,6 +371,64 @@ def test_reload_geoip_providers_swaps_the_provider_and_clears_the_cache(app_modu
         assert app_module._geoip_provider.lookup("203.0.113.10") == ("US", "United States")
         assert "203.0.113.10" not in app_module._geoip_cache
     finally:
+        app_module._geoip_provider = original_provider
+        app_module._geoip_city_provider = original_city_provider
+        app_module._geoip_cache.clear()
+        app_module._geoip_cache_order.clear()
+        app_module._geoip_city_cache.clear()
+        app_module._geoip_city_cache_order.clear()
+
+
+def test_reload_geoip_providers_serializes_concurrent_callers(app_module, monkeypatch, tmp_path):
+    """Issue #73 follow-up: the one-shot startup load
+    (`_geoip_initial_load_worker`) and a completed auto-update's reload
+    (`_run_geoip_update_pass`) run on independent background threads, so
+    nothing previously stopped both from calling `_reload_geoip_providers()`
+    at the same time -- a fresh deployment's first-ever scheduled
+    auto-update window is always "due" and can land while the initial load's
+    own multi-minute `CsvCityGeoIPProvider._load()` is still in flight. That
+    built two full provider instances (each with its own open CSV handle)
+    concurrently, roughly doubling peak RSS. `_geoip_reload_lock` must
+    serialize overlapping callers instead of letting them run at once."""
+    original_provider = app_module._geoip_provider
+    original_city_provider = app_module._geoip_city_provider
+    csv_path = tmp_path / "geoip.csv"
+    csv_path.write_text("203.0.113.0,203.0.113.255,US,United States\n")
+    monkeypatch.setattr(app_module, "GEOIP_DB_PATH", str(csv_path))
+    monkeypatch.setattr(app_module, "GEOIP_CITY_DB_PATH", str(tmp_path / "missing-city.csv"))
+
+    in_flight = 0
+    max_in_flight = 0
+    counter_lock = threading.Lock()
+    release = threading.Event()
+    real_init = app_module.CsvRangeGeoIPProvider.__init__
+
+    def slow_init(self, path):
+        nonlocal in_flight, max_in_flight
+        with counter_lock:
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+        release.wait(timeout=5)
+        real_init(self, path)
+        with counter_lock:
+            in_flight -= 1
+
+    monkeypatch.setattr(app_module.CsvRangeGeoIPProvider, "__init__", slow_init)
+
+    threads = [threading.Thread(target=app_module._reload_geoip_providers) for _ in range(2)]
+    try:
+        for t in threads:
+            t.start()
+        # Give both threads a real chance to reach (and, for the loser,
+        # block on) `_geoip_reload_lock` before checking overlap.
+        time.sleep(0.3)
+        assert max_in_flight <= 1, "concurrent _reload_geoip_providers() callers were not serialized"
+        release.set()
+        for t in threads:
+            t.join(timeout=5)
+            assert not t.is_alive()
+    finally:
+        release.set()
         app_module._geoip_provider = original_provider
         app_module._geoip_city_provider = original_city_provider
         app_module._geoip_cache.clear()

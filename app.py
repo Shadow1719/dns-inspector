@@ -4857,6 +4857,12 @@ _geoip_city_cache = {}
 _geoip_city_cache_order = deque()
 _geoip_city_cache_lock = threading.Lock()
 
+# Issue #73 follow-up: serializes `_reload_geoip_providers()` itself (not just
+# the small cache-swap critical sections above) -- see that function's
+# docstring for why an unguarded second caller was able to run a full,
+# concurrent `CsvCityGeoIPProvider._load()` alongside the first.
+_geoip_reload_lock = threading.Lock()
+
 # GeoIP databases can contain millions of rows. They must never be parsed
 # synchronously during module import: doing so blocks PID 1 from reaching the
 # Flask server and makes a healthy container appear to hang at startup.
@@ -5088,22 +5094,42 @@ def _reload_geoip_providers():
     both required to be memory-resident for longer than necessary; each
     provider's own `_load()` (see `CsvRangeGeoIPProvider`/`CsvCityGeoIPProvider`)
     already streams its CSV into compact storage without ever staging the
-    whole database as Python row objects (Issue #52)."""
+    whole database as Python row objects (Issue #52).
+
+    Issue #73 follow-up: this function has two independent callers on two
+    independent background threads -- the one-shot startup load
+    (`_geoip_initial_load_worker`) and a completed auto-update's reload
+    (`_run_geoip_update_pass`) -- with nothing previously stopping both from
+    running at once. A fresh deployment's very first scheduled auto-update
+    window is always "due" (`geoip_updater._is_check_due()`: a missing
+    `last_checked_ok_at` is due), so if that window lands while the initial
+    load's own `CsvCityGeoIPProvider._load()` is still in flight -- a real
+    multi-million-row DB-IP City Lite export, throttled by
+    `GEOIP_LOAD_YIELD_SECONDS`, can take many minutes -- the auto-update pass
+    started a second, fully concurrent reload: two full provider builds (each
+    with its own open CSV file handle and its own `array.array` columns)
+    resident at once, roughly doubling peak RSS, while `/api/observability`
+    kept reporting the stale pre-reload provider until whichever swap
+    finished last. `_geoip_reload_lock` now serializes every call so an
+    overlapping reload simply waits for the one already in progress to finish
+    and swap in before starting its own; the update itself is never skipped
+    or lost, only the concurrency is removed."""
     global _geoip_provider, _geoip_city_provider
-    new_country = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if os.path.exists(GEOIP_DB_PATH) else NullGeoIPProvider()
-    with _geoip_cache_lock:
-        _geoip_provider = new_country
-        _geoip_cache.clear()
-        _geoip_cache_order.clear()
-    del new_country
-    new_city = CsvCityGeoIPProvider(GEOIP_CITY_DB_PATH) if os.path.exists(GEOIP_CITY_DB_PATH) else NullCityGeoIPProvider()
-    with _geoip_city_cache_lock:
-        _geoip_city_provider = new_city
-        _geoip_city_cache.clear()
-        _geoip_city_cache_order.clear()
-    del new_city
-    _trim_allocator_memory()
-    _log_geoip_status()
+    with _geoip_reload_lock:
+        new_country = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if os.path.exists(GEOIP_DB_PATH) else NullGeoIPProvider()
+        with _geoip_cache_lock:
+            _geoip_provider = new_country
+            _geoip_cache.clear()
+            _geoip_cache_order.clear()
+        del new_country
+        new_city = CsvCityGeoIPProvider(GEOIP_CITY_DB_PATH) if os.path.exists(GEOIP_CITY_DB_PATH) else NullCityGeoIPProvider()
+        with _geoip_city_cache_lock:
+            _geoip_city_provider = new_city
+            _geoip_city_cache.clear()
+            _geoip_city_cache_order.clear()
+        del new_city
+        _trim_allocator_memory()
+        _log_geoip_status()
 
 
 def _geoip_update_diagnostics():

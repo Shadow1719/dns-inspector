@@ -807,6 +807,68 @@ an operator should re-check real container RSS over a comparable 12h+ window
 before the measured RAM reduction this issue asks for is treated as
 confirmed rather than a code-inspection-only claim.
 
+0.8.5.17 (Issue #73 follow-up) investigates a real 0.8.5.16 debug bundle
+attached to the issue after the above entry landed: 3.36 GB RSS at the
+35-minute mark, ~1.004 GB of it traced by `tracemalloc`, with the traced
+allocations dominated by the `_reload_geoip_providers()` /
+`CsvCityGeoIPProvider._load()` call stack -- while `geoip_city` diagnostics
+simultaneously reported `configured=false`/`NullCityGeoIPProvider`, and the
+city CSV file was still open. Read literally, that combination ("heavy
+allocation actively happening inside a City reload" plus "the live provider
+is still Null" plus "the file handle is still open") is exactly what an
+in-progress `CsvCityGeoIPProvider._load()` looks like from the outside, not
+evidence of a leak by itself -- `_geoip_city_provider` is only swapped in
+*after* `_load()` returns, and `_load()` legitimately keeps the CSV open
+for its whole (potentially multi-minute, `GEOIP_LOAD_YIELD_SECONDS`-
+throttled) run. The actual bug is why a second, *concurrent* reload of that
+size was possible at all 35 minutes into a fresh container's life:
+`_reload_geoip_providers()` has two independent callers on two independent
+background threads with no relationship to each other --
+`_geoip_initial_load_worker()` (one-shot, runs once HTTP is reachable) and
+`_run_geoip_update_pass()` (from the long-lived `geoip_auto_update_worker()`
+thread, invoked once per scheduled daily maintenance window). Per
+`scripts/geoip_updater.py::_is_check_due()`'s own docstring, a target with
+no `last_checked_ok_at` yet (i.e. every target on a brand-new deployment) is
+always due -- and while a fresh install is designed to never run a check at
+process startup, it *does* run one at the very first scheduled window
+(`GEOIP_AUTO_UPDATE_HOUR`:`GEOIP_AUTO_UPDATE_MINUTE`, default 03:00 UTC),
+which can land only minutes after container start depending on wall-clock
+timing. Nothing prevented that first real update pass's own
+`_reload_geoip_providers()` call from starting while the initial load's own
+call was still deep inside a large `CsvCityGeoIPProvider._load()`: two full
+provider builds -- each with its own open CSV file handle and its own set
+of `array.array` columns -- resident and being constructed at the same
+time, roughly doubling peak RSS versus a single load, exactly matching the
+observed RSS-vs-traced gap (most of the 3.36 GB was the concurrent
+in-flight build; tracemalloc's ~1.004 GB reflects only the allocations it
+was actively tracking at snapshot time). `_reload_geoip_providers()` is now
+guarded by a new `_geoip_reload_lock` (`threading.Lock()`) held for the
+function's entire body, so a second, overlapping caller blocks until the
+first finishes and swaps its providers in, then proceeds with its own --
+the update itself is never skipped or lost, only the concurrency (and the
+doubled peak memory it caused) is removed. Scope stayed exactly to this:
+no change to the reconcile_neighbors mtime-gate or debug-bundle
+de-duplication fixes above, no change to load throttling, cache bounding,
+or update scheduling/cadence itself.
+
+New test: `tests/test_geoip_auto_update.py::
+test_reload_geoip_providers_serializes_concurrent_callers` spins up two
+threads calling `_reload_geoip_providers()` at once with a patched, blocking
+`CsvRangeGeoIPProvider.__init__`, and asserts at most one is ever inside
+that constructor concurrently -- pinning the exact race this fix closes.
+
+**This hand-off's sandbox again could not execute `pytest`/`python`**
+(`python3 -c`/`python3 -m ...` invocations were blocked from running, only
+`python3 --version` succeeded) -- verified instead by direct code
+inspection and a full manual re-read of the edited/added code for
+correctness (lock placement, absence of any nested-lock deadlock potential
+against `_geoip_cache_lock`/`_geoip_city_cache_lock`, and the new test's
+thread/event logic). The real CI run must confirm the full suite; an
+operator should also confirm, from a real container's logs/debug bundle
+across a boundary that spans its scheduled `GEOIP_AUTO_UPDATE_HOUR` window,
+that only one "GeoIP: ... loaded ... ranges" log line pair appears per
+actual reload rather than two overlapping ones.
+
 
 ## How to update this file
 
