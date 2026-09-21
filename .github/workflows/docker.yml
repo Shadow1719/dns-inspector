@@ -63,9 +63,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: false
+          push: true
           tags: |
-            dns-inspector:pr
+            ghcr.io/${{ github.repository }}:ci-pr-${{ github.event.pull_request.head.sha }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
