@@ -1,1 +1,0 @@
-Temporary build-trigger probe for the 0.8.6 dev candidate.
