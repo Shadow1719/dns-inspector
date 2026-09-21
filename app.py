@@ -2,6 +2,7 @@ import array
 import bisect
 import csv
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -20,7 +21,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
 import requests
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, send_file
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
@@ -830,13 +831,25 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .destination-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:12px;align-items:stretch;container-type:inline-size}
 @media(max-width:900px){.destination-map-layout{grid-template-columns:minmax(0,1fr);align-items:start}}
 @media(min-width:901px){.map-breakdown{height:max(320px,calc((100cqw - 292px)/2))}}
-.map-breakdown{display:flex;flex-direction:column;min-width:0;height:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.map-breakdown{display:flex;flex-direction:column;min-width:0;height:clamp(320px,40cqw,520px);max-height:520px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.diagnostics-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.diagnostics-actions button{padding:7px 10px;font-size:.78rem;border-radius:var(--radius-sm)}
+.dash-resize-handle{display:none;position:absolute;z-index:20;touch-action:none}
+.dash-resize-handle.edge{top:18%;right:-4px;width:8px;height:64%;cursor:ew-resize}
+.dash-resize-handle.corner{right:-5px;bottom:-5px;width:14px;height:14px;cursor:nwse-resize}
+.dash-grid.dash-customizing .dash-widget{position:relative}
+.dash-grid.dash-customizing .dash-resize-handle{display:block}
+.dash-grid.dash-customizing .dash-resize-handle.edge::after,.dash-grid.dash-customizing .dash-resize-handle.corner::after{content:'';position:absolute;background:var(--accent);opacity:.8;border-radius:4px}
+.dash-grid.dash-customizing .dash-resize-handle.edge::after{left:3px;top:0;width:2px;height:100%}
+.dash-grid.dash-customizing .dash-resize-handle.corner::after{right:0;bottom:0;width:10px;height:10px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);background:transparent}
+.dash-widget[data-fixed-height="1"]{height:var(--dash-widget-height)}
+.dash-widget[data-fixed-height="1"]>.card{height:100%;box-sizing:border-box;overflow:auto}
 .map-breakdown-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);flex:0 0 auto}
 .map-breakdown-title{font-size:.78rem;font-weight:600;color:var(--text-primary)}
 .map-breakdown-sort-btn{padding:3px 8px;font-size:.72rem;border-radius:var(--radius-sm);background:var(--surface-3);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
 .map-breakdown-sort-btn:hover{background:var(--surface-1)}
 .map-breakdown-list{list-style:none;margin:0;padding:0;flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto}
-@media(max-width:900px){.map-breakdown{height:auto}.map-breakdown-list{flex:0 1 auto;max-height:340px}}
+@media(max-width:900px){.map-breakdown{height:340px;max-height:340px}.map-breakdown-list{flex:1 1 auto;max-height:none}}
 .map-breakdown-row{display:block;width:100%;text-align:left;padding:7px 10px;border:none;border-bottom:1px solid var(--border);background:transparent;color:var(--text-primary);cursor:pointer;font:inherit}
 .map-breakdown-row:last-child{border-bottom:none}
 .map-breakdown-row:hover{background:var(--surface-3)}
@@ -917,7 +930,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
     <div class="observability-strip" aria-label="Application runtime status">
       <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
       <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
-      <button type="button" class="debug-button" id="settings-open-btn" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button><button type="button" class="debug-button" id="devlog-open-btn" aria-label="Open DevLog">DevLog</button>
+      <button type="button" class="debug-button" id="debug-download-top-btn" title="Download a bounded diagnostic snapshot">Debug</button><button type="button" class="debug-button" id="settings-open-btn" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button><button type="button" class="debug-button" id="devlog-open-btn" aria-label="Open DevLog">DevLog</button>
     </div>
     <p class="muted shell-meta">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
   </div>
@@ -987,6 +1000,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
         <div class="settings-row-label" style="padding-top:14px"><b>Analytics render performance</b><small>Last fetch/render timing for the Analytics poll and the destination map, split by network vs. on-page render time</small></div>
         <div class="settings-kv" id="diagnostics-perf-kv"><b>No samples yet</b><span>Open the Analytics tab first</span></div>
         <div class="settings-row-label" style="padding-top:14px"><b>DevLog</b><small>Recent bounded operational events from this process</small></div>
+        <div class="diagnostics-actions"><button type="button" id="devlog-download-btn">Download DevLog</button><button type="button" id="debug-download-btn">Download Debug Snapshot</button></div>
         <div class="devlog-scroll" id="devlog-list"><div class="settings-kv"><b>Loading…</b><span></span></div></div>
         
       </section>
@@ -1019,9 +1033,9 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 </dialog>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <nav class="tabs" role="tablist" aria-label="DNS Inspector sections">
-  <button class="tab-btn active" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+  <button class="tab-btn" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
   <button class="tab-btn" data-tab="devices" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Devices</button>
-  <button class="tab-btn" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
+  <button class="tab-btn active" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
 </nav>
 <script>
 /* ---- Inspector BEMO preferences (0.8.4) ----
@@ -1037,7 +1051,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
-const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent'};
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'analytics', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent'};
 function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
 let prefs = loadPrefs();
@@ -1232,7 +1246,7 @@ function renderInstrumentGauges(data){
   }
 }
 </script>
-<section id="tab-overview" class="tab-panel active" data-panel="overview">
+<section id="tab-overview" class="tab-panel" data-panel="overview">
   <div id="inspect-root">
   {% if inspect_html %}{{ inspect_html|safe }}{% endif %}
   </div>
@@ -1259,7 +1273,7 @@ function renderInstrumentGauges(data){
   <tbody id="clients-body">{{ clients_html|safe }}</tbody></table>
   <p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
 </section>
-<section id="tab-analytics" class="tab-panel" data-panel="analytics">
+<section id="tab-analytics" class="tab-panel active" data-panel="analytics">
   <div class="dash-toolbar">
     <button type="button" class="dash-customize-btn" id="dash-customize-btn" aria-pressed="false">Customize</button>
     <select class="settings-select" id="dash-preset-select" aria-label="Dashboard preset">
@@ -1513,8 +1527,8 @@ try{
   if(currentQuery || hasInspectContent){ setActiveTab('overview'); }
   else if(prefs.defaultView && prefs.defaultView !== 'last' && ['overview','devices','analytics'].includes(prefs.defaultView)){ setActiveTab(prefs.defaultView); }
   else{
-    const saved=localStorage.getItem('dnsInspectorTab');
-    if(saved && ['overview','devices','analytics'].includes(saved)) setActiveTab(saved);
+    const landing = (prefs.defaultView && prefs.defaultView !== 'last' && ['overview','devices','analytics'].includes(prefs.defaultView)) ? prefs.defaultView : 'analytics';
+    setActiveTab(landing);
   }
 }catch(e){}
 renderStats({{ stats|tojson }});
@@ -2711,7 +2725,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     const widgets = {};
     WIDGET_IDS.forEach(id => {
       const el = grid.querySelector(`[data-widget-id="${id}"]`);
-      widgets[id] = { w: normalizeWidth(el.dataset.w), h: el.dataset.h || 'normal', hidden: false };
+      widgets[id] = { w: normalizeWidth(el.dataset.w), h: el.dataset.h || 'normal', hp: null, hidden: false };
     });
     return { preset: 'default', order: WIDGET_IDS.slice(), widgets };
   }
@@ -2776,7 +2790,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       if (!raw || !raw.widgets || !raw.order) return clone(DEFAULT_LAYOUT);
       const widgets = {};
       WIDGET_IDS.forEach(id => {
-        const merged = Object.assign({w:'4',h:'normal',hidden:false}, raw.widgets[id] || {});
+        const merged = Object.assign({w:'4',h:'normal',hp:null,hidden:false}, raw.widgets[id] || {});
         merged.w = normalizeWidth(merged.w);
         widgets[id] = merged;
       });
@@ -2802,9 +2816,16 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       const el = grid.querySelector(`[data-widget-id="${id}"]`);
       if (!el) return;
       el.style.order = String(i);
-      const w = layout.widgets[id] || {w:'4',h:'normal',hidden:false};
+      const w = layout.widgets[id] || {w:'4',h:'normal',hp:null,hidden:false};
       el.dataset.w = normalizeWidth(w.w);
       el.dataset.h = w.h || 'normal';
+      if (Number.isFinite(Number(w.hp)) && Number(w.hp) >= 160){
+        el.dataset.fixedHeight = '1';
+        el.style.setProperty('--dash-widget-height', Math.round(Number(w.hp)) + 'px');
+      } else {
+        el.dataset.fixedHeight = '0';
+        el.style.removeProperty('--dash-widget-height');
+      }
       el.dataset.hidden = w.hidden ? '1' : '0';
       const hideBtn = el.querySelector('[data-dash-action="hide"]');
       if (hideBtn){ hideBtn.innerHTML = w.hidden ? '&#43;' : '&times;'; hideBtn.title = w.hidden ? 'Show widget' : 'Hide widget'; }
@@ -2912,6 +2933,27 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       el.innerHTML = '<div class="settings-kv"><b>DevLog unavailable</b><span>—</span></div>';
     }
   }
+
+  async function downloadBoundedArtifact(url){
+    try{
+      const r = await fetch(url, {cache:'no-store'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const blob = await r.blob();
+      const disposition = r.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="?([^";]+)"?/i);
+      const filename = match ? match[1] : (url.includes('debug') ? 'dns-inspector-debug.json' : 'dns-inspector-devlog.txt');
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 1000);
+    }catch(e){
+      console.error('diagnostic download failed', e);
+      alert('Diagnostic download failed. Check the DNS Inspector server logs.');
+    }
+  }
+  document.getElementById('devlog-download-btn')?.addEventListener('click', () => downloadBoundedArtifact('/api/devlog/export'));
+  document.getElementById('debug-download-btn')?.addEventListener('click', () => downloadBoundedArtifact('/api/debug/snapshot'));
+  document.getElementById('debug-download-top-btn')?.addEventListener('click', () => downloadBoundedArtifact('/api/debug/snapshot'));
 
   function openDialog(){
     if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open','');
@@ -5269,7 +5311,7 @@ def get_stats(limit=10):
 def state_payload(q="",status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter="",page=1,page_size=50):
     result=inspect_domain(q) if q else None
     recent=get_recent(page=page,page_size=page_size,status_filter=status_filter,new_only=new_only,classification_filter=classification_filter,severity_filter=severity_filter,device_filter=device_filter,vendor_filter=vendor_filter)
-    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":inspect_html(result) if result else None}
+    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"observability":_observability_payload(),"inspect_html":inspect_html(result) if result else None}
 
 def client_display(c, device_key, count):
     row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
@@ -5457,6 +5499,55 @@ def api_system_stop():
         if _restart_in_progress:return jsonify({"ok":False,"error":"a restart is already in progress"}),409
         _stop_in_progress=True
     threading.Thread(target=_perform_self_stop,daemon=True,name="self-stop").start(); return jsonify({"ok":True,"status":"stopping"}),202
+
+def _debug_snapshot_payload():
+    """Small, bounded diagnostic snapshot; intentionally excludes deep proc/GC/tracemalloc collectors."""
+    with _devlog_lock:
+        events = list(_devlog)[-200:]
+    with _geoip_cache_lock:
+        geoip_cache_entries = len(_geoip_cache)
+    with _geoip_map_cache_lock:
+        map_cache_at = _geoip_map_cache.get("at", 0.0)
+        map_cache_ready = _geoip_map_cache.get("data") is not None
+    observability = _observability_payload()
+    return {
+        "generated_at": utcnow(),
+        "application": {"version": APP_VERSION, "environment": RUNTIME_ENV, "pid": os.getpid()},
+        "observability": observability,
+        "geoip": {
+            "provider": _geoip_diagnostics(),
+            "cache_entries": geoip_cache_entries,
+            "map_cache_ready": map_cache_ready,
+            "map_cache_age_seconds": round(max(0.0, time.time() - map_cache_at), 1) if map_cache_at else None,
+        },
+        "runtime": {
+            "poll_seconds": POLL_SECONDS,
+            "ui_refresh_seconds": UI_REFRESH_SECONDS,
+            "active_threads": [{"name": t.name, "daemon": bool(t.daemon), "alive": bool(t.is_alive())} for t in threading.enumerate()],
+            "devlog_entries_exported": len(events),
+        },
+        "devlog": events,
+    }
+
+
+@app.route("/api/devlog/export")
+def api_devlog_export():
+    with _devlog_lock:
+        events = list(_devlog)[-500:]
+    lines = []
+    for entry in events:
+        context = json.dumps(entry.get("context", {}), ensure_ascii=False, sort_keys=True) if entry.get("context") else ""
+        suffix = " · " + context if context else ""
+        lines.append(f"{entry.get('at','')}	{entry.get('level','INFO')}	{entry.get('message','')}{suffix}")
+    payload = ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
+    return send_file(io.BytesIO(payload), mimetype="text/plain; charset=utf-8", as_attachment=True, download_name=f"dns-inspector-devlog-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.txt")
+
+
+@app.route("/api/debug/snapshot")
+def api_debug_snapshot():
+    payload = json.dumps(_debug_snapshot_payload(), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    return send_file(io.BytesIO(payload), mimetype="application/json", as_attachment=True, download_name=f"dns-inspector-debug-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json")
+
 
 @app.route("/api/devlog")
 def api_devlog():
