@@ -143,6 +143,7 @@ def test_leaflet_renderer_contains_osm_topography_and_satellite_layers():
 
 def test_dashboard_landing_and_diagnostic_controls_are_present(monkeypatch, app_module):
     monkeypatch.setenv("DNS_INSPECTOR_ENV", "development")
+    app_module.init_db()
     client = app_module.app.test_client()
     html = client.get("/").get_data(as_text=True)
     assert 'data-tab="analytics"' in html
