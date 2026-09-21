@@ -33,6 +33,20 @@ def test_environment_development_selects_dev_assets(monkeypatch, tmp_path):
     assert ctx["page_title"] == f"DNS Inspector DEV v{app.APP_VERSION}"
 
 
+def test_root_route_renders_dashboard_html_not_analytics_json(monkeypatch, tmp_path):
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    app.init_db()
+    client = app.app.test_client()
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.content_type.startswith("text/html")
+    body = response.get_data(as_text=True)
+    assert "DNS Inspector" in body
+    assert "DEVELOPMENT ENVIRONMENT" in body
+    assert "/static/favicon-dev.svg" in body
+
+
 def test_health_and_analytics_payload_expose_clean_runtime_state(monkeypatch, tmp_path):
     app = _fresh_app(monkeypatch, tmp_path, "development")
     app.init_db()
