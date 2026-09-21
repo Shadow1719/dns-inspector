@@ -7,7 +7,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends iputils-ping \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r requirements.txt
-COPY app.py VERSION /app/
+COPY app.py analytics_report.py VERSION /app/
 COPY static /app/static
 RUN mkdir -p /data
 LABEL org.opencontainers.image.title="DNS Inspector" \
