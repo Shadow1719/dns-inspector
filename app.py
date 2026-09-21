@@ -308,6 +308,8 @@ def _geoip_initial_load_worker():
 
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <!-- Issue #69: Leaflet + OpenStreetMap is the DNS Destinations map's real
      geographic viewport (replacing the previous experimental renderer). The legacy
      SVG renderer further below in this template remains the automatic
@@ -3182,7 +3184,8 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
 
   syncControls();
 })();
-</script></body>
+</script><script src="/static/leaflet-map.js"></script>
+</body>
 
 </html>
 """
