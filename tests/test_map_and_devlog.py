@@ -151,3 +151,37 @@ def test_dashboard_landing_and_diagnostic_controls_are_present(monkeypatch, app_
     assert 'id="devlog-download-btn"' in html
     assert 'id="debug-download-btn"' in html
     assert "defaultView:'analytics'" in html
+
+
+def test_ip_ping_validation_and_status_endpoint(app_module, monkeypatch):
+    app_module.init_db()
+    client = app_module.app.test_client()
+
+    assert app_module._validate_ping_ip("192.168.1.111") == "192.168.1.111"
+    for bad in ("8.8.8.8", "127.0.0.1", "224.0.0.1", "not-an-ip"):
+        try:
+            app_module._validate_ping_ip(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad} should not be pingable")
+
+    monkeypatch.setattr(app_module, "_run_ip_ping", lambda ip: {
+        "ip": ip, "online": True, "latency_ms": 1.2, "error": "", "last_checked": 123.0
+    })
+    response = client.post("/api/ip/ping", json={"ip": "192.168.1.111"})
+    assert response.status_code == 200
+    assert response.get_json()["result"]["online"] is True
+
+    status = client.get("/api/ip/ping/status")
+    assert status.status_code == 200
+    assert status.get_json()["ok"] is True
+
+
+def test_ip_ping_invalid_request_is_json(app_module):
+    app_module.init_db()
+    response = app_module.app.test_client().post("/api/ip/ping", json={"ip": "8.8.8.8"})
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert "private LAN" in payload["error"]
