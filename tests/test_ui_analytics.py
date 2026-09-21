@@ -73,3 +73,16 @@ def test_device_labels_are_persistent_and_bounded(monkeypatch, tmp_path):
     data = client.get("/api/device/label").get_json()
     assert data["labels"] == {"mac:aa:bb": "Living Room TV"}
     assert client.post("/api/device/label", json={"device_key": "mac:aa:bb", "label": "x" * 200}).get_json()["label"] == "x" * 80
+
+
+def test_analytics_pdf_export_is_a_real_pdf(monkeypatch, tmp_path):
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    app.init_db()
+    client = app.app.test_client()
+
+    response = client.get("/api/analytics/report.pdf?range=1h")
+    assert response.status_code == 200
+    assert response.mimetype == "application/pdf"
+    assert response.data.startswith(b"%PDF-")
+    assert "attachment;" in response.headers.get("Content-Disposition", "")
+    assert len(response.data) > 2000
