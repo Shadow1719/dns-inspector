@@ -5368,7 +5368,6 @@ def worker():
         time.sleep(max(1, POLL_SECONDS - elapsed))
 
 
-@app.route("/")
 @app.route("/api/analytics")
 def api_analytics():
     range_key = request.args.get("range", "1h").strip() or "1h"
@@ -5543,6 +5542,7 @@ def api_analytics_map():
         return jsonify({"updated": utcnow(), "provider": {"configured": False, "range_count": 0}, "countries": [], "destinations": [], "unknown": {"domain_count": 0, "observation_count": 0}, "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0}, "capabilities": {"country": False, "coordinates": False, "heatmap": False}, "history": {"tracked_domains_all_time": 0, "tracking_since": None}, "diagnostics": {"state": "load_failed", "message": "Destination map backend error."}}), 200
 
 
+@app.route("/")
 def index():
     q=request.args.get("q","").strip()
     status_filter=request.args.get("status","").strip()
