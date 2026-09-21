@@ -74,6 +74,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
+            RUNTIME_ENV=${{ github.ref == 'refs/heads/dev' && 'development' || 'production' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
