@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.2 UI + Analytics rebuild
+
+- restored the Inspector BEMO shell, persistent DEV environment banner/badge/title/favicon behavior, Analytics visual system, live/historical analytics views, gauges and dashboard presentation from the 0.8.x product layer onto the clean Milestone 1 foundation
+- restored bounded analytics API reads over the existing `processed_queries`, `domains` and `devices` history without adding a second time-series store
+- restored persistent device labels and the safe observability/restart/stop controls without reintroducing the unsafe debug-bundle implementation
+- kept the clean SQLite lifecycle and bounded enrichment/retention implementation underneath the restored UI; map/GeoIP is intentionally the next milestone
+
+
 All notable DNS Inspector changes are tracked here.
 
 ## [Unreleased] - 0.8.6 foundation, Milestone 1 (Issue #81)
