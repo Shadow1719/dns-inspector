@@ -10,6 +10,7 @@ import queue
 import re
 import socket
 import signal
+import subprocess
 import sys
 import sqlite3
 import threading
@@ -74,6 +75,9 @@ DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "240"))  # 10
 ENRICHMENT_RETRY_HOURS = max(24.0, float(os.getenv("ENRICHMENT_RETRY_HOURS", "24")))
 DEVICE_IP_RETENTION_HOURS = max(1.0, float(os.getenv("DEVICE_IP_RETENTION_HOURS", "12")))
 DEVICE_IP_CLEANUP_INTERVAL_MINUTES = max(5, int(os.getenv("DEVICE_IP_CLEANUP_INTERVAL_MINUTES", "30")))
+IP_PING_INTERVAL_HOURS = max(1.0, float(os.getenv("IP_PING_INTERVAL_HOURS", "4")))
+IP_PING_INITIAL_DELAY_SECONDS = max(10, int(os.getenv("IP_PING_INITIAL_DELAY_SECONDS", "60")))
+IP_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("IP_PING_TIMEOUT_SECONDS", "1")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
 app = Flask(__name__)
@@ -3363,6 +3367,13 @@ def init_db():
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_processed_seen ON processed_queries(seen_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")
+        c.execute("""CREATE TABLE IF NOT EXISTS ip_ping_status(
+            ip TEXT PRIMARY KEY,
+            last_checked REAL NOT NULL,
+            online INTEGER NOT NULL,
+            latency_ms REAL,
+            error TEXT NOT NULL DEFAULT '')""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_ip_ping_status_last_checked ON ip_ping_status(last_checked)")
         c.execute("""CREATE TABLE IF NOT EXISTS enrichment_attempts(
             domain TEXT PRIMARY KEY,
             attempted_at REAL NOT NULL,
@@ -4075,6 +4086,116 @@ def _device_ip_cleanup_worker():
     while True:
         time.sleep(DEVICE_IP_CLEANUP_INTERVAL_MINUTES * 60)
         _prune_stale_device_ips()
+
+
+def _validate_ping_ip(value):
+    value = str(value or "").strip()
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError("Invalid IP address")
+    if addr.is_loopback or addr.is_multicast or addr.is_unspecified or not addr.is_private:
+        raise ValueError("Only private LAN IP addresses can be pinged")
+    return value
+
+
+def _run_ip_ping(ip):
+    ip = _validate_ping_ip(ip)
+    started = time.monotonic()
+    online = False
+    latency_ms = None
+    error = ""
+    try:
+        proc = subprocess.run(
+            ["ping", "-c", "1", "-W", str(IP_PING_TIMEOUT_SECONDS), ip],
+            capture_output=True,
+            text=True,
+            timeout=IP_PING_TIMEOUT_SECONDS + 2,
+            check=False,
+        )
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        online = proc.returncode == 0
+        if online:
+            match = re.search(r"time[=<]([0-9.]+)\s*ms", output)
+            latency_ms = float(match.group(1)) if match else round((time.monotonic() - started) * 1000.0, 1)
+        else:
+            error = "No reply"
+    except FileNotFoundError:
+        error = "ping command unavailable"
+    except subprocess.TimeoutExpired:
+        error = "Timeout"
+    except Exception as e:
+        error = str(e)[:200]
+
+    checked = time.time()
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO ip_ping_status(ip,last_checked,online,latency_ms,error) VALUES(?,?,?,?,?)",
+            (ip, checked, 1 if online else 0, latency_ms, error),
+        )
+        c.commit()
+    return {"ip": ip, "online": online, "latency_ms": latency_ms, "error": error, "last_checked": checked}
+
+
+def _ping_active_ips():
+    cutoff = time.time() - DEVICE_IP_RETENTION_HOURS * 3600.0
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        ips = [row[0] for row in c.execute(
+            "SELECT DISTINCT ip FROM device_ips WHERE last_seen>=? AND ip IS NOT NULL AND TRIM(ip)<>''",
+            (cutoff,),
+        ).fetchall()]
+    for ip in ips:
+        try:
+            _run_ip_ping(ip)
+        except Exception as e:
+            print(f"IP ping error for {ip}: {e!r}", flush=True)
+    if ips:
+        log_event("INFO", "IP reachability sweep completed", checked=len(ips))
+
+
+def _ip_ping_worker():
+    time.sleep(IP_PING_INITIAL_DELAY_SECONDS)
+    while True:
+        try:
+            _ping_active_ips()
+        except Exception as e:
+            print("IP reachability sweep error:", repr(e), flush=True)
+        time.sleep(IP_PING_INTERVAL_HOURS * 3600.0)
+
+
+@app.route("/api/ip/ping/status", methods=["GET"])
+def api_ip_ping_status():
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            rows = c.execute("SELECT ip,last_checked,online,latency_ms,error FROM ip_ping_status").fetchall()
+        return jsonify({
+            "ok": True,
+            "statuses": {
+                row[0]: {
+                    "last_checked": row[1],
+                    "online": bool(row[2]),
+                    "latency_ms": row[3],
+                    "error": row[4] or "",
+                }
+                for row in rows
+            },
+        })
+    except Exception as e:
+        print("IP ping status error:", repr(e), flush=True)
+        return jsonify({"ok": False, "statuses": {}}), 500
+
+
+@app.route("/api/ip/ping", methods=["POST"])
+def api_ip_ping():
+    try:
+        data = request.get_json(silent=True) or {}
+        ip = _validate_ping_ip(data.get("ip"))
+        return jsonify({"ok": True, "result": _run_ip_ping(ip)})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        print("manual IP ping error:", repr(e), flush=True)
+        return jsonify({"ok": False, "error": "Ping failed"}), 500
 
 
 def refresh_runtime_clients():
@@ -5761,5 +5882,6 @@ if __name__ == "__main__":
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=_enrichment_worker, daemon=True, name="enrichment-queue").start()
     threading.Thread(target=_device_ip_cleanup_worker, daemon=True, name="device-ip-cleanup").start()
+    threading.Thread(target=_ip_ping_worker, daemon=True, name="ip-ping").start()
     threading.Thread(target=_geoip_initial_load_worker, daemon=True, name="geoip-loader").start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
