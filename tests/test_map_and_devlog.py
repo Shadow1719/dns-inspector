@@ -149,4 +149,4 @@ def test_dashboard_landing_and_diagnostic_controls_are_present(monkeypatch, app_
     assert 'id="debug-download-top-btn"' in html
     assert 'id="devlog-download-btn"' in html
     assert 'id="debug-download-btn"' in html
-    assert 'defaultView:'analytics'' in html
+    assert "defaultView:'analytics'" in html
