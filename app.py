@@ -2903,6 +2903,71 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     applyLayout();
   });
 
+  // Pointer resize: width snaps to the 4-column grid; the corner handle also
+  // snaps height to a small persisted set of pixel rows. Resize work is local
+  // during pointer movement and is committed once on pointerup.
+  const HEIGHT_STEPS = [180, 260, 340, 420, 500];
+  WIDGET_IDS.forEach(id => {
+    const el = grid.querySelector('[data-widget-id="' + id + '"]');
+    if (!el) return;
+    if (!el.querySelector('.dash-resize-handle.edge')){
+      el.insertAdjacentHTML('beforeend', '<div class="dash-resize-handle edge" data-resize-axis="x" aria-hidden="true"></div><div class="dash-resize-handle corner" data-resize-axis="both" aria-hidden="true"></div>');
+    }
+  });
+
+  function gridColumnSpanFromPointer(rect, clientX){
+    const gridRect = grid.getBoundingClientRect();
+    const gap = parseFloat(getComputedStyle(grid).columnGap || '14') || 14;
+    const colWidth = Math.max(1, (gridRect.width - gap * 3) / 4);
+    const relative = Math.max(0, clientX - rect.left);
+    return String(Math.max(1, Math.min(4, Math.round((relative + gap * 0.5) / (colWidth + gap)))));
+  }
+  function snapHeight(px){
+    return HEIGHT_STEPS.reduce((best, step) => Math.abs(step - px) < Math.abs(best - px) ? step : best, HEIGHT_STEPS[0]);
+  }
+
+  grid.addEventListener('pointerdown', (e) => {
+    const handle = e.target.closest('.dash-resize-handle');
+    if (!handle || !customizing) return;
+    const widget = handle.closest('.dash-widget');
+    if (!widget) return;
+    const id = widget.dataset.widgetId;
+    const cur = layout.widgets[id] || (layout.widgets[id] = {w:'4',h:'normal',hp:null,hidden:false});
+    const startRect = widget.getBoundingClientRect();
+    const startX = e.clientX, startY = e.clientY;
+    const startHp = Number(cur.hp) || startRect.height;
+    const axis = handle.dataset.resizeAxis || 'x';
+    const pointerId = e.pointerId;
+    e.preventDefault();
+    handle.setPointerCapture?.(pointerId);
+    widget.dataset.resizing = '1';
+
+    const move = (ev) => {
+      const width = gridColumnSpanFromPointer(startRect, ev.clientX);
+      cur.w = width;
+      widget.dataset.w = width;
+      if (axis === 'both'){
+        const hp = snapHeight(Math.max(160, startHp + (ev.clientY - startY)));
+        cur.hp = hp;
+        widget.dataset.fixedHeight = '1';
+        widget.style.setProperty('--dash-widget-height', hp + 'px');
+      }
+    };
+    const done = () => {
+      widget.removeAttribute('data-resizing');
+      layout.preset = 'custom';
+      saveLayout();
+      applyLayout();
+      handle.releasePointerCapture?.(pointerId);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', done);
+      handle.removeEventListener('pointercancel', done);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', done);
+    handle.addEventListener('pointercancel', done);
+  });
+
   applyLayout();
 })();
 </script>
