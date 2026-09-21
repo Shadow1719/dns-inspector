@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.4 dashboard polish + diagnostics
+
+- made Analytics the default landing view while keeping Overview and Devices one click away for deeper investigation
+- added bounded DevLog export and a safe Debug Snapshot download that does not run deep proc/GC/tracemalloc collectors or build an in-memory ZIP
+- restored RAM/Uptime data on the normal /api/state refresh payload so the header and Diagnostics panel use the same lightweight runtime snapshot
+- added pointer-based widget resizing with 4-column width snapping and persisted height snapping
+- constrained the DNS country breakdown to its widget and made the list independently scrollable
+- restored additional interactive basemap choices for the Leaflet map: OpenStreetMap Standard, OpenTopoMap, and Esri World Imagery
+- kept OpenStreetMap attribution visible and preserved the existing bounded destination/country rendering
+
 ## [Unreleased] - 0.8.6-dev.3 UI + Analytics + Map
 
 - restored the Inspector BEMO shell, persistent DEV environment banner/badge/title/favicon behavior, Analytics visual system, live/historical analytics views, gauges and dashboard presentation from the 0.8.x product layer onto the clean Milestone 1 foundation
