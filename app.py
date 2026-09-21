@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
@@ -74,6 +75,24 @@ NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/
 app = Flask(__name__)
 db_lock = threading.Lock()
 session = requests.Session()
+
+# Bounded in-memory operational event log for the DEV/Diagnostics UI.
+# It is ephemeral and cannot grow with uptime.
+_devlog_lock = threading.Lock()
+_devlog = deque(maxlen=500)
+
+def log_event(level, message, **context):
+    entry = {
+        "at": utcnow() if "utcnow" in globals() else datetime.now(timezone.utc).isoformat(),
+        "level": str(level or "INFO").upper(),
+        "message": str(message),
+    }
+    if context:
+        entry["context"] = {str(k): str(v) for k, v in context.items()}
+    with _devlog_lock:
+        _devlog.append(entry)
+    return entry
+
 last_ingest_at = 0.0
 neighbors_lock = threading.Lock()
 neighbors_cache = {}
@@ -100,6 +119,189 @@ _enrichment_retry_loaded = set()
 
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
+
+# --- Offline GeoIP / observed destination map -------------------------------
+GEOIP_DB_PATH = os.getenv("GEOIP_DB_PATH", "/data/geoip_country_ranges.csv")
+GEOIP_CACHE_MAX_ENTRIES = max(256, int(os.getenv("GEOIP_CACHE_MAX_ENTRIES", "8192")))
+GEOIP_MAP_CACHE_SECONDS = max(5, int(os.getenv("GEOIP_MAP_CACHE_SECONDS", "20")))
+GEOIP_MAP_DOMAIN_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DOMAIN_LIMIT", "1500")))
+GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT = max(4, int(os.getenv("GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT", "32")))
+GEOIP_LOAD_CHUNK_ROWS = max(1, int(os.getenv("GEOIP_LOAD_CHUNK_ROWS", "5000")))
+GEOIP_LOAD_YIELD_SECONDS = max(0.0, float(os.getenv("GEOIP_LOAD_YIELD_SECONDS", "0.01")))
+_CGNAT_V4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+COUNTRY_CENTROIDS = {
+    "US": (39.8, -98.6, "United States"), "CA": (56.1, -106.3, "Canada"), "MX": (23.6, -102.5, "Mexico"),
+    "BR": (-14.2, -51.9, "Brazil"), "AR": (-38.4, -63.6, "Argentina"), "CL": (-35.7, -71.5, "Chile"),
+    "CO": (4.6, -74.3, "Colombia"), "PE": (-9.2, -75.0, "Peru"), "GB": (54.0, -2.0, "United Kingdom"),
+    "IE": (53.4, -8.2, "Ireland"), "FR": (46.6, 2.2, "France"), "DE": (51.2, 10.4, "Germany"),
+    "NL": (52.1, 5.3, "Netherlands"), "BE": (50.8, 4.5, "Belgium"), "CH": (46.8, 8.2, "Switzerland"),
+    "AT": (47.5, 14.6, "Austria"), "IT": (42.8, 12.6, "Italy"), "ES": (40.5, -3.7, "Spain"),
+    "PT": (39.4, -8.2, "Portugal"), "SE": (60.1, 18.6, "Sweden"), "NO": (60.5, 8.5, "Norway"),
+    "DK": (56.3, 9.5, "Denmark"), "FI": (61.9, 25.7, "Finland"), "IS": (64.9, -19.0, "Iceland"),
+    "PL": (51.9, 19.1, "Poland"), "CZ": (49.8, 15.5, "Czechia"), "SK": (48.7, 19.7, "Slovakia"),
+    "HU": (47.2, 19.5, "Hungary"), "RO": (45.9, 25.0, "Romania"), "BG": (42.7, 25.5, "Bulgaria"),
+    "GR": (39.1, 21.8, "Greece"), "TR": (38.9, 35.2, "Turkey"), "RU": (61.5, 105.3, "Russia"),
+    "UA": (48.4, 31.2, "Ukraine"), "EE": (58.6, 25.0, "Estonia"), "LV": (56.9, 24.6, "Latvia"),
+    "LT": (55.2, 23.9, "Lithuania"), "CN": (35.9, 104.2, "China"), "JP": (36.2, 138.3, "Japan"),
+    "KR": (35.9, 127.8, "South Korea"), "TW": (23.7, 121.0, "Taiwan"), "HK": (22.3, 114.2, "Hong Kong"),
+    "SG": (1.35, 103.8, "Singapore"), "IN": (20.6, 79.0, "India"), "ID": (-0.8, 113.9, "Indonesia"),
+    "MY": (4.2, 101.9, "Malaysia"), "TH": (15.9, 101.0, "Thailand"), "VN": (14.1, 108.3, "Vietnam"),
+    "PH": (12.9, 121.8, "Philippines"), "AU": (-25.3, 133.8, "Australia"), "NZ": (-41.0, 174.9, "New Zealand"),
+    "ZA": (-30.6, 22.9, "South Africa"), "EG": (26.8, 30.8, "Egypt"), "NG": (9.1, 8.7, "Nigeria"),
+    "KE": (-0.02, 37.9, "Kenya"), "MA": (31.8, -7.1, "Morocco"), "IL": (31.0, 34.8, "Israel"),
+    "AE": (23.4, 53.8, "United Arab Emirates"), "SA": (23.9, 45.1, "Saudi Arabia"), "QA": (25.4, 51.2, "Qatar"),
+    "PK": (30.4, 69.3, "Pakistan"), "BD": (23.7, 90.4, "Bangladesh"), "KZ": (48.0, 66.9, "Kazakhstan"),
+    "IR": (32.4, 53.7, "Iran"), "IQ": (33.2, 43.7, "Iraq"),
+}
+
+def normalize_public_ip(value):
+    try:
+        addr = ipaddress.ip_address(str(value).strip())
+    except (ValueError, AttributeError):
+        return None
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved or addr.is_unspecified:
+        return None
+    if isinstance(addr, ipaddress.IPv4Address) and addr in _CGNAT_V4_NETWORK:
+        return None
+    return str(addr)
+
+def extract_observed_answer_ips(entry):
+    """Only A/AAAA answers actually returned by AdGuard; never re-resolve domains."""
+    ips = []
+    for answer in entry.get("answer") or []:
+        if not isinstance(answer, dict) or str(answer.get("type") or "").upper() not in {"A", "AAAA"}:
+            continue
+        ip = normalize_public_ip(answer.get("value"))
+        if ip and ip not in ips:
+            ips.append(ip)
+    return ips
+
+def _iter_csv_rows_throttled(reader):
+    count = 0
+    for row in reader:
+        yield row
+        count += 1
+        if GEOIP_LOAD_CHUNK_ROWS and GEOIP_LOAD_YIELD_SECONDS and count % GEOIP_LOAD_CHUNK_ROWS == 0:
+            time.sleep(GEOIP_LOAD_YIELD_SECONDS)
+
+class _CompactRangeTableBuilder:
+    def __init__(self, extra_typecodes):
+        self.start = array.array("Q"); self.end = array.array("Q"); self.extra = [array.array(tc) for tc in extra_typecodes]
+        self._sorted = True; self._last_start = -1
+    def append(self, start, end, *extra_values):
+        if start < self._last_start: self._sorted = False
+        self._last_start = start; self.start.append(start); self.end.append(end)
+        for column, value in zip(self.extra, extra_values): column.append(value)
+    def finalize(self):
+        if self._sorted or len(self.start) <= 1: return
+        order = sorted(range(len(self.start)), key=self.start.__getitem__)
+        self.start = array.array("Q", (self.start[i] for i in order)); self.end = array.array("Q", (self.end[i] for i in order))
+        self.extra = [array.array(column.typecode, (column[i] for i in order)) for column in self.extra]
+
+class GeoIPProvider:
+    def lookup(self, ip): raise NotImplementedError
+    @property
+    def available(self): return False
+    @property
+    def range_count(self): return 0
+    @property
+    def path(self): return None
+
+class NullGeoIPProvider(GeoIPProvider):
+    def lookup(self, ip): return None, None
+
+class CsvRangeGeoIPProvider(GeoIPProvider):
+    """Memory-conscious local CSV range lookup using primitive arrays for IPv4."""
+    def __init__(self, path):
+        self._path = path; self._v4_start = array.array("Q"); self._v4_end = array.array("Q"); self._v4_country_idx = array.array("H")
+        self._v6 = []; self._v6_starts = []; self._countries = []; self._country_index = {}; self._loaded = False; self._load()
+    def _intern_country(self, code, name):
+        idx = self._country_index.get(code)
+        if idx is None:
+            idx = len(self._countries); self._countries.append((code, name)); self._country_index[code] = idx
+        return idx
+    def _load(self):
+        builder = _CompactRangeTableBuilder(("H",)); v6_rows = []
+        try:
+            with open(self._path, "r", encoding="utf-8", newline="") as f:
+                for row in _iter_csv_rows_throttled(csv.reader(f)):
+                    if not row or len(row) < 4: continue
+                    start_raw, end_raw = row[0].strip(), row[1].strip(); code, name = row[2].strip().upper(), row[3].strip()
+                    if start_raw.lower() in {"start_ip","start","network_start"}: continue
+                    try: start_addr = ipaddress.ip_address(start_raw); end_addr = ipaddress.ip_address(end_raw)
+                    except ValueError: continue
+                    if start_addr.version != end_addr.version or not code: continue
+                    idx = self._intern_country(code, name or code)
+                    if start_addr.version == 4: builder.append(int(start_addr), int(end_addr), idx)
+                    else: v6_rows.append((int(start_addr), int(end_addr), idx))
+            builder.finalize(); self._v4_start, self._v4_end = builder.start, builder.end; self._v4_country_idx = builder.extra[0]
+            v6_rows.sort(key=lambda row: row[0]); self._v6 = v6_rows; self._v6_starts = [row[0] for row in v6_rows]; self._loaded = bool(self._v4_start or self._v6)
+        except (OSError, csv.Error): self._loaded = False
+    @property
+    def available(self): return self._loaded
+    @property
+    def range_count(self): return len(self._v4_start) + len(self._v6)
+    @property
+    def path(self): return self._path
+    def lookup(self, ip):
+        try: addr = ipaddress.ip_address(ip)
+        except ValueError: return None, None
+        value = int(addr)
+        if addr.version == 4:
+            if not self._v4_start: return None, None
+            idx = bisect.bisect_right(self._v4_start, value) - 1
+            if idx < 0 or not (self._v4_start[idx] <= value <= self._v4_end[idx]): return None, None
+            return self._countries[self._v4_country_idx[idx]]
+        if not self._v6: return None, None
+        idx = bisect.bisect_right(self._v6_starts, value) - 1
+        if idx < 0: return None, None
+        start, end, country_idx = self._v6[idx]
+        return self._countries[country_idx] if start <= value <= end else (None, None)
+
+_geoip_provider = NullGeoIPProvider(); _geoip_cache = {}; _geoip_cache_order = deque(); _geoip_cache_lock = threading.Lock(); _geoip_load_lock = threading.Lock(); _geoip_load_started = False
+_geoip_map_cache = {"at": 0.0, "data": None}; _geoip_map_cache_lock = threading.Lock()
+GEOIP_DIAGNOSTIC_MESSAGES = {
+    "not_configured": "No GeoIP database configured; observed destinations remain unmapped rather than guessed.",
+    "load_failed": "GeoIP database is present but failed to load.",
+    "no_public_destinations": "GeoIP is loaded, but no public DNS destination IPs have been observed yet.",
+    "no_country_matches": "Public destination IPs exist, but none matched the configured country ranges.",
+    "country_only": "Country GeoIP is working. Coordinate-level destinations are not configured in this milestone.",
+}
+def geoip_lookup(ip):
+    with _geoip_cache_lock:
+        if ip in _geoip_cache: return _geoip_cache[ip]
+    code, name = _geoip_provider.lookup(ip); result = {"country_code": code, "country_name": name}
+    with _geoip_cache_lock:
+        if ip not in _geoip_cache:
+            _geoip_cache[ip] = result; _geoip_cache_order.append(ip)
+            while len(_geoip_cache_order) > GEOIP_CACHE_MAX_ENTRIES: _geoip_cache.pop(_geoip_cache_order.popleft(), None)
+    return result
+def _geoip_diagnostics():
+    p = _geoip_provider
+    return {"provider_type": type(p).__name__, "configured": bool(p.available), "db_path_basename": os.path.basename(p.path) if p.available and p.path else None, "range_count": p.range_count if p.available else 0}
+def _geoip_diagnostic_state(total_observations, geolocated_observations):
+    if isinstance(_geoip_provider, NullGeoIPProvider): return "not_configured"
+    if not _geoip_provider.available: return "load_failed"
+    if total_observations == 0: return "no_public_destinations"
+    if geolocated_observations == 0: return "no_country_matches"
+    return "country_only"
+def _reload_geoip_provider():
+    global _geoip_provider
+    with _geoip_load_lock:
+        path_exists = os.path.exists(GEOIP_DB_PATH); provider = CsvRangeGeoIPProvider(GEOIP_DB_PATH) if path_exists else NullGeoIPProvider()
+        with _geoip_cache_lock: _geoip_provider = provider; _geoip_cache.clear(); _geoip_cache_order.clear()
+    state = "loaded" if _geoip_provider.available else ("load_failed" if path_exists else "not_configured")
+    log_event("INFO" if state == "loaded" else "WARNING", "GeoIP provider state changed", state=state, ranges=_geoip_provider.range_count if _geoip_provider.available else 0)
+def _geoip_initial_load_worker():
+    global _geoip_load_started
+    if not os.path.exists(GEOIP_DB_PATH): log_event("INFO", "GeoIP database not configured", path=os.path.basename(GEOIP_DB_PATH)); return
+    with _geoip_load_lock:
+        if _geoip_load_started: return
+        _geoip_load_started = True
+    try: log_event("INFO", "GeoIP background load started", path=os.path.basename(GEOIP_DB_PATH)); _reload_geoip_provider()
+    except Exception as exc: log_event("ERROR", "GeoIP background load failed", error=repr(exc))
 
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
@@ -168,7 +370,7 @@ h1{margin:0 0 6px;font-size:2rem;letter-spacing:-.02em}.muted,small{color:#8b949
 .observability-strip{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:4px 0 8px}
 .observability-pill{display:inline-flex;align-items:center;gap:6px;padding:5px 9px;border:1px solid #30363d;border-radius:999px;background:#11161d;color:#c9d1d9;font-size:.78rem;font-variant-numeric:tabular-nums}
 .observability-dot{width:7px;height:7px;border-radius:50%;background:#3fb950;box-shadow:0 0 0 2px rgba(63,185,80,.10)}
-.debug-button{padding:5px 9px;font-size:.78rem;border-radius:999px}
+.debug-button{padding:5px 9px;font-size:.78rem;border-radius:999px}.devlog-entry{padding:8px 10px;border-bottom:1px solid var(--border);font-size:.78rem}.devlog-entry:last-child{border-bottom:0}.devlog-meta{color:var(--text-tertiary);font-family:var(--font-mono);margin-right:8px}.devlog-level{font-weight:800;margin-right:6px}.devlog-level-ERROR{color:var(--sem-blocked)}.devlog-level-WARNING{color:var(--sem-warn)}.devlog-level-INFO{color:var(--sem-info)}.devlog-scroll{max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-0)}
 .debug-button:hover{border-color:#58a6ff}
 input,button{background:#161b22;color:#e6edf3;border:1px solid #30363d;padding:10px 13px;border-radius:8px;font:inherit}button{cursor:pointer}button:hover{border-color:#58a6ff}
 .card{background:#11161d;border:1px solid #30363d;border-radius:14px;padding:18px;margin-top:18px;box-shadow:0 8px 28px rgba(0,0,0,.16)}
@@ -710,8 +912,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
     <div class="observability-strip" aria-label="Application runtime status">
       <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
       <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
-      <button type="button" class="debug-button" id="settings-open-btn" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button>
-      
+      <button type="button" class="debug-button" id="settings-open-btn" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button><button type="button" class="debug-button" id="devlog-open-btn" aria-label="Open DevLog">DevLog</button>
     </div>
     <p class="muted shell-meta">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
   </div>
@@ -780,6 +981,8 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
         <div class="settings-kv" id="diagnostics-kv"><b>Loading…</b><span></span></div>
         <div class="settings-row-label" style="padding-top:14px"><b>Analytics render performance</b><small>Last fetch/render timing for the Analytics poll and the destination map, split by network vs. on-page render time</small></div>
         <div class="settings-kv" id="diagnostics-perf-kv"><b>No samples yet</b><span>Open the Analytics tab first</span></div>
+        <div class="settings-row-label" style="padding-top:14px"><b>DevLog</b><small>Recent bounded operational events from this process</small></div>
+        <div class="devlog-scroll" id="devlog-list"><div class="settings-kv"><b>Loading…</b><span></span></div></div>
         
       </section>
       <section class="settings-section" data-settings-panel="system">
@@ -2690,9 +2893,25 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   const resetBtn = document.getElementById('settings-reset-btn');
   if (!dialog || !openBtn) return;
 
+  async function refreshDevLogPanel(){
+    const el = document.getElementById('devlog-list'); if (!el) return;
+    try{
+      const r = await fetch('/api/devlog', {cache:'no-store'});
+      const d = await r.json();
+      const rows = d.entries || [];
+      el.innerHTML = rows.length ? rows.slice(-100).reverse().map(x => {
+        const ctx = x.context ? ' · ' + esc(JSON.stringify(x.context)) : '';
+        return '<div class="devlog-entry"><span class="devlog-meta">' + esc(x.at) + '</span><span class="devlog-level devlog-level-' + esc(x.level) + '">' + esc(x.level) + '</span><span>' + esc(x.message) + esc(ctx) + '</span></div>';
+      }).join('') : '<div class="settings-kv"><b>No events yet</b><span>Operational events will appear here.</span></div>';
+    }catch(e){
+      el.innerHTML = '<div class="settings-kv"><b>DevLog unavailable</b><span>—</span></div>';
+    }
+  }
+
   function openDialog(){
     if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open','');
     refreshDiagnosticsPanel();
+    refreshDevLogPanel();
     refreshSystemPanel();
     refreshAboutUptime();
   }
@@ -2953,6 +3172,11 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     });
   })();
 
+  document.getElementById('devlog-open-btn')?.addEventListener('click', () => {
+    openBtn?.click();
+    setTimeout(() => document.querySelector('[data-settings-tab="diagnostics"]')?.click(), 0);
+  });
+
   syncControls();
 })();
 </script></body>
@@ -3013,6 +3237,10 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS device_ips(
             device_key TEXT NOT NULL, ip TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
             requests INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(device_key,ip))""")
+        c.execute("""CREATE TABLE IF NOT EXISTS domain_destination_ips(
+            domain TEXT NOT NULL, ip TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
+            observations INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(domain,ip))""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_domain_destination_ip_last_seen ON domain_destination_ips(last_seen)")
         c.execute("""CREATE TABLE IF NOT EXISTS processed_queries(
             fingerprint TEXT PRIMARY KEY, seen_at TEXT NOT NULL, status_counted INTEGER NOT NULL DEFAULT 0)""")
         add_column_if_missing(c, "processed_queries", "status_counted", "INTEGER NOT NULL DEFAULT 0")
@@ -3135,6 +3363,7 @@ def refresh_trackerdb(force=False):
     tmp, newdb = TRACKERDB_PATH + ".download", TRACKERDB_PATH + ".new"
     try:
         print("Downloading TrackerDB snapshot...", flush=True)
+        log_event("INFO", "TrackerDB snapshot download started")
         with requests.get(TRACKERDB_URL, timeout=60, stream=True) as r:
             r.raise_for_status()
             with open(tmp, "wb") as f:
@@ -3152,6 +3381,7 @@ def refresh_trackerdb(force=False):
         except FileNotFoundError:
             pass
         print("TrackerDB ready.", flush=True)
+        log_event("INFO", "TrackerDB ready")
     except Exception as e:
         print("TrackerDB refresh error:", repr(e), flush=True)
         for p in (tmp, newdb):
@@ -3604,6 +3834,21 @@ def upsert_device(c, device_key, name, hostname, mac, ips, source, info, now, in
             c.execute("INSERT INTO device_ips(device_key,ip,first_seen,last_seen,requests) VALUES(?,?,?,?,1)", (device_key, ip, now, now))
 
 
+def _record_domain_destination_ips(c, domain, ips, now):
+    if not ips:
+        return
+    existing_count = None
+    for ip in ips:
+        updated = c.execute("UPDATE domain_destination_ips SET last_seen=?, observations=observations+1 WHERE domain=? AND ip=?", (now, domain, ip)).rowcount
+        if updated:
+            continue
+        if existing_count is None:
+            existing_count = c.execute("SELECT COUNT(*) FROM domain_destination_ips WHERE domain=?", (domain,)).fetchone()[0]
+        if existing_count >= GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT:
+            continue
+        c.execute("INSERT INTO domain_destination_ips(domain,ip,first_seen,last_seen,observations) VALUES(?,?,?,?,1)", (domain, ip, now, now))
+        existing_count += 1
+
 def ingest(force=False):
     global last_ingest_at
     now_ts = time.time()
@@ -3621,6 +3866,7 @@ def ingest(force=False):
                 fp = query_fingerprint(e)
                 existing = c.execute("SELECT status_counted FROM processed_queries WHERE fingerprint=?", (fp,)).fetchone()
                 domain = ((e.get("question") or {}).get("name") or "").rstrip(".").lower()
+                observed_destination_ips = extract_observed_answer_ips(e)
 
                 # A previous Inspector version already counted this request but
                 # did not persist AdGuard's status. Backfill the status counters
@@ -3628,6 +3874,7 @@ def ingest(force=False):
                 if existing:
                     if int(existing[0] or 0) == 0 and domain:
                         qstatus = query_status(e.get("reason"), e.get("answer"))
+                _record_domain_destination_ips(c, domain, observed_destination_ips, now)
                         row = c.execute("SELECT blocked_requests,allowed_requests,unknown_requests FROM domains WHERE domain=?", (domain,)).fetchone()
                         if row:
                             blocked, allowed, unknown = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
@@ -3683,6 +3930,7 @@ def ingest(force=False):
         last_ingest_at = time.time()
         if new_count or status_backfilled:
             print(f"Ingested {new_count} new DNS queries; backfilled {status_backfilled} query statuses.", flush=True)
+            log_event("INFO", "DNS ingest cycle", new_queries=new_count, status_backfilled=status_backfilled)
     except Exception as e:
         print("ingest error:", repr(e), flush=True)
 
@@ -5205,6 +5453,93 @@ def api_system_stop():
         _stop_in_progress=True
     threading.Thread(target=_perform_self_stop,daemon=True,name="self-stop").start(); return jsonify({"ok":True,"status":"stopping"}),202
 
+@app.route("/api/devlog")
+def api_devlog():
+    level_filter = request.args.get("level", "").strip().upper()
+    query = request.args.get("q", "").strip().lower()
+    with _devlog_lock:
+        rows = list(_devlog)
+    if level_filter:
+        rows = [row for row in rows if row["level"] == level_filter]
+    if query:
+        rows = [row for row in rows if query in json.dumps(row, ensure_ascii=False).lower()]
+    return jsonify({"updated": utcnow(), "entries": rows[-200:]})
+
+
+def geoip_map_payload():
+    now = time.time()
+    with _geoip_map_cache_lock:
+        if _geoip_map_cache["data"] is not None and now - _geoip_map_cache["at"] < GEOIP_MAP_CACHE_SECONDS:
+            return _geoip_map_cache["data"]
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        domain_rows = c.execute("SELECT domain,clients_json FROM domains WHERE requests>0 ORDER BY last_seen DESC LIMIT ?", (GEOIP_MAP_DOMAIN_LIMIT,)).fetchall()
+        destination_rows = c.execute(
+            "SELECT di.domain,di.ip,di.observations FROM domain_destination_ips di "
+            "JOIN (SELECT domain FROM domains WHERE requests>0 ORDER BY last_seen DESC LIMIT ?) lim ON lim.domain=di.domain",
+            (GEOIP_MAP_DOMAIN_LIMIT,),
+        ).fetchall()
+        device_labels = {row[0]: row[1] for row in c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key) FROM devices").fetchall()}
+        history_row = c.execute("SELECT COUNT(DISTINCT domain),MIN(first_seen) FROM domain_destination_ips").fetchone()
+    by_domain = {}
+    for domain, ip, observations in destination_rows:
+        by_domain.setdefault(domain, []).append((ip, int(observations or 0)))
+    countries = {}
+    total_observations = geolocated_observations = 0
+    total_domains = len(domain_rows); geolocated_domains = unknown_domains = unknown_observations = 0
+    for domain, clients_json in domain_rows:
+        try: clients = json.loads(clients_json or "{}")
+        except (TypeError, ValueError): clients = {}
+        domain_geolocated = False; unmatched = 0
+        for ip, observations in by_domain.get(domain, []):
+            total_observations += observations
+            result = geoip_lookup(ip); code, name = result["country_code"], result["country_name"]
+            if not code:
+                unmatched += observations
+                continue
+            domain_geolocated = True; geolocated_observations += observations
+            bucket = countries.setdefault(code, {"country_name": name or code, "domain_keys": set(), "observation_count": 0, "sample_domains": {}, "device_keys": set(), "ip_keys": set()})
+            bucket["observation_count"] += observations; bucket["domain_keys"].add(domain); bucket["sample_domains"][domain] = bucket["sample_domains"].get(domain, 0) + observations
+            bucket["device_keys"].update(clients.keys()); bucket["ip_keys"].add(ip)
+        if domain_geolocated: geolocated_domains += 1
+        else:
+            unknown_domains += 1; unknown_observations += unmatched
+    country_list = []
+    for code, bucket in countries.items():
+        top_domains = sorted(bucket["sample_domains"].items(), key=lambda kv: -kv[1])[:5]
+        centroid = COUNTRY_CENTROIDS.get(code)
+        country_list.append({
+            "country_code": code, "country_name": bucket["country_name"], "domain_count": len(bucket["domain_keys"]),
+            "observation_count": bucket["observation_count"], "unique_ip_count": len(bucket["ip_keys"]),
+            "sample_domains": [d for d, _ in top_domains],
+            "sample_devices": [device_labels.get(k, k) for k in list(bucket["device_keys"])[:5]],
+            "centroid": centroid[:2] if centroid else None,
+        })
+    country_list.sort(key=lambda row: -row["observation_count"])
+    diagnostic_state = _geoip_diagnostic_state(total_observations, geolocated_observations)
+    payload = {
+        "updated": utcnow(),
+        "provider": {"configured": bool(_geoip_provider.available), "db_path_basename": os.path.basename(_geoip_provider.path) if _geoip_provider.available and _geoip_provider.path else None, "range_count": _geoip_provider.range_count if _geoip_provider.available else 0},
+        "countries": country_list, "destinations": [],
+        "unknown": {"domain_count": unknown_domains, "observation_count": unknown_observations},
+        "coverage": {"total_domains": total_domains, "geolocated_domains": geolocated_domains, "total_observations": total_observations, "geolocated_observations": geolocated_observations, "geolocated_pct": round(100.0 * geolocated_observations / total_observations, 1) if total_observations else 0.0},
+        "capabilities": {"country": bool(_geoip_provider.available), "coordinates": False, "heatmap": False},
+        "history": {"tracked_domains_all_time": int(history_row[0] or 0), "tracking_since": history_row[1] if history_row and history_row[1] else None},
+        "diagnostics": {"state": diagnostic_state, "message": GEOIP_DIAGNOSTIC_MESSAGES[diagnostic_state], "country": _geoip_diagnostics(), "city": {"provider_type": "Country-only milestone", "configured": False, "db_path_basename": None, "range_count": 0}},
+    }
+    with _geoip_map_cache_lock:
+        _geoip_map_cache["data"] = payload; _geoip_map_cache["at"] = now
+    return payload
+
+
+@app.route("/api/analytics/map")
+def api_analytics_map():
+    try:
+        return jsonify(geoip_map_payload())
+    except Exception as exc:
+        log_event("ERROR", "Destination map payload failed", error=repr(exc))
+        return jsonify({"updated": utcnow(), "provider": {"configured": False, "range_count": 0}, "countries": [], "destinations": [], "unknown": {"domain_count": 0, "observation_count": 0}, "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0}, "capabilities": {"country": False, "coordinates": False, "heatmap": False}, "history": {"tracked_domains_all_time": 0, "tracking_since": None}, "diagnostics": {"state": "load_failed", "message": "Destination map backend error."}}), 200
+
+
 def index():
     q=request.args.get("q","").strip()
     status_filter=request.args.get("status","").strip()
@@ -5264,4 +5599,5 @@ if __name__ == "__main__":
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=_enrichment_worker, daemon=True, name="enrichment-queue").start()
     threading.Thread(target=_device_ip_cleanup_worker, daemon=True, name="device-ip-cleanup").start()
+    threading.Thread(target=_geoip_initial_load_worker, daemon=True, name="geoip-loader").start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
