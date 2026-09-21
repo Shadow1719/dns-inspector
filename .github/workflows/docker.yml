@@ -1,12 +1,13 @@
-name: Build clean 0.8.6 dev candidate
+name: Build and publish Docker image
 
 on:
-  pull_request:
-    branches: ["dev"]
+  push:
+    branches: ["main"]
+    tags: ["v*.*.*"]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 env:
@@ -14,35 +15,13 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out PR head
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
-
-      - name: Run test suite
-        run: pytest -q
-
   build-and-push:
     runs-on: ubuntu-latest
-    needs: test
     steps:
-      - name: Check out PR head
+      - name: Check out repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -54,43 +33,78 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=stable,enable={{is_default_branch}}
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-
+
       - name: Read application version
         id: version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push clean candidate
+      - name: Fetch official vendor favicons
+        shell: bash
+        run: |
+          set -u
+          mkdir -p static/vendor-favicons
+          fetch() {
+            name="$1"; shift
+            for url in "$@"; do
+              echo "Fetching official $name favicon from $url"
+              tmp="static/vendor-favicons/$name.tmp"
+              if curl -fsSL --retry 2 --connect-timeout 10 --max-time 30 -A "Mozilla/5.0 (DNS Inspector build)" "$url" -o "$tmp"; then
+                mime="$(file --brief --mime-type "$tmp" 2>/dev/null || true)"
+                case "$mime" in
+                  image/*)
+                    mv -f "$tmp" "static/vendor-favicons/$name.ico"
+                    echo "Fetched $name favicon ($mime)"
+                    return 0
+                    ;;
+                  *)
+                    echo "Ignoring non-image response for $name: $mime"
+                    rm -f "$tmp"
+                    ;;
+                esac
+              fi
+            done
+            echo "Warning: could not fetch an official favicon for $name; generic device icon will be used."
+            rm -f "static/vendor-favicons/$name.ico" "static/vendor-favicons/$name.tmp"
+            return 0
+          }
+          fetch dell https://www.dell.com/favicon.ico https://www.dell.com/favicon.png
+          fetch lg https://www.lg.com/favicon.ico https://www.lg.com/favicon.png
+          fetch zte https://www.zte.com.cn/favicon.ico https://www.zte.com.cn/favicon.png
+          fetch bosch https://www.bosch.com/favicon.ico https://www.bosch.com/favicon.png
+          fetch roborock https://ro.roborock.com/favicon.ico https://global.roborock.com/favicon.ico https://ro.roborock.com/favicon.png https://global.roborock.com/favicon.png
+          fetch petkit https://www.petkit.com/favicon.ico https://www.petkit.com/favicon.png
+
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev-rebuild
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.event.pull_request.head.sha || github.sha }}
-          labels: |
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             APP_VERSION=${{ steps.version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Start image and verify /health
+      - name: Package source archive and create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          set -e
-          docker build -t dns-inspector:verify --build-arg APP_VERSION=${{ steps.version.outputs.version }} .
-          docker run -d --name dns-inspector-verify -p 8080:8080 \
-            -e DB_PATH=/data/inspector.db \
-            -e TRACKERDB_URL=http://127.0.0.1:9/trackerdb.sql \
-            dns-inspector:verify
-          trap 'docker logs dns-inspector-verify 2>/dev/null || true; docker rm -f dns-inspector-verify 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/health; then
-              echo
-              echo "health check passed"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "health check never succeeded"
-          exit 1
+          zip -qr "dns-inspector-${VERSION}.zip" . -x '.git/*' 'dns-inspector-*.zip'
+          gh release create "${GITHUB_REF_NAME}" "dns-inspector-${VERSION}.zip" \
+            --title "DNS Inspector ${VERSION}" \
+            --generate-notes \
+            --latest
