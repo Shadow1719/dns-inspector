@@ -57,6 +57,31 @@ def test_init_db_closes_its_connection(app_module, track_connections):
     assert_all_closed(track_connections)
 
 
+def test_execute_sql_file_preserves_dump_transaction_boundary(app_module, tmp_path):
+    # SQLite .dump files explicitly wrap the schema/data in BEGIN/COMMIT.
+    # Regression guard for the streaming importer: executescript() would
+    # implicitly commit before each statement and make the final COMMIT fail.
+    dump = tmp_path / "trackerdb.sql"
+    dump.write_text(
+        """PRAGMA foreign_keys=OFF;
+BEGIN TRANSACTION;
+CREATE TABLE tracker_domains(domain TEXT);
+INSERT INTO tracker_domains(domain) VALUES ('ads.example.com');
+COMMIT;
+""",
+        encoding="utf-8",
+    )
+
+    import sqlite3
+    from contextlib import closing
+
+    db = tmp_path / "trackerdb.sqlite"
+    with closing(sqlite3.connect(db)) as c:
+        app_module._execute_sql_file(c, dump)
+        assert c.execute("SELECT domain FROM tracker_domains").fetchall() == [("ads.example.com",)]
+        assert c.in_transaction is False
+
+
 def test_trackerdb_ready_closes_its_connection(app_module, track_connections):
     # Build a minimal valid trackerdb file the way refresh_trackerdb() would.
     import sqlite3
