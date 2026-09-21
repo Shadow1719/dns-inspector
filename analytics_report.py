@@ -57,6 +57,22 @@ def _fmt_pct(value):
         return "0.0%"
 
 
+def _ellipsize(text, font_name, font_size, max_width):
+    """Truncate text with a trailing ellipsis so it never exceeds max_width at the given font."""
+    text = text or ""
+    if stringWidth(text, font_name, font_size) <= max_width:
+        return text
+    ellipsis = "…"
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if stringWidth(text[:mid] + ellipsis, font_name, font_size) <= max_width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return (text[:lo] + ellipsis) if lo > 0 else ellipsis
+
+
 def _fmt_dt(value):
     try:
         text = str(value)
@@ -245,33 +261,72 @@ def _draw_donut(c, x, y, w, h, breakdown):
         ly -= 17
 
 
+def _bar_list_layout(h, row_count, *, top_pad=36, bottom_pad=10, label_size=7.2, label_gap=3, bar_h=5, row_gap=4):
+    """Compute how many rows of a bar list fit in height h without the label
+    ever overlapping the bar below it, and the pitch (row_h) between rows.
+
+    Returns (max_rows, row_h). row_h is only meaningful when row_count > 0.
+    """
+    available = max(h - top_pad - bottom_pad, 0)
+    min_row_h = label_size + label_gap + bar_h + row_gap
+    max_rows = int(available // min_row_h)
+    shown = min(row_count, max_rows) if row_count and max_rows > 0 else 0
+    row_h = (available / shown) if shown else 0
+    return shown, row_h
+
+
 def _draw_bar_list(c, x, y, w, h, title, rows, color):
     _draw_round_rect(c, x, y, w, h, WHITE, GRID, 10)
     c.setFont("Helvetica-Bold", 9)
     c.setFillColor(INK)
     c.drawString(x + 12, y + h - 20, title)
-    rows = rows[:7]
+
     if not rows:
         c.setFont("Helvetica", 8)
         c.setFillColor(MUTED)
         c.drawString(x + 12, y + h - 40, "No data available")
         return
+
+    top_pad, bottom_pad = 36, 10
+    label_size, label_gap, bar_h, row_gap = 7.2, 3, 5, 4
+    shown, row_h = _bar_list_layout(
+        h, len(rows), top_pad=top_pad, bottom_pad=bottom_pad,
+        label_size=label_size, label_gap=label_gap, bar_h=bar_h, row_gap=row_gap,
+    )
+    if not shown:
+        c.setFont("Helvetica", 8)
+        c.setFillColor(MUTED)
+        c.drawString(x + 12, y + h - 40, "Not enough space to display items")
+        return
+    rows = rows[:shown]
+
     max_v = max(float(r.get("value") or 0) for r in rows) or 1
-    row_h = (h - 42) / max(len(rows), 1)
+    value_col_w = 34
+    bar_w = w - 24 - value_col_w
+    label_max_w = w - 24
+    rows_top = y + h - top_pad
+
     for i, row in enumerate(rows):
-        yy = y + h - 38 - (i + 1) * row_h
-        label = str(row.get("label") or "")[:34]
+        row_top = rows_top - i * row_h
+        label = _ellipsize(str(row.get("label") or ""), "Helvetica", label_size, label_max_w)
         value = float(row.get("value") or 0)
+
+        # Label sits in its own line at the top of the row; the bar is drawn
+        # entirely below the label's baseline (plus a clearance gap), so the
+        # bar can never be drawn underneath/behind the text.
         c.setFillColor(INK)
-        c.setFont("Helvetica", 7.4)
-        c.drawString(x + 12, yy + row_h - 12, label)
+        c.setFont("Helvetica", label_size)
+        c.drawString(x + 12, row_top - label_size, label)
+
+        bar_y = row_top - label_size - label_gap - bar_h
         c.setFillColor(HexColor("#EFF3F8"))
-        c.roundRect(x + 12, yy + 4, w - 70, 7, 3, fill=1, stroke=0)
+        c.roundRect(x + 12, bar_y, bar_w, bar_h, 2.5, fill=1, stroke=0)
         c.setFillColor(color)
-        c.roundRect(x + 12, yy + 4, (w - 70) * (value / max_v), 7, 3, fill=1, stroke=0)
+        c.roundRect(x + 12, bar_y, max(bar_w * (value / max_v), 0), bar_h, 2.5, fill=1, stroke=0)
+
         c.setFillColor(MUTED)
         c.setFont("Helvetica-Bold", 7.2)
-        c.drawRightString(x + w - 12, yy + 4, _fmt_num(value))
+        c.drawRightString(x + w - 12, bar_y + 0.8, _fmt_num(value))
 
 
 def _draw_insight(c, x, y, w, h, label, title, body, accent, bg):
@@ -377,19 +432,24 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     country_body = "Observed public destination IPs are aggregated at country level. Country geography describes where DNS answers resolve, not verified server locations."
     _draw_insight(c, MARGIN + 2 * (card_w2 + card_gap), cards_y, card_w2, 47 * mm, "Destinations", country_title, country_body, PURPLE, PALE_PURPLE)
 
-    _draw_donut(c, MARGIN, 76 * mm, PAGE_W - 2 * MARGIN, 68 * mm, breakdown)
+    # The donut/snapshot/bar-list cluster below the insight cards is shifted
+    # up (same relative gaps, same donut size) to reclaim the large unused
+    # gap that used to sit between the cards and the donut. That reclaimed
+    # space is handed to the bar-list panels below, which need real height
+    # to lay out a label-then-bar row without the two overlapping.
+    _draw_donut(c, MARGIN, 103 * mm, PAGE_W - 2 * MARGIN, 68 * mm, breakdown)
 
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(INK)
-    c.drawString(MARGIN, 63 * mm, "Visibility snapshot")
+    c.drawString(MARGIN, 90 * mm, "Visibility snapshot")
     c.setFont("Helvetica", 8)
     c.setFillColor(MUTED)
-    c.drawString(MARGIN, 57 * mm, "Top items currently tracked by DNS Inspector — useful context for the period, not a fabricated period-only count.")
+    c.drawString(MARGIN, 84 * mm, "Top items currently tracked by DNS Inspector — useful context for the period, not a fabricated period-only count.")
 
     top_domains = (stats or {}).get("domains") or []
     top_devices = (stats or {}).get("devices") or []
-    _draw_bar_list(c, MARGIN, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most queried domains", top_domains, BLUE)
-    _draw_bar_list(c, MARGIN + (PAGE_W - 2 * MARGIN) / 2 + 3 * mm, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most active devices", top_devices, TEAL)
+    _draw_bar_list(c, MARGIN, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 64 * mm, "Most queried domains", top_domains, BLUE)
+    _draw_bar_list(c, MARGIN + (PAGE_W - 2 * MARGIN) / 2 + 3 * mm, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 64 * mm, "Most active devices", top_devices, TEAL)
 
     c.showPage()
 
