@@ -2,11 +2,14 @@ import hashlib
 import ipaddress
 import json
 import os
+import queue
 import re
 import socket
 import sqlite3
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
@@ -38,9 +41,12 @@ RDAP_URL = os.getenv("RDAP_URL", "https://rdap.org/domain/").rstrip("/")
 MACVENDOR_URL = os.getenv("MACVENDOR_URL", "https://api.macvendors.com").rstrip("/")
 MACVENDOR_CACHE_HOURS = int(os.getenv("MACVENDOR_CACHE_HOURS", "168"))
 HOSTNAME_CACHE_HOURS = int(os.getenv("HOSTNAME_CACHE_HOURS", "24"))
-NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "360"))
-RDAP_CACHE_HOURS = int(os.getenv("RDAP_CACHE_HOURS", "720"))
-DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "168"))
+NETIFY_CACHE_HOURS = int(os.getenv("NETIFY_CACHE_HOURS", "4320"))  # 180 days
+RDAP_CACHE_HOURS = int(os.getenv("RDAP_CACHE_HOURS", "720"))  # 30 days
+DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "240"))  # 10 days
+ENRICHMENT_RETRY_HOURS = max(24.0, float(os.getenv("ENRICHMENT_RETRY_HOURS", "24")))
+DEVICE_IP_RETENTION_HOURS = max(1.0, float(os.getenv("DEVICE_IP_RETENTION_HOURS", "12")))
+DEVICE_IP_CLEANUP_INTERVAL_MINUTES = max(5, int(os.getenv("DEVICE_IP_CLEANUP_INTERVAL_MINUTES", "30")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
 app = Flask(__name__)
@@ -52,6 +58,23 @@ neighbors_cache = {}
 neighbors_mtime = None
 enrichment_lock = threading.Lock()
 enrichment_refreshing = set()
+
+# Background AdGuard status refreshes are deliberately bounded: an Overview
+# request must never create an unbounded number of threads (one per stale
+# domain on every request would do exactly that).
+_status_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="agh-status")
+_status_guard = threading.Lock()
+_status_inflight = set()
+_status_slots = threading.BoundedSemaphore(20)
+
+# Enrichment is a bounded queue processed by a single background worker,
+# never a thread-per-domain fan-out. Retry state is persisted so a missing/
+# failed lookup is not retried on every UI poll.
+_enrichment_queue = queue.Queue(maxsize=500)
+_enrichment_queue_lock = threading.Lock()
+_enrichment_queued = set()
+_enrichment_retry_until = {}
+_enrichment_retry_loaded = set()
 
 MAC_RE = re.compile(r"^(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}$", re.I)
 IP_RE = re.compile(r"^[0-9a-f:.]+$")
@@ -208,10 +231,25 @@ try{
 }catch(e){}
 renderStats({{ stats|tojson }});
 function buildStateUrl(){const p=new URLSearchParams();if(currentQuery)p.set('q',currentQuery);if(recentFilters.status)p.set('status',recentFilters.status);if(recentFilters.newOnly)p.set('new','1');if(recentFilters.classification)p.set('classification',recentFilters.classification);if(recentFilters.severity)p.set('severity',recentFilters.severity);if(recentFilters.device)p.set('device',recentFilters.device);if(recentFilters.vendor)p.set('vendor',recentFilters.vendor);p.set('page',String(recentFilters.page));p.set('page_size',String(recentFilters.page_size));return '/api/state?'+p.toString()}
-function applyRecentFilterChanges(){recentFilters.page=1;refresh(true)}
-async function refresh(force=false){try{const r=await fetch(buildStateUrl(),{cache:'no-store'});if(!r.ok)return;const data=await r.json();renderRecent(data.recent);updateNewDetection(data.recent);renderRecentControls(data.recent_meta,data.filter_options);if(initialDomainSnapshot&&data.recent_meta?.new_domains?.length)showNewBanner(data.recent_meta.new_domains);renderClients(data.clients);renderStats(data.stats);if(data.inspect_html!==null)document.getElementById('inspect-root').innerHTML=data.inspect_html;const stamp=formatUpdated(data.updated);document.getElementById('last-update-time').textContent=stamp.time;document.getElementById('last-update-date').textContent=stamp.date}catch(e){console.debug('refresh failed',e)}finally{setTimeout(refresh,refreshMs)}}
-document.querySelectorAll('[data-status-filter]').forEach(b=>b.addEventListener('click',()=>{recentFilters.status=b.dataset.statusFilter||'';applyRecentFilterChanges()}));document.getElementById('new-filter')?.addEventListener('click',()=>{recentFilters.newOnly=!recentFilters.newOnly;applyRecentFilterChanges()});for(const [id,key] of [['classification-filter','classification'],['severity-filter','severity'],['device-filter','device'],['vendor-filter','vendor']])document.getElementById(id)?.addEventListener('change',e=>{recentFilters[key]=e.target.value;applyRecentFilterChanges()});document.getElementById('page-size')?.addEventListener('change',e=>{recentFilters.page_size=Number(e.target.value)||50;applyRecentFilterChanges()});document.getElementById('page-prev')?.addEventListener('click',()=>{if(recentFilters.page>1){recentFilters.page--;refresh(true)}});document.getElementById('page-next')?.addEventListener('click',()=>{if(recentFilters.page<recentMeta.pages){recentFilters.page++;refresh(true)}});
-const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;setTimeout(()=>refresh(true),refreshMs);
+let refreshTimer=null;
+let refreshInFlight=false;
+let refreshPending=false;
+function scheduleRefresh(delay=refreshMs){
+  if(refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer=setTimeout(()=>{ refreshTimer=null; refresh(); }, Math.max(250, delay));
+}
+function requestRefresh(){
+  if(refreshTimer){ clearTimeout(refreshTimer); refreshTimer=null; }
+  if(refreshInFlight){ refreshPending=true; return; }
+  refresh();
+}
+function applyRecentFilterChanges(){recentFilters.page=1;requestRefresh()}
+async function refresh(force=false){
+  if(refreshInFlight){ refreshPending=true; return; }
+  refreshInFlight=true;
+  try{const r=await fetch(buildStateUrl(),{cache:'no-store'});if(!r.ok)return;const data=await r.json();renderRecent(data.recent);updateNewDetection(data.recent);renderRecentControls(data.recent_meta,data.filter_options);if(initialDomainSnapshot&&data.recent_meta?.new_domains?.length)showNewBanner(data.recent_meta.new_domains);renderClients(data.clients);renderStats(data.stats);if(data.inspect_html!==null)document.getElementById('inspect-root').innerHTML=data.inspect_html;const stamp=formatUpdated(data.updated);document.getElementById('last-update-time').textContent=stamp.time;document.getElementById('last-update-date').textContent=stamp.date}catch(e){console.debug('refresh failed',e)}finally{refreshInFlight=false;if(refreshPending){refreshPending=false;scheduleRefresh(0)}else{scheduleRefresh(refreshMs)}}}
+document.querySelectorAll('[data-status-filter]').forEach(b=>b.addEventListener('click',()=>{recentFilters.status=b.dataset.statusFilter||'';applyRecentFilterChanges()}));document.getElementById('new-filter')?.addEventListener('click',()=>{recentFilters.newOnly=!recentFilters.newOnly;applyRecentFilterChanges()});for(const [id,key] of [['classification-filter','classification'],['severity-filter','severity'],['device-filter','device'],['vendor-filter','vendor']])document.getElementById(id)?.addEventListener('change',e=>{recentFilters[key]=e.target.value;applyRecentFilterChanges()});document.getElementById('page-size')?.addEventListener('change',e=>{recentFilters.page_size=Number(e.target.value)||50;applyRecentFilterChanges()});document.getElementById('page-prev')?.addEventListener('click',()=>{if(recentFilters.page>1){recentFilters.page--;requestRefresh()}});document.getElementById('page-next')?.addEventListener('click',()=>{if(recentFilters.page<recentMeta.pages){recentFilters.page++;requestRefresh()}});
+const initialStamp=formatUpdated({{ updated|tojson }});document.getElementById('last-update-time').textContent=initialStamp.time;document.getElementById('last-update-date').textContent=initialStamp.date;scheduleRefresh(refreshMs);
 </script>
 </body></html>
 """
@@ -228,7 +266,7 @@ def add_column_if_missing(c, table, column, ddl):
 
 
 def init_db():
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         c.execute("""CREATE TABLE IF NOT EXISTS domains(
             domain TEXT PRIMARY KEY, first_seen TEXT, last_seen TEXT,
             requests INTEGER NOT NULL DEFAULT 0, clients_json TEXT NOT NULL DEFAULT '{}',
@@ -278,6 +316,11 @@ def init_db():
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_processed_seen ON processed_queries(seen_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")
+        c.execute("""CREATE TABLE IF NOT EXISTS enrichment_attempts(
+            domain TEXT PRIMARY KEY,
+            attempted_at REAL NOT NULL,
+            next_attempt_at REAL NOT NULL)""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_attempt_next ON enrichment_attempts(next_attempt_at)")
         c.commit()
 
 
@@ -340,7 +383,7 @@ def trackerdb_ready():
     if not os.path.exists(TRACKERDB_PATH):
         return False
     try:
-        with _open_trackerdb(TRACKERDB_PATH) as c:
+        with closing(_open_trackerdb(TRACKERDB_PATH)) as c:
             c.execute("SELECT 1 FROM tracker_domains LIMIT 1").fetchone()
         return True
     except Exception:
@@ -379,7 +422,7 @@ def refresh_trackerdb(force=False):
                         f.write(chunk)
         if os.path.exists(newdb):
             os.remove(newdb)
-        with _open_trackerdb(newdb) as c:
+        with closing(_open_trackerdb(newdb)) as c:
             _execute_sql_file(c, tmp)
             c.execute("PRAGMA journal_mode=DELETE")
         os.replace(newdb, TRACKERDB_PATH)
@@ -435,7 +478,7 @@ def adguard_current_status(domain):
 def cached_adguard_status(domain, max_age_seconds=300):
     domain = str(domain or "").strip().rstrip(".").lower()
     now = datetime.now(timezone.utc)
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         row = c.execute("SELECT fetched_at,status,reason FROM adguard_status_cache WHERE domain=?", (domain,)).fetchone()
     if row:
         try:
@@ -457,10 +500,46 @@ def refresh_adguard_status(domain):
     if status == "Unknown" and not reason:
         return
     now = utcnow()
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         c.execute("INSERT OR REPLACE INTO adguard_status_cache(domain,fetched_at,status,reason) VALUES(?,?,?,?)", (domain, now, status, reason))
         c.execute("UPDATE domains SET current_status=?, current_reason=? WHERE domain=?", (status, reason, domain))
         c.commit()
+
+
+def _schedule_adguard_status(domain):
+    """Queue at most one bounded AdGuard status refresh per domain.
+
+    Overview requests must never create an unbounded number of threads.
+    """
+    domain = str(domain or "").strip().rstrip(".").lower()
+    if not domain:
+        return False
+    if not _status_slots.acquire(blocking=False):
+        return False
+    with _status_guard:
+        if domain in _status_inflight:
+            _status_slots.release()
+            return False
+        _status_inflight.add(domain)
+
+    def run():
+        try:
+            refresh_adguard_status(domain)
+        except Exception as e:
+            print(f"AdGuard status refresh error for {domain}: {e!r}", flush=True)
+        finally:
+            with _status_guard:
+                _status_inflight.discard(domain)
+            _status_slots.release()
+
+    try:
+        _status_executor.submit(run)
+        return True
+    except Exception:
+        with _status_guard:
+            _status_inflight.discard(domain)
+        _status_slots.release()
+        return False
 
 
 def fetch_clients():
@@ -519,7 +598,7 @@ def hostname_for_ip(ip, allow_network=True):
     if not is_ip(ip):
         return ""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,hostname FROM hostname_cache WHERE ip=?", (ip,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -538,7 +617,7 @@ def hostname_for_ip(ip, allow_network=True):
     except Exception:
         hostname = ""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO hostname_cache(ip,fetched_at,hostname) VALUES(?,?,?)", (ip, utcnow(), hostname))
             c.commit()
     except Exception:
@@ -551,7 +630,7 @@ def mac_vendor_lookup(mac, allow_network=True):
     if not mac:
         return ""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,vendor FROM mac_vendor_cache WHERE mac=?", (mac,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -569,7 +648,7 @@ def mac_vendor_lookup(mac, allow_network=True):
     except Exception as e:
         print("MAC vendor lookup error:", repr(e), flush=True)
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO mac_vendor_cache(mac,fetched_at,vendor) VALUES(?,?,?)", (mac, utcnow(), vendor))
             c.commit()
     except Exception:
@@ -598,7 +677,7 @@ def _schedule_device_network_enrichment(device_key, ips, mac, hostname_hint=""):
                     if hostname:
                         break
             vendor = mac_vendor_lookup(mac, allow_network=True) if mac else ""
-            with db_lock, sqlite3.connect(DB_PATH) as c:
+            with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
                 row = c.execute("SELECT hostname,mac,vendor FROM devices WHERE device_key=?", (key,)).fetchone()
                 if row:
                     final_hostname = row[0] or hostname
@@ -813,9 +892,10 @@ def ingest(force=False):
         data = fetch_querylog()
         entries = data.get("data") or []
         now = utcnow()
-        with db_lock, sqlite3.connect(DB_PATH) as c:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
             new_count = 0
             status_backfilled = 0
+            new_domains_for_enrichment = []
             for e in entries:
                 fp = query_fingerprint(e)
                 existing = c.execute("SELECT status_counted FROM processed_queries WHERE fingerprint=?", (fp,)).fetchone()
@@ -859,6 +939,7 @@ def ingest(force=False):
                     allowed = 1 if qstatus == "Allowed" else 0
                     unknown = 1 if qstatus == "Unknown" else 0
                     c.execute("INSERT INTO domains(domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason,current_status,current_reason) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (domain, now, now, 1, json.dumps(clients), blocked, allowed, unknown, qstatus, str(e.get("reason") or ""), qstatus, str(e.get("reason") or "")))
+                    new_domains_for_enrichment.append(domain)
                 old = c.execute("SELECT request_count FROM client_cache WHERE identifier=?", (ident,)).fetchone()
                 if old:
                     c.execute("""UPDATE client_cache SET name=?, source=?, last_seen=?, request_count=request_count+1, info_json=?, device_key=?, mac=?, hostname=? WHERE identifier=?""",
@@ -874,6 +955,8 @@ def ingest(force=False):
             # Keep the dedupe table bounded while retaining enough history for repeated 500-entry query-log snapshots.
             c.execute("DELETE FROM processed_queries WHERE rowid IN (SELECT rowid FROM processed_queries ORDER BY seen_at DESC LIMIT -1 OFFSET 100000)")
             c.commit()
+        for new_domain in dict.fromkeys(new_domains_for_enrichment):
+            _queue_domain_enrichment(new_domain)
         refresh_runtime_clients()
         reconcile_neighbors()
         last_ingest_at = time.time()
@@ -881,6 +964,35 @@ def ingest(force=False):
             print(f"Ingested {new_count} new DNS queries; backfilled {status_backfilled} query statuses.", flush=True)
     except Exception as e:
         print("ingest error:", repr(e), flush=True)
+
+
+def _prune_stale_device_ips():
+    """Drop device/IP associations older than DEVICE_IP_RETENTION_HOURS.
+
+    A recycled LAN address can later belong to a completely different
+    device, so IP associations must not be kept indefinitely. `last_seen` is
+    stored as an ISO-8601 UTC string (see `utcnow()`), so the cutoff must be
+    formatted the same way rather than compared as a raw Unix timestamp --
+    SQLite's TEXT-affinity comparison would otherwise never match.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=DEVICE_IP_RETENTION_HOURS)).isoformat()
+    try:
+        with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+            cur = c.execute("DELETE FROM device_ips WHERE last_seen < ?", (cutoff,))
+            removed = int(cur.rowcount or 0)
+            c.commit()
+        if removed:
+            print(f"Pruned {removed} stale device IP associations older than {DEVICE_IP_RETENTION_HOURS:g}h", flush=True)
+        return removed
+    except Exception as e:
+        print('device IP cleanup error:', repr(e), flush=True)
+        return 0
+
+
+def _device_ip_cleanup_worker():
+    while True:
+        time.sleep(DEVICE_IP_CLEANUP_INTERVAL_MINUTES * 60)
+        _prune_stale_device_ips()
 
 
 def refresh_runtime_clients():
@@ -893,7 +1005,7 @@ def refresh_runtime_clients():
     if not auto and not manual:
         return
     now = utcnow()
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         rows = c.execute("SELECT identifier,device_key FROM client_cache").fetchall()
         for ident, current_device_key in rows:
             x = manual.get(ident) or auto.get(ident)
@@ -915,7 +1027,7 @@ def refresh_runtime_clients():
 
 def migrate_legacy_domain_clients():
     """One-time-ish reconciliation of v0.3 domain keys after stable device IDs are discovered."""
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         cache_rows = c.execute("SELECT identifier,device_key FROM client_cache WHERE device_key<>''").fetchall()
         aliases = {ident: dkey for ident, dkey in cache_rows}
         if not aliases:
@@ -942,7 +1054,7 @@ def tracker_lookup(domain):
     labels = domain.rstrip(".").lower().split(".")
     candidates = [".".join(labels[i:]) for i in range(len(labels))]
     try:
-        with sqlite3.connect(TRACKERDB_PATH) as c:
+        with closing(sqlite3.connect(TRACKERDB_PATH)) as c:
             for candidate in candidates:
                 row = c.execute("""SELECT td.domain,t.name,cat.name,t.website_url,t.company_id,
                     coalesce(co.name,''),coalesce(co.description,''),coalesce(co.website_url,''),coalesce(co.country,'')
@@ -1027,7 +1139,7 @@ def netify_ip_lookup(ip, force=False):
     if not ip:
         return {}
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,json FROM netify_ip_cache WHERE ip=?", (ip,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1049,7 +1161,7 @@ def netify_ip_lookup(ip, force=False):
     except Exception as e:
         print("Netify IP lookup error:", repr(e), flush=True)
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO netify_ip_cache(ip,fetched_at,json) VALUES(?,?,?)", (ip, utcnow(), json.dumps(result)))
             c.commit()
     except Exception:
@@ -1066,7 +1178,7 @@ def netify_lookup(domain, force=False):
     if not domain:
         return {}
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,json FROM netify_cache WHERE domain=?", (domain,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1205,7 +1317,7 @@ def netify_lookup(domain, force=False):
         print("Netify lookup error:", repr(e), flush=True)
 
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO netify_cache(domain,fetched_at,json) VALUES(?,?,?)", (domain, utcnow(), json.dumps(result)))
             c.commit()
     except Exception:
@@ -1221,7 +1333,7 @@ def rdap_lookup(domain, force=False):
         candidates.append(apex)
     for candidate in candidates:
         try:
-            with sqlite3.connect(DB_PATH) as c:
+            with closing(sqlite3.connect(DB_PATH)) as c:
                 row = c.execute("SELECT fetched_at,json FROM rdap_cache WHERE domain=?", (candidate,)).fetchone()
             if row:
                 age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1261,7 +1373,7 @@ def rdap_lookup(domain, force=False):
                                     break
                         if result["registrar"]:
                             break
-            with sqlite3.connect(DB_PATH) as c:
+            with closing(sqlite3.connect(DB_PATH)) as c:
                 c.execute("INSERT OR REPLACE INTO rdap_cache(domain,fetched_at,json) VALUES(?,?,?)", (candidate, utcnow(), json.dumps(result)))
                 c.commit()
             if result.get("org") or candidate == apex:
@@ -1281,7 +1393,7 @@ def dns_records_lookup(domain, force=False):
     if not domain:
         return {}
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute("SELECT fetched_at,json FROM dns_records_cache WHERE domain=?", (domain,)).fetchone()
         if row:
             age = datetime.now(timezone.utc) - datetime.fromisoformat(row[0])
@@ -1314,7 +1426,7 @@ def dns_records_lookup(domain, force=False):
             records[rtype] = values[:20]
 
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             c.execute("INSERT OR REPLACE INTO dns_records_cache(domain,fetched_at,json) VALUES(?,?,?)", (domain, utcnow(), json.dumps(records)))
             c.commit()
     except Exception:
@@ -1325,7 +1437,7 @@ def dns_records_lookup(domain, force=False):
 def _cache_needs_refresh(table, domain, max_age_hours):
     """Return True when a cache row is missing or older than its TTL."""
     try:
-        with sqlite3.connect(DB_PATH) as c:
+        with closing(sqlite3.connect(DB_PATH)) as c:
             row = c.execute(f"SELECT fetched_at FROM {table} WHERE domain=?", (domain,)).fetchone()
         if not row:
             return True
@@ -1335,28 +1447,91 @@ def _cache_needs_refresh(table, domain, max_age_hours):
         return True
 
 
-def refresh_domain_enrichment(domain):
-    """Refresh slow external enrichment in the background, never in the request path."""
+def _enrichment_retry_allowed(domain, now_ts=None):
+    """Return True unless this domain's enrichment was attempted too recently.
+
+    A missing/failed lookup must not be retried on every ~10s UI poll, so the
+    next-allowed-attempt timestamp is persisted in SQLite and mirrored here.
+    """
+    now_ts = time.time() if now_ts is None else now_ts
+    until = _enrichment_retry_until.get(domain)
+    if until is not None:
+        return until <= now_ts
+    if domain in _enrichment_retry_loaded:
+        return True
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            row = c.execute("SELECT next_attempt_at FROM enrichment_attempts WHERE domain=?", (domain,)).fetchone()
+        until = float(row[0]) if row else 0.0
+        if row:
+            _enrichment_retry_until[domain] = until
+    except Exception:
+        until = 0.0
+    _enrichment_retry_loaded.add(domain)
+    return until <= now_ts
+
+
+def _mark_enrichment_attempt(domain, now_ts=None):
+    now_ts = time.time() if now_ts is None else now_ts
+    next_ts = now_ts + ENRICHMENT_RETRY_HOURS * 3600.0
+    _enrichment_retry_until[domain] = next_ts
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            c.execute(
+                "INSERT OR REPLACE INTO enrichment_attempts(domain,attempted_at,next_attempt_at) VALUES(?,?,?)",
+                (domain, now_ts, next_ts),
+            )
+            c.commit()
+    except Exception as e:
+        print('enrichment retry-state error:', repr(e), flush=True)
+    return next_ts
+
+
+def _queue_domain_enrichment(domain):
+    """Queue at most one bounded enrichment refresh per domain.
+
+    Enrichment never runs on the request path and never spawns one thread
+    per domain; a single background worker drains this bounded queue.
+    """
     domain = str(domain or '').strip('.').lower()
     if not domain:
-        return
-    with enrichment_lock:
-        if domain in enrichment_refreshing:
-            return
-        enrichment_refreshing.add(domain)
-
-    def run():
+        return False
+    with _enrichment_queue_lock:
+        if domain in _enrichment_queued or domain in enrichment_refreshing:
+            return False
+        if not _enrichment_retry_allowed(domain):
+            return False
         try:
-            netify_lookup(domain, force=True)
-            rdap_lookup(domain, force=True)
-            dns_records_lookup(domain, force=True)
+            _enrichment_queue.put_nowait(domain)
+        except queue.Full:
+            return False
+        _enrichment_queued.add(domain)
+        _mark_enrichment_attempt(domain)
+    return True
+
+
+def _enrichment_worker():
+    while True:
+        domain = _enrichment_queue.get()
+        with _enrichment_queue_lock:
+            _enrichment_queued.discard(domain)
+        with enrichment_lock:
+            enrichment_refreshing.add(domain)
+        try:
+            # Re-check every source at execution time; fresh data is never touched.
+            if _cache_needs_refresh("netify_cache", domain, NETIFY_CACHE_HOURS):
+                netify_lookup(domain, force=True)
+            if _cache_needs_refresh("rdap_cache", apex_domain(domain), RDAP_CACHE_HOURS):
+                rdap_lookup(domain, force=True)
+            if _cache_needs_refresh("dns_records_cache", domain, DNS_RECORDS_CACHE_HOURS):
+                dns_records_lookup(domain, force=True)
         except Exception as e:
-            print("enrichment refresh error:", repr(e), flush=True)
+            print('enrichment worker error:', repr(e), flush=True)
         finally:
             with enrichment_lock:
                 enrichment_refreshing.discard(domain)
-
-    threading.Thread(target=run, daemon=True, name=f"enrich:{domain}").start()
+            _enrichment_queue.task_done()
+            time.sleep(max(0.0, float(os.getenv('ENRICHMENT_DELAY_SECONDS', '1.0'))))
 
 
 def resolve_dns(domain, records=None):
@@ -1654,9 +1829,64 @@ def build_explanation(domain, tracker, rdap, client_details, netify=None):
     return {"summary": summary, "tone": tone, "confidence": confidence, "evidence": evidence or ["No strong identifying signals are available yet"]}
 
 
+def _resolve_search_domain(query):
+    """Resolve a search query to the single most relevant observed domain.
+
+    Order: exact domain match, then partial domain match, then device
+    identity fields (name/hostname/mac/vendor) and recent IPs -- the device
+    match is scored by how much of that device's own traffic falls under
+    each candidate domain, so a single search box can find a device's
+    activity without a separate device search.
+    """
+    q = str(query or '').strip().lower().rstrip('.')
+    if not q:
+        return ''
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        exact = c.execute("SELECT domain FROM domains WHERE domain=?", (q,)).fetchone()
+        if exact:
+            return exact[0]
+
+        like = f"%{q}%"
+        rows = c.execute("SELECT domain FROM domains WHERE lower(domain) LIKE ? ORDER BY requests DESC LIMIT 20", (like,)).fetchall()
+        if rows:
+            return rows[0][0]
+
+        device_rows = c.execute(
+            "SELECT device_key FROM devices WHERE lower(device_key) LIKE ? OR lower(name) LIKE ? OR lower(hostname) LIKE ? OR lower(mac) LIKE ? OR lower(vendor) LIKE ? ORDER BY request_count DESC LIMIT 25",
+            (like, like, like, like, like),
+        ).fetchall()
+        device_keys = {r[0] for r in device_rows}
+
+        ip_rows = c.execute(
+            "SELECT DISTINCT device_key FROM device_ips WHERE lower(ip) LIKE ? ORDER BY last_seen DESC LIMIT 25",
+            (like,),
+        ).fetchall()
+        device_keys.update(r[0] for r in ip_rows)
+
+        if not device_keys:
+            return ''
+
+        best = None
+        best_requests = -1
+        for domain, requests_count, raw_clients in c.execute(
+            "SELECT domain,requests,clients_json FROM domains ORDER BY requests DESC LIMIT 3000"
+        ).fetchall():
+            try:
+                clients = json.loads(raw_clients or '{}')
+            except Exception:
+                clients = {}
+            count = sum(int(clients.get(k, 0) or 0) for k in device_keys)
+            if count > 0 and (count > best_requests or (count == best_requests and int(requests_count or 0) > int(best[1] if best else -1))):
+                best = (domain, int(requests_count or 0))
+                best_requests = count
+        return best[0] if best else ''
+
+
 def inspect_domain(domain):
-    domain = domain.lower().rstrip(".")
-    with sqlite3.connect(DB_PATH) as c:
+    domain = _resolve_search_domain(domain)
+    if not domain:
+        return None
+    with closing(sqlite3.connect(DB_PATH)) as c:
         row = c.execute("SELECT domain,first_seen,last_seen,requests,clients_json,blocked_requests,allowed_requests,unknown_requests,last_status,last_reason,current_status,current_reason FROM domains WHERE domain=?", (domain,)).fetchone()
         if not row:
             return None
@@ -1677,7 +1907,7 @@ def inspect_domain(domain):
         or _cache_needs_refresh("dns_records_cache", domain, DNS_RECORDS_CACHE_HOURS)
     )
     if needs_refresh:
-        refresh_domain_enrichment(domain)
+        _queue_domain_enrichment(domain)
 
     dns = resolve_dns(domain, dns_records)
     return {
@@ -1712,35 +1942,99 @@ def _is_new_domain(first_seen):
 
 
 def get_filter_options():
-    with sqlite3.connect(DB_PATH) as c:
+    # Reuse the exact same friendly-label logic as the Devices view instead of
+    # duplicating a simplified SQL COALESCE rule, so the Overview device
+    # dropdown never disagrees with how a device is actually labelled.
+    with closing(sqlite3.connect(DB_PATH)) as c:
         vendors=[r[0] for r in c.execute("SELECT DISTINCT vendor FROM devices WHERE TRIM(vendor)<>'' ORDER BY vendor COLLATE NOCASE").fetchall()]
-        devices=[{"value":k,"label":lbl} for k,lbl in c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key) AS lbl FROM devices ORDER BY lbl COLLATE NOCASE").fetchall()]
+        rows=c.execute("SELECT device_key,name,hostname,vendor FROM devices ORDER BY request_count DESC, device_key COLLATE NOCASE").fetchall()
+        devices=[]
+        for device_key,name,hostname,vendor in rows:
+            label=real_device_label({"device_key":device_key,"identifier":device_key,"name":name,"hostname":hostname,"display_name":hostname or name or vendor or device_key,"vendor":vendor})
+            label=label or str(vendor or '').strip() or device_key
+            devices.append({"value":device_key,"label":label})
     return {"classifications":["Known service","Telemetry / Tracking","Advertising","Suspicious","Unknown"],"severities":["Info","Low","Medium","High","Unknown"],"vendors":vendors,"devices":devices}
+
+
+def _status_from_counts(blocked, allowed):
+    blocked = int(blocked or 0)
+    allowed = int(allowed or 0)
+    if blocked and allowed:
+        return "Mixed", "mixed"
+    if blocked:
+        return "Blocked", "blocked"
+    if allowed:
+        return "Allowed", "allowed"
+    return "Unknown", "unknown"
 
 
 def get_recent(page=1,page_size=50,status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter=""):
     page=max(1,int(page or 1)); page_size=max(10,min(500,int(page_size or 50)))
     order_sql="first_seen DESC" if new_only else "requests DESC"
-    scan_limit=max(500,min(3000,page*page_size+500))
-    with sqlite3.connect(DB_PATH) as c:
-        rows=c.execute(f"SELECT domain,requests,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason FROM domains ORDER BY {order_sql} LIMIT ?",(scan_limit,)).fetchall()
+    now_dt=datetime.now(timezone.utc)
+    cutoff=(now_dt-timedelta(hours=24)).isoformat()
+
+    # Status and NEW are persisted in the domains table, so do not scan
+    # thousands of domains and run TrackerDB/RDAP/Netify lookups just to
+    # answer a simple Overview filter. This is the main latency/memory fix
+    # for the Allowed/Blocked/Mixed/NEW filters.
+    simple_filter = not (classification_filter or severity_filter or device_filter or vendor_filter)
+    where=[]
+    params=[]
+    if new_only:
+        where.append("first_seen>=?")
+        params.append(cutoff)
+    if status_filter:
+        if status_filter == "Allowed":
+            where.append("blocked_requests=0 AND allowed_requests>0")
+        elif status_filter == "Blocked":
+            where.append("blocked_requests>0 AND allowed_requests=0")
+        elif status_filter == "Mixed":
+            where.append("blocked_requests>0 AND allowed_requests>0")
+        elif status_filter == "Unknown":
+            where.append("blocked_requests=0 AND allowed_requests=0")
+    sql_where = (" WHERE " + " AND ".join(where)) if where else ""
+
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        status_rows = c.execute("SELECT SUM(CASE WHEN blocked_requests=0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests=0 AND allowed_requests>0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests>0 THEN 1 ELSE 0 END) FROM domains").fetchone()
+        status_counts={
+            "All": int(c.execute("SELECT COUNT(*) FROM domains").fetchone()[0] or 0),
+            "Unknown": int(status_rows[0] or 0),
+            "Allowed": int(status_rows[1] or 0),
+            "Blocked": int(status_rows[2] or 0),
+            "Mixed": int(status_rows[3] or 0),
+        }
+
+        if simple_filter:
+            total=int(c.execute("SELECT COUNT(*) FROM domains" + sql_where, tuple(params)).fetchone()[0] or 0)
+            pages=max(1,(total+page_size-1)//page_size)
+            page=min(page,pages)
+            offset=(page-1)*page_size
+            rows=c.execute(f"SELECT domain,requests,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason FROM domains{sql_where} ORDER BY {order_sql} LIMIT ? OFFSET ?", tuple(params)+(page_size,offset)).fetchall()
+        else:
+            # Complex filters still need enrichment, but status/NEW constraints
+            # are pushed into SQL first so unrelated domains are never scanned.
+            scan_limit=max(500,min(3000,page*page_size+500))
+            rows=c.execute(f"SELECT domain,requests,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason FROM domains{sql_where} ORDER BY {order_sql} LIMIT ?", tuple(params)+(scan_limit,)).fetchall()
+
         matched=[]
-        status_counts={"All":0,"Allowed":0,"Blocked":0,"Mixed":0,"Unknown":0}
         for domain,requests_count,clients_json,first_seen,blocked_requests,allowed_requests,unknown_requests,last_status,current_status,current_reason in rows:
-            clients=canonicalize_client_map(json.loads(clients_json or "{}"))
+            try:
+                clients=canonicalize_client_map(json.loads(clients_json or "{}"))
+            except Exception:
+                clients={}
             devices=[]; row_vendors=set(); row_keys=set()
             for key,count in sorted(clients.items(),key=lambda kv:kv[1],reverse=True)[:6]:
                 d=client_display(c,key,count); dkey=d.get("device_key",key); row_keys.add(dkey)
                 vendor=d.get("vendor","")
                 if vendor: row_vendors.add(vendor)
                 devices.append({"device_key":dkey,"identifier":d.get("identifier",key),"name":d.get("hostname") or d.get("name") or vendor or d.get("display_name") or key,"icon":d.get("icon","📦"),"type":d.get("type","IoT / Unknown"),"vendor_logo":d.get("vendor_logo",""),"vendor":vendor})
+
+            # Enrichment is needed for the classification/severity columns, but
+            # it is only performed for rows that can actually appear here.
             t=tracker_lookup(domain); rd=rdap_lookup(domain); n=netify_lookup(domain)
             cls,badge,severity=classify(t,rd,n)
-            cached_status,cached_reason,stale=cached_adguard_status(domain)
-            if cached_status!="Unknown": status,status_class=cached_status,cached_status.lower()
-            elif current_status and current_status!="Unknown": status,status_class=current_status,current_status.lower()
-            else: status,status_class=status_summary(int(blocked_requests or 0),int(allowed_requests or 0),int(unknown_requests or 0))
-            status_counts[status if status in status_counts else "Unknown"]+=1
+            status,status_class=_status_from_counts(blocked_requests,allowed_requests)
             if status_filter and status!=status_filter: continue
             is_new=_is_new_domain(first_seen)
             if new_only and not is_new: continue
@@ -1749,20 +2043,43 @@ def get_recent(page=1,page_size=50,status_filter="",new_only=False,classificatio
             if severity_filter and sev!=severity_filter: continue
             if device_filter and device_filter not in row_keys: continue
             if vendor_filter and vendor_filter not in row_vendors: continue
-            if stale and len(matched)<page_size*2:
-                threading.Thread(target=refresh_adguard_status,args=(domain,),daemon=True,name=f"agh-status:{domain}").start()
+
+            # Only queue a stale-status refresh when the row is actually relevant.
+            try:
+                cached_status,cached_reason,stale=cached_adguard_status(domain)
+                if cached_status!="Unknown":
+                    status,status_class=cached_status,cached_status.lower()
+                if stale:
+                    _schedule_adguard_status(domain)
+            except Exception:
+                cached_reason=""
+
             matched.append({"domain":domain,"requests":int(requests_count),"clients":len(clients),"devices":devices,"classification":cls,"badge_class":badge,"severity_class":severity,"severity":sev,"severity_text_class":sev_class,"status":status,"status_class":status_class,"last_status":last_status,"current_reason":cached_reason or current_reason,"first_seen":first_seen,"is_new":is_new})
-        total=len(matched); pages=max(1,(total+page_size-1)//page_size); page=min(page,pages); start_i=(page-1)*page_size; page_rows=matched[start_i:start_i+page_size]
-    with sqlite3.connect(DB_PATH) as c:
-        now_dt=datetime.now(timezone.utc)
-        cutoff=(now_dt-timedelta(hours=24)).isoformat()
-        exact_new=int(c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=?",(cutoff,)).fetchone()[0])
+
+        if simple_filter:
+            # SQL already selected the exact page; keep the pagination metadata exact.
+            page_rows=matched
+        else:
+            total=len(matched)
+            pages=max(1,(total+page_size-1)//page_size)
+            page=min(page,pages)
+            start_i=(page-1)*page_size
+            page_rows=matched[start_i:start_i+page_size]
+
+        exact_new=int(c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=?",(cutoff,)).fetchone()[0] or 0)
         fresh_cutoff=(now_dt-timedelta(seconds=max(30,UI_REFRESH_SECONDS*2))).isoformat()
         fresh_domains=[r[0] for r in c.execute("SELECT domain FROM domains WHERE first_seen>=? ORDER BY first_seen DESC LIMIT 10",(fresh_cutoff,)).fetchall()]
+
+    if simple_filter:
+        total=int(total)
+        pages=max(1,(total+page_size-1)//page_size)
+    else:
+        total=len(matched)
+        pages=max(1,(total+page_size-1)//page_size)
     return {"rows":page_rows,"meta":{"page":page,"pages":pages,"total":total,"page_size":page_size,"new_count":exact_new,"new_domains":fresh_domains,"status_counts":status_counts}}
 
 def get_clients():
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         rows = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices ORDER BY request_count DESC").fetchall()
         out = []
         for device_key, name, hostname, mac, vendor, dtype, icon, confidence, source, count in rows:
@@ -1789,7 +2106,7 @@ def domains_for_device(c, device_key, limit=25):
 def device_detail(device_key):
     if not device_key:
         return None
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,first_seen,last_seen,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
         if not row:
             return None
@@ -1802,7 +2119,7 @@ def device_detail(device_key):
 def ip_detail(ip):
     if not is_ip(ip):
         return None
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         rows = c.execute("SELECT d.device_key,d.name,d.hostname,d.mac,d.vendor,d.device_type,d.icon,d.confidence,d.source,di.first_seen,di.last_seen,di.requests FROM device_ips di JOIN devices d ON d.device_key=di.device_key WHERE di.ip=? ORDER BY di.last_seen DESC", (ip,)).fetchall()
         devices = []
         device_keys = set()
@@ -1884,7 +2201,7 @@ def clients_html(clients):
 
 
 def get_stats(limit=10):
-    with sqlite3.connect(DB_PATH) as c:
+    with closing(sqlite3.connect(DB_PATH)) as c:
         top_domains = c.execute("SELECT domain,requests FROM domains ORDER BY requests DESC LIMIT ?", (limit,)).fetchall()
         top_devices = c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key),request_count FROM devices ORDER BY request_count DESC LIMIT ?", (limit,)).fetchall()
         top_vendors = c.execute("SELECT vendor,SUM(request_count) AS total FROM devices WHERE TRIM(vendor)<>'' GROUP BY vendor ORDER BY total DESC LIMIT ?", (limit,)).fetchall()
@@ -1919,7 +2236,7 @@ def reconcile_neighbors():
         return 0
     changed = 0
     now = utcnow()
-    with db_lock, sqlite3.connect(DB_PATH) as c:
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
         # Merge per-device records first. This preserves the historical IP list.
         for ip, mac in neighbors.items():
             old_key = "ip:" + ip
@@ -2058,5 +2375,8 @@ def health():
 
 if __name__ == "__main__":
     init_db()
+    _prune_stale_device_ips()
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=_enrichment_worker, daemon=True, name="enrichment-queue").start()
+    threading.Thread(target=_device_ip_cleanup_worker, daemon=True, name="device-ip-cleanup").start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))

@@ -2,6 +2,16 @@
 
 All notable DNS Inspector changes are tracked here.
 
+## [Unreleased] - 0.8.6 foundation, Milestone 1 (Issue #81)
+
+- rebuilt `app.py` directly from stable 0.7.14, removing the 16-script build-time patch chain the Dockerfile used to apply at image-build time; the 17 `build_*.py` files (16 wired into the Dockerfile plus one dead file) are deleted
+- every `sqlite3.connect()` call site (33 total) now uses `contextlib.closing()`, including `_open_trackerdb()`'s two call sites and `tracker_lookup()`'s direct TrackerDB connection, which the historical SQLite-close hotfix had left unpatched
+- reimplemented, directly and cleanly rather than via patch: the friendly device-filter label + partial/device/IP search from 0.7.14, the bounded AdGuard-status executor and SQL-pushed-down `get_recent()` filtering, the bounded single-worker enrichment queue with persisted retry cooldown, and bounded device/IP retention with periodic cleanup
+- fixed a real bug found while reimplementing device-IP retention (not present in the shipped 0.7.14 image's behavior as observed, since the historical patch's own cutoff comparison could never match): the retention cutoff is now formatted as ISO-8601 to match the `device_ips.last_seen` column instead of being compared as a raw Unix timestamp
+- added `tests/` (pytest) and `requirements-dev.txt` for the first time on this line; not executed in this hand-off's sandbox, see `docs/tasks/ISSUE-81-MILESTONE-1-FOUNDATION.md`
+- explicitly not ported yet: device-label UI, observability header/`/debug/bundle`, memory diagnostics, and IP reachability ping (feature + UI) -- see the task doc for the full list and reasoning
+- `VERSION` intentionally left at `0.7.14`; this is foundation work on an unmerged branch, not a release
+
 ## [0.7.14]
 
 - Overview > Device filter now uses the same friendly/manual device name as the Devices view when one is available
