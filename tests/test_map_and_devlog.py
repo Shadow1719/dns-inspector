@@ -25,9 +25,10 @@ def test_extract_observed_answer_ips_only_uses_a_aaaa(app_module):
 def test_compact_country_geoip_provider_lookup(app_module, tmp_path):
     db = tmp_path / "geoip.csv"
     db.write_text(
-        "start_ip,end_ip,country_code,country_name\\n"
-        "8.8.8.0,8.8.8.255,US,United States\\n"
-        "1.1.1.0,1.1.1.255,AU,Australia\\n",
+        """start_ip,end_ip,country_code,country_name
+8.8.8.0,8.8.8.255,US,United States
+1.1.1.0,1.1.1.255,AU,Australia
+""",
         encoding="utf-8",
     )
     provider = app_module.CsvRangeGeoIPProvider(str(db))
@@ -42,8 +43,9 @@ def test_destination_map_aggregates_observed_ips_by_country(app_module, tmp_path
     app_module.init_db()
     geo = tmp_path / "geoip.csv"
     geo.write_text(
-        "start_ip,end_ip,country_code,country_name\\n"
-        "8.8.8.0,8.8.8.255,US,United States\\n",
+        """start_ip,end_ip,country_code,country_name
+8.8.8.0,8.8.8.255,US,United States
+""",
         encoding="utf-8",
     )
     app_module._geoip_provider = app_module.CsvRangeGeoIPProvider(str(geo))
