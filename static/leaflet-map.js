@@ -66,6 +66,14 @@
         attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
       },
     },
+    "Dark / NOC": {
+      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      options: {
+        maxZoom: 19,
+        subdomains: "abcd",
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
+      },
+    },
   };
 
   const state = { map: null, layers: null, baseLayers: null, initialized: false, failed: false };
@@ -114,6 +122,7 @@
       state.layers = {
         countries: L.layerGroup().addTo(map),
         destinations: L.layerGroup(),
+        routes: L.layerGroup(),
       };
 
       map.on("zoomend moveend", () => {
@@ -156,17 +165,83 @@
     if (!state.layers) return;
     state.layers.countries.clearLayers();
     state.layers.destinations.clearLayers();
+    state.layers.routes.clearLayers();
   }
 
   function setVisibleLayer(mode) {
     if (!state.map || !state.layers) return;
     if (mode === "destinations") {
       if (!state.map.hasLayer(state.layers.destinations)) state.layers.destinations.addTo(state.map);
+      if (!state.map.hasLayer(state.layers.routes)) state.layers.routes.addTo(state.map);
       if (state.map.hasLayer(state.layers.countries)) state.map.removeLayer(state.layers.countries);
     } else {
       if (!state.map.hasLayer(state.layers.countries)) state.layers.countries.addTo(state.map);
       if (state.map.hasLayer(state.layers.destinations)) state.map.removeLayer(state.layers.destinations);
+      if (state.map.hasLayer(state.layers.routes)) state.map.removeLayer(state.layers.routes);
     }
+  }
+
+  // Spherical linear interpolation between two lat/lon points -- used to draw
+  // a great-circle "air route style" arc rather than a straight Mercator
+  // line. This is explicitly a geographic/visual path only, never presented
+  // as the real network route DNS traffic took (Issue #88 #5).
+  function toRad(d) { return (d * Math.PI) / 180; }
+  function toDeg(r) { return (r * 180) / Math.PI; }
+  function latLonToVec(lat, lon) {
+    const la = toRad(lat), lo = toRad(lon);
+    return [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)];
+  }
+  function vecToLatLon(v) {
+    const lat = toDeg(Math.asin(Math.max(-1, Math.min(1, v[2]))));
+    const lon = toDeg(Math.atan2(v[1], v[0]));
+    return [lat, lon];
+  }
+  function greatCircleArc(lat1, lon1, lat2, lon2, segments) {
+    const v0 = latLonToVec(lat1, lon1), v1 = latLonToVec(lat2, lon2);
+    const dot = Math.max(-1, Math.min(1, v0[0] * v1[0] + v0[1] * v1[1] + v0[2] * v1[2]));
+    const omega = Math.acos(dot);
+    if (omega < 1e-6) return [[lat1, lon1], [lat2, lon2]];
+    const points = [];
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const a = Math.sin((1 - t) * omega) / Math.sin(omega);
+      const b = Math.sin(t * omega) / Math.sin(omega);
+      const v = [a * v0[0] + b * v1[0], a * v0[1] + b * v1[1], a * v0[2] + b * v1[2]];
+      points.push(vecToLatLon(v));
+    }
+    return points;
+  }
+
+  function renderRoutes(data, capabilities, points) {
+    if (!state.layers) return;
+    state.layers.routes.clearLayers();
+    const routesEnabled = typeof prefs !== "undefined" && !!prefs.mapRoutes;
+    if (!routesEnabled) return;
+    if (!capabilities || !capabilities.coordinates) return;
+    const origin = data && data.origin;
+    if (!origin || origin.lat == null || origin.lon == null) return;
+    points = (points || []).filter((p) => p.lat != null && p.lon != null);
+    if (!points.length) return;
+    const maxVal = Math.max(1, ...points.map((p) => metricValue(p)));
+    const theme = activeTheme();
+    const originMarker = L.circleMarker([origin.lat, origin.lon], {
+      radius: 5, color: "#fff", weight: 2, fillColor: "#58a6ff", fillOpacity: 1, interactive: true,
+    }).bindTooltip(`${escapeHtml(origin.label || "Configured origin")} — visualization origin, not a verified location`, { direction: "top" });
+    state.layers.routes.addLayer(originMarker);
+    points.forEach((p) => {
+      const ratio = metricValue(p) / maxVal;
+      const arcPoints = greatCircleArc(origin.lat, origin.lon, p.lat, p.lon, 48);
+      const line = L.polyline(arcPoints, {
+        color: themeColor(ratio, theme),
+        weight: Math.max(1, 1 + ratio * 2.5),
+        opacity: 0.22 + ratio * 0.35,
+        interactive: true,
+      });
+      const label = p.city || p.country_name || p.country_code || "Unknown";
+      line.bindTooltip(`${escapeHtml(label)}: ${num(p.observation_count)} observations — geographic/visual path, not the real network route`, { sticky: true });
+      line.on("click", () => activateCluster(p, data, capabilities));
+      state.layers.routes.addLayer(line);
+    });
   }
 
   function bubbleIcon(size, color, selected) {
@@ -289,6 +364,7 @@
       marker.on("click", () => activateCluster(c, data, capabilities));
       state.layers.destinations.addLayer(marker);
     });
+    renderRoutes(data, capabilities, clusters);
   }
 
   function activateCluster(cluster, data, capabilities) {

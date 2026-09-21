@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.6 ShadowDNS-style visibility report, interactive charts, scheduling (Issue #88)
+
+- fixed the Docker image not actually containing `analytics_report.py` (only `app.py`/`VERSION`/`static` were `COPY`'d), which would crash the container at import time; also copies the new `report_scheduler.py` and pre-creates `/data/reports`
+- added a bounded, hourly-aggregated `analytics_buckets` history table (independent of the 100k-row `processed_queries` cap, retained up to `ANALYTICS_HISTORY_RETENTION_HOURS` / 90 days by default, pruned every tick) backing new 30d/90d Analytics ranges
+- added real click/tap-to-investigate on the "DNS activity over time" chart: the selected bucket stays highlighted (crosshair + marker) across polling refreshes, and `/api/analytics/interval` returns the exact query count, status mix, new domains/devices and top domains/devices for that interval -- computed from real per-query attribution (processed_queries now also retains `domain`/`device_key`/`status` for its existing bounded rows) while still in the raw retention window, and honestly falls back to the bounded hourly aggregate (clearly labeled) once it has rolled off; domains/devices in the popover link to the existing search/device views
+- added a "Visibility report" executive-overview widget to Analytics: headline KPIs, peak-interval/blocked-share/new-domains observations, all derived from the same payload the charts render (no separate fetch, no invented findings)
+- added an optional, separate coordinate-capable GeoIP CSV (`GEOIP_CITY_DB_PATH`, documented in `docs/GEOIP.md`) so Destinations map mode can show real per-location coordinates; still never falls back to a country centroid, and Destinations mode stays honestly disabled when it isn't configured
+- added destination route/arc visualization: a subtle geodesic (great-circle) line from an explicitly operator-configured origin (`/api/settings/map-origin` -- never derived/guessed) to each destination cluster, toggled independently, labeled as a geographic/visual path rather than the real network route, and automatically disabled without both a real origin and real coordinate data
+- added a "Dark / NOC" Leaflet basemap layer alongside OpenStreetMap/OpenTopoMap/Esri Satellite, with correct attribution
+- added scheduled report generation: one bounded background worker (explicit start/next-due/execute/shutdown, never overlapping, resumes correctly after a restart from a persisted last-run timestamp), configurable hourly/daily/weekly/custom cadence and report window, safe storage (configurable base directory + validated relative filename only, path traversal rejected, bounded retention with oldest-file pruning), optional SMTP delivery (password only from the `SMTP_PASSWORD` env var, never stored/returned by the API; a failed send never blocks the local save), and "Export now" / "Save report now" / "Send test email" controls, all reusing the exact same report generator as the PDF endpoint
+- scheduler/report state (enabled, next/last run, last result, last saved file, last email result) is now visible in Diagnostics
+- PDF export: every page now has a consistent footer (page N of 4, analysis window, generated timestamp)
+- bumped candidate to `0.8.6-dev.6`
+
 ## [Unreleased] - 0.8.6-dev.5 visual Analytics PDF report
 
 - added a report-style PDF export from the currently selected Analytics range

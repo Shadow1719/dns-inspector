@@ -31,9 +31,26 @@ Country centroids are used only to place a **country-level aggregate marker on t
 
 ## Coordinate-level Destinations mode
 
-The current clean milestone intentionally does **not** invent city coordinates. When no coordinate-capable provider is available, the UI keeps Countries mode available and explicitly reports that Destinations mode requires a city/coordinate GeoIP database.
+DNS Inspector never invents city coordinates. When no coordinate-capable provider is configured, the UI keeps Countries mode available and explicitly reports that Destinations mode requires a city/coordinate GeoIP database.
 
-The next GeoIP milestone can add a memory-conscious city provider using the same observed destination IP table.
+An **optional**, separate coordinate-capable CSV can be configured at:
+
+`/data/geoip_city_coordinates.csv` (override with `GEOIP_CITY_DB_PATH`)
+
+The expected schema is:
+
+```text
+start_ip,end_ip,country_code,country_name,city,lat,lon
+8.8.8.0,8.8.8.255,US,United States,Mountain View,37.4056,-122.0775
+```
+
+This is intentionally a **separate file** from `GEOIP_DB_PATH` (country-range-only): Destinations map mode, the destination breakdown-by-coordinate, and destination route/arc rendering only ever activate once this file is configured and loads successfully. Country mode continues to use the country-range CSV and country centroids regardless of whether this file exists. No fallback from missing coordinates to a country centroid is ever performed for an individual destination point.
+
+### Destination route/arc visualization
+
+When coordinate-level data is available, the map can optionally draw a subtle line from a configured **origin** point to each observed destination cluster. This is a **geographic/visual path** (a great-circle/geodesic arc), not the actual network route DNS traffic took, and the UI labels it as such.
+
+The origin point is never derived or guessed. It must be set explicitly via `POST /api/settings/map-origin` (or cleared via `{"clear": true}`) with real `lat`/`lon` coordinates -- for example, the operator's own approximate network location. Routes are automatically disabled (nothing is drawn) whenever either the origin or coordinate-level destination data is unavailable.
 
 ## DB-IP Lite
 

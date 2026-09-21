@@ -20,6 +20,11 @@ def app_module(tmp_path, monkeypatch):
     monkeypatch.setenv("TRACKERDB_PATH", str(tmp_path / "trackerdb.sqlite"))
     monkeypatch.setenv("AGH_URL", "")
     monkeypatch.setenv("NEIGHBORS_PATH", str(tmp_path / "neighbors.txt"))
+    # Scheduled reports (Issue #88) write under a configurable base directory;
+    # point it at a throwaway per-test path so tests never touch the real
+    # /data/reports default and never fail because that path isn't writable
+    # in the test environment.
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
 
     sys.modules.pop("app", None)
     import app as module
