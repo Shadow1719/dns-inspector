@@ -2,7 +2,7 @@ name: Build and publish Docker image
 
 on:
   push:
-    branches: ["main", "dev", "claude/0.8.6-ui-analytics"]
+    branches: ["main", "dev"]
     tags: ["v*.*.*"]
   pull_request:
     branches: ["main", "dev"]
@@ -66,8 +66,9 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:ci-${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
