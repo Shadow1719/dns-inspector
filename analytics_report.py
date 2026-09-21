@@ -57,6 +57,22 @@ def _fmt_pct(value):
         return "0.0%"
 
 
+def _ellipsize(text, font_name, font_size, max_width):
+    """Truncate text with a trailing ellipsis so it never exceeds max_width at the given font."""
+    text = text or ""
+    if stringWidth(text, font_name, font_size) <= max_width:
+        return text
+    ellipsis = "…"
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if stringWidth(text[:mid] + ellipsis, font_name, font_size) <= max_width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return (text[:lo] + ellipsis) if lo > 0 else ellipsis
+
+
 def _fmt_dt(value):
     try:
         text = str(value)
@@ -245,33 +261,72 @@ def _draw_donut(c, x, y, w, h, breakdown):
         ly -= 17
 
 
+def _bar_list_layout(h, row_count, *, top_pad=36, bottom_pad=10, label_size=7.2, label_gap=3, bar_h=5, row_gap=4):
+    """Compute how many rows of a bar list fit in height h without the label
+    ever overlapping the bar below it, and the pitch (row_h) between rows.
+
+    Returns (shown_rows, row_h). row_h is only meaningful when shown_rows > 0.
+    """
+    available = max(h - top_pad - bottom_pad, 0)
+    min_row_h = label_size + label_gap + bar_h + row_gap
+    max_rows = int(available // min_row_h)
+    shown = min(row_count, max_rows) if row_count and max_rows > 0 else 0
+    row_h = (available / shown) if shown else 0
+    return shown, row_h
+
+
 def _draw_bar_list(c, x, y, w, h, title, rows, color):
     _draw_round_rect(c, x, y, w, h, WHITE, GRID, 10)
     c.setFont("Helvetica-Bold", 9)
     c.setFillColor(INK)
     c.drawString(x + 12, y + h - 20, title)
-    rows = rows[:7]
+
     if not rows:
         c.setFont("Helvetica", 8)
         c.setFillColor(MUTED)
         c.drawString(x + 12, y + h - 40, "No data available")
         return
+
+    top_pad, bottom_pad = 36, 10
+    label_size, label_gap, bar_h, row_gap = 7.2, 3, 5, 4
+    shown, row_h = _bar_list_layout(
+        h, len(rows), top_pad=top_pad, bottom_pad=bottom_pad,
+        label_size=label_size, label_gap=label_gap, bar_h=bar_h, row_gap=row_gap,
+    )
+    if not shown:
+        c.setFont("Helvetica", 8)
+        c.setFillColor(MUTED)
+        c.drawString(x + 12, y + h - 40, "Not enough space to display items")
+        return
+    rows = rows[:shown]
+
     max_v = max(float(r.get("value") or 0) for r in rows) or 1
-    row_h = (h - 42) / max(len(rows), 1)
+    value_col_w = 34
+    bar_w = w - 24 - value_col_w
+    label_max_w = w - 24
+    rows_top = y + h - top_pad
+
     for i, row in enumerate(rows):
-        yy = y + h - 38 - (i + 1) * row_h
-        label = str(row.get("label") or "")[:34]
+        row_top = rows_top - i * row_h
+        label = _ellipsize(str(row.get("label") or ""), "Helvetica", label_size, label_max_w)
         value = float(row.get("value") or 0)
+
+        # Label sits on its own line at the top of the row; the bar is drawn
+        # entirely below the label's baseline (plus a clearance gap), so the
+        # bar can never be drawn underneath/behind the text.
         c.setFillColor(INK)
-        c.setFont("Helvetica", 7.4)
-        c.drawString(x + 12, yy + row_h - 12, label)
+        c.setFont("Helvetica", label_size)
+        c.drawString(x + 12, row_top - label_size, label)
+
+        bar_y = row_top - label_size - label_gap - bar_h
         c.setFillColor(HexColor("#EFF3F8"))
-        c.roundRect(x + 12, yy + 4, w - 70, 7, 3, fill=1, stroke=0)
+        c.roundRect(x + 12, bar_y, bar_w, bar_h, 2.5, fill=1, stroke=0)
         c.setFillColor(color)
-        c.roundRect(x + 12, yy + 4, (w - 70) * (value / max_v), 7, 3, fill=1, stroke=0)
+        c.roundRect(x + 12, bar_y, max(bar_w * (value / max_v), 0), bar_h, 2.5, fill=1, stroke=0)
+
         c.setFillColor(MUTED)
         c.setFont("Helvetica-Bold", 7.2)
-        c.drawRightString(x + w - 12, yy + 4, _fmt_num(value))
+        c.drawRightString(x + w - 12, bar_y + 0.8, _fmt_num(value))
 
 
 def _draw_insight(c, x, y, w, h, label, title, body, accent, bg):
@@ -290,11 +345,36 @@ def _draw_insight(c, x, y, w, h, label, title, body, accent, bg):
     p.drawOn(c, x + 12, y + 10)
 
 
-def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, environment, range_key):
+TOTAL_REPORT_PAGES = 4
+
+
+def _draw_page_footer(c, page_num, window_label, generated_iso, dark=False):
+    line_color = HexColor("#334155") if dark else GRID
+    text_color = HexColor("#94A3B8") if dark else MUTED
+    c.setStrokeColor(line_color)
+    c.setLineWidth(0.6)
+    c.line(MARGIN, 9 * mm, PAGE_W - MARGIN, 9 * mm)
+    c.setFont("Helvetica", 7)
+    c.setFillColor(text_color)
+    c.drawString(MARGIN, 4.5 * mm, f"DNS Inspector · Inspector BEMO visibility report · analysis window: {window_label}")
+    c.drawCentredString(PAGE_W / 2, 4.5 * mm, f"Generated {_fmt_dt(generated_iso)}")
+    c.drawRightString(PAGE_W - MARGIN, 4.5 * mm, f"Page {page_num} of {TOTAL_REPORT_PAGES}")
+
+
+_RANGE_LABELS = {"1h": "Last hour", "6h": "Last 6 hours", "24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days", "90d": "Last 90 days"}
+
+
+def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, environment, range_key, window=None):
+    window = window or {}
+    window_label = window.get("label") or _RANGE_LABELS.get(range_key, range_key)
+    coverage = window.get("coverage") or {}
+    coverage_note = coverage.get("note")
+
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    c.setTitle(f"DNS Inspector Analytics — {range_key}")
+    c.setTitle(f"DNS Inspector Analytics — {window_label}")
     c.setAuthor("DNS Inspector / Inspector BEMO")
+    generated_iso = datetime.now(timezone.utc).isoformat()
 
     s = _stats(analytics)
     total = s["total"]
@@ -324,7 +404,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.drawRightString(PAGE_W - MARGIN, PAGE_H - 18 * mm, f"DNS Inspector v{version}")
     c.setFont("Helvetica", 8)
     c.setFillColor(HexColor("#CBD5E1"))
-    c.drawRightString(PAGE_W - MARGIN, PAGE_H - 30 * mm, f"{environment.upper()} · {range_key.upper()}")
+    c.drawRightString(PAGE_W - MARGIN, PAGE_H - 30 * mm, f"{environment.upper()} · {window_label.upper()}")
 
     c.setFillColor(INK)
     c.setFont("Helvetica-Bold", 12)
@@ -332,6 +412,8 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFont("Helvetica", 8)
     c.setFillColor(MUTED)
     c.drawString(MARGIN, PAGE_H - 99 * mm, "The timeline below is based on the retained processed-query history available to DNS Inspector.")
+    if window.get("start") and window.get("end"):
+        c.drawString(MARGIN, PAGE_H - 104 * mm, f"Report window: {_fmt_dt(window['start'])} → {_fmt_dt(window['end'])}")
 
     card_y = PAGE_H - 139 * mm
     gap = 8 * mm
@@ -344,14 +426,37 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     chart_y = 79 * mm
     _draw_line_chart(c, MARGIN, chart_y, PAGE_W - 2 * MARGIN, 75 * mm, s["points"])
 
-    c.setFont("Helvetica-Bold", 8)
-    c.setFillColor(MUTED)
-    c.drawRightString(PAGE_W - MARGIN, 12 * mm, f"Generated {_fmt_dt(datetime.now(timezone.utc).isoformat())}")
+    _draw_page_footer(c, 1, window_label, generated_iso)
     c.showPage()
 
     # Page 2 — what stands out
+    #
+    # Layout is computed top-down from fixed anchors so nothing can overlap
+    # regardless of whether the optional coverage banner is present:
+    #   section title/subtitle -> [coverage banner, if present] -> cards
+    #   -> donut (fixed position) -> "Visibility snapshot" heading -> bar lists -> footer
+    # The donut/heading/bar-list cluster near the bottom of the page never
+    # moves; only the banner+cards block above it grows or shrinks.
     _draw_section_title(c, MARGIN, PAGE_H - 22 * mm, "What stands out", "Interpretation cards — concise, evidence-based, and intentionally free of invented root causes.")
-    cards_y = PAGE_H - 112 * mm
+
+    card_h = 44 * mm
+    card_top = PAGE_H - 33 * mm  # safely below the section subtitle in every case
+    if coverage_note:
+        banner_h = 18 * mm
+        banner_y = card_top - banner_h
+        _draw_round_rect(c, MARGIN, banner_y, PAGE_W - 2 * MARGIN, banner_h, PALE_AMBER, PALE_AMBER, 8)
+        c.setFillColor(AMBER)
+        c.circle(MARGIN + 12, banner_y + banner_h - 8, 3, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 7.5)
+        c.setFillColor(INK)
+        c.drawString(MARGIN + 22, banner_y + banner_h - 10.5, "COVERAGE NOTE — REQUESTED PERIOD EXCEEDS RETAINED HISTORY")
+        note_style = ParagraphStyle("coverage", fontName="Helvetica", fontSize=7.6, leading=10, textColor=INK)
+        note_p = Paragraph(coverage_note, note_style)
+        note_p.wrapOn(c, PAGE_W - 2 * MARGIN - 24, banner_h - 12)
+        note_p.drawOn(c, MARGIN + 12, banner_y + 4)
+        card_top = banner_y - 8 * mm
+
+    cards_y = card_top - card_h
     card_gap = 6 * mm
     card_w2 = (PAGE_W - 2 * MARGIN - 2 * card_gap) / 3
     if peak:
@@ -360,7 +465,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     else:
         peak_title = "No retained peak to compare"
         peak_body = "There is not enough retained query history for a meaningful peak comparison in this period."
-    _draw_insight(c, MARGIN, cards_y, card_w2, 47 * mm, "Activity", peak_title, peak_body, RED if peak_ratio >= 2 else BLUE, PALE_RED if peak_ratio >= 2 else PALE_BLUE)
+    _draw_insight(c, MARGIN, cards_y, card_w2, card_h, "Activity", peak_title, peak_body, RED if peak_ratio >= 2 else BLUE, PALE_RED if peak_ratio >= 2 else PALE_BLUE)
 
     if blocked_pct >= 20:
         status_title = f"{_fmt_pct(blocked_pct)} currently classified blocked"
@@ -370,27 +475,28 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
         status_title = f"{_fmt_pct(blocked_pct)} currently classified blocked"
         status_body = "The current classification mix is predominantly allowed or mixed. Use the status panel to identify domains that behave differently."
         status_accent, status_bg = GREEN, PALE_GREEN
-    _draw_insight(c, MARGIN + card_w2 + card_gap, cards_y, card_w2, 47 * mm, "Status", status_title, status_body, status_accent, status_bg)
+    _draw_insight(c, MARGIN + card_w2 + card_gap, cards_y, card_w2, card_h, "Status", status_title, status_body, status_accent, status_bg)
 
     country_count = len(countries)
     country_title = f"{country_count} geolocated countries"
     country_body = "Observed public destination IPs are aggregated at country level. Country geography describes where DNS answers resolve, not verified server locations."
-    _draw_insight(c, MARGIN + 2 * (card_w2 + card_gap), cards_y, card_w2, 47 * mm, "Destinations", country_title, country_body, PURPLE, PALE_PURPLE)
+    _draw_insight(c, MARGIN + 2 * (card_w2 + card_gap), cards_y, card_w2, card_h, "Destinations", country_title, country_body, PURPLE, PALE_PURPLE)
 
-    _draw_donut(c, MARGIN, 76 * mm, PAGE_W - 2 * MARGIN, 68 * mm, breakdown)
+    _draw_donut(c, MARGIN, 103 * mm, PAGE_W - 2 * MARGIN, 68 * mm, breakdown)
 
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(INK)
-    c.drawString(MARGIN, 63 * mm, "Visibility snapshot")
+    c.drawString(MARGIN, 90 * mm, "Visibility snapshot")
     c.setFont("Helvetica", 8)
     c.setFillColor(MUTED)
-    c.drawString(MARGIN, 57 * mm, "Top items currently tracked by DNS Inspector — useful context for the period, not a fabricated period-only count.")
+    c.drawString(MARGIN, 84 * mm, "Top items currently tracked by DNS Inspector — useful context for the period, not a fabricated period-only count.")
 
     top_domains = (stats or {}).get("domains") or []
     top_devices = (stats or {}).get("devices") or []
-    _draw_bar_list(c, MARGIN, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most queried domains", top_domains, BLUE)
-    _draw_bar_list(c, MARGIN + (PAGE_W - 2 * MARGIN) / 2 + 3 * mm, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most active devices", top_devices, TEAL)
+    _draw_bar_list(c, MARGIN, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 64 * mm, "Most queried domains", top_domains, BLUE)
+    _draw_bar_list(c, MARGIN + (PAGE_W - 2 * MARGIN) / 2 + 3 * mm, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 64 * mm, "Most active devices", top_devices, TEAL)
 
+    _draw_page_footer(c, 2, window_label, generated_iso)
     c.showPage()
 
     # Page 3 — destinations and context
@@ -422,30 +528,64 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFillColor(INK)
     c.drawString(MARGIN, 137 * mm, "How to read this")
     style = ParagraphStyle("note", fontName="Helvetica", fontSize=8.2, leading=11.5, textColor=MUTED)
+    # Known-datacenter follow-up (Issue #88): the destination coordinate
+    # hierarchy (exact city GeoIP > curated known-datacenter region > country
+    # only > unmapped) must stay visible in the PDF, not just on the map.
+    provenance = ((map_data or {}).get("coverage") or {}).get("provenance") or {}
+    city_n = int(provenance.get("city_geoip") or 0)
+    dc_n = int(provenance.get("known_datacenter") or 0)
+    provenance_note = ""
+    if city_n or dc_n:
+        provenance_note = (
+            f" Includes {_fmt_num(city_n)} City GeoIP (exact coordinate) and {_fmt_num(dc_n)} Known datacenter "
+            "(region-derived, not exact) matched observations."
+        )
     note = Paragraph(
         "The destination section intentionally avoids implying exact physical infrastructure. "
         "A country bubble is an aggregation of observed answer IPs that matched the configured country database. "
-        "This is useful for traffic distribution, but it should not be interpreted as a map of individual servers.",
+        "This is useful for traffic distribution, but it should not be interpreted as a map of individual servers."
+        + provenance_note,
         style,
     )
     note.wrapOn(c, PAGE_W - 2 * MARGIN, 30 * mm)
     note.drawOn(c, MARGIN, 112 * mm)
 
+    # Investigation prompt card. A static PDF cannot itself be clicked, so this
+    # is deliberately a plain note rather than a pseudo-button -- interactive
+    # drill-down lives in the DNS Inspector UI, not here. Every text element
+    # is its own row with a fixed, generous gap to the next, so nothing can
+    # overlap regardless of exact font metrics.
+    card_x = MARGIN + 14
+    card_w = PAGE_W - 2 * MARGIN - 28
     _draw_round_rect(c, MARGIN, 28 * mm, PAGE_W - 2 * MARGIN, 69 * mm, NAVY, NAVY, 12)
+
     c.setFont("Helvetica-Bold", 13)
     c.setFillColor(WHITE)
-    c.drawString(MARGIN + 14, 82 * mm, "Investigation prompt")
-    c.setFont("Helvetica", 8.5)
-    c.setFillColor(HexColor("#CBD5E1"))
-    c.drawString(MARGIN + 14, 70 * mm, "Use the dashboard's interactive timeline to drill into the exact intervals behind a spike.")
+    c.drawString(card_x, 82 * mm, "Investigation prompt")
+
+    sentence_style = ParagraphStyle("invest_sentence", fontName="Helvetica", fontSize=8.5, leading=11.5, textColor=HexColor("#CBD5E1"))
+    sentence = Paragraph(
+        "Traffic peaks and status changes are easiest to explain from the exact interval that produced them, not from this static summary.",
+        sentence_style,
+    )
+    sentence.wrapOn(c, card_w, 20 * mm)
+    sentence.drawOn(c, card_x, 62 * mm)
+
     c.setFillColor(TEAL)
-    c.roundRect(MARGIN + 14, 47 * mm, 45 * mm, 8 * mm, 4, fill=1, stroke=0)
-    c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 7.5)
-    c.drawCentredString(MARGIN + 36.5, 49.8 * mm, "CLICKABLE TIMELINE")
-    c.setFillColor(HexColor("#CBD5E1"))
-    c.setFont("Helvetica", 7.3)
-    c.drawString(MARGIN + 68, 50 * mm, "Select a bucket to inspect domains, devices and status changes around that time.")
+    c.circle(card_x + 2.5, 52.5 * mm, 2.5, fill=1, stroke=0)
+    c.setFillColor(WHITE)
+    c.setFont("Helvetica-Bold", 8.5)
+    c.drawString(card_x + 11, 50.5 * mm, "Investigate this interval in DNS Inspector")
+
+    followup_style = ParagraphStyle("invest_followup", fontName="Helvetica", fontSize=7.6, leading=10.5, textColor=HexColor("#94A3B8"))
+    followup = Paragraph(
+        "Open the Analytics tab and select a bucket on the activity timeline to see exact query counts, new domains, devices and status changes for that interval.",
+        followup_style,
+    )
+    followup.wrapOn(c, card_w, 22 * mm)
+    followup.drawOn(c, card_x, 34 * mm)
+
+    _draw_page_footer(c, 3, window_label, generated_iso)
     c.showPage()
 
     c.setFillColor(NAVY)
@@ -476,9 +616,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
         p.drawOn(c, MARGIN + 14, yy - 18)
         yy -= 34 * mm
 
-    c.setFont("Helvetica", 7.5)
-    c.setFillColor(HexColor("#94A3B8"))
-    c.drawString(MARGIN, 15 * mm, "Generated by Inspector BEMO · DNS Inspector")
+    _draw_page_footer(c, 4, window_label, generated_iso, dark=True)
     c.save()
     buf.seek(0)
     return buf

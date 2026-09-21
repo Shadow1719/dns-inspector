@@ -66,6 +66,14 @@
         attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
       },
     },
+    "Dark / NOC": {
+      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+      options: {
+        maxZoom: 19,
+        subdomains: "abcd",
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
+      },
+    },
   };
 
   const state = { map: null, layers: null, baseLayers: null, initialized: false, failed: false };
@@ -114,6 +122,7 @@
       state.layers = {
         countries: L.layerGroup().addTo(map),
         destinations: L.layerGroup(),
+        routes: L.layerGroup(),
       };
 
       map.on("zoomend moveend", () => {
@@ -156,17 +165,84 @@
     if (!state.layers) return;
     state.layers.countries.clearLayers();
     state.layers.destinations.clearLayers();
+    state.layers.routes.clearLayers();
   }
 
   function setVisibleLayer(mode) {
     if (!state.map || !state.layers) return;
     if (mode === "destinations") {
       if (!state.map.hasLayer(state.layers.destinations)) state.layers.destinations.addTo(state.map);
+      if (!state.map.hasLayer(state.layers.routes)) state.layers.routes.addTo(state.map);
       if (state.map.hasLayer(state.layers.countries)) state.map.removeLayer(state.layers.countries);
     } else {
       if (!state.map.hasLayer(state.layers.countries)) state.layers.countries.addTo(state.map);
       if (state.map.hasLayer(state.layers.destinations)) state.map.removeLayer(state.layers.destinations);
+      if (state.map.hasLayer(state.layers.routes)) state.map.removeLayer(state.layers.routes);
     }
+  }
+
+  // Spherical linear interpolation between two lat/lon points -- used to draw
+  // a great-circle "air route style" arc rather than a straight Mercator
+  // line. This is explicitly a geographic/visual path only, never presented
+  // as the real network route DNS traffic took (Issue #88 #5).
+  function toRad(d) { return (d * Math.PI) / 180; }
+  function toDeg(r) { return (r * 180) / Math.PI; }
+  function latLonToVec(lat, lon) {
+    const la = toRad(lat), lo = toRad(lon);
+    return [Math.cos(la) * Math.cos(lo), Math.cos(la) * Math.sin(lo), Math.sin(la)];
+  }
+  function vecToLatLon(v) {
+    const lat = toDeg(Math.asin(Math.max(-1, Math.min(1, v[2]))));
+    const lon = toDeg(Math.atan2(v[1], v[0]));
+    return [lat, lon];
+  }
+  function greatCircleArc(lat1, lon1, lat2, lon2, segments) {
+    const v0 = latLonToVec(lat1, lon1), v1 = latLonToVec(lat2, lon2);
+    const dot = Math.max(-1, Math.min(1, v0[0] * v1[0] + v0[1] * v1[1] + v0[2] * v1[2]));
+    const omega = Math.acos(dot);
+    if (omega < 1e-6) return [[lat1, lon1], [lat2, lon2]];
+    const points = [];
+    for (let i = 0; i <= segments; i++) {
+      const t = i / segments;
+      const a = Math.sin((1 - t) * omega) / Math.sin(omega);
+      const b = Math.sin(t * omega) / Math.sin(omega);
+      const v = [a * v0[0] + b * v1[0], a * v0[1] + b * v1[1], a * v0[2] + b * v1[2]];
+      points.push(vecToLatLon(v));
+    }
+    return points;
+  }
+
+  function renderRoutes(data, capabilities, points) {
+    if (!state.layers) return;
+    state.layers.routes.clearLayers();
+    const routesEnabled = typeof prefs !== "undefined" && !!prefs.mapRoutes;
+    if (!routesEnabled) return;
+    if (!capabilities || (!capabilities.coordinates && !capabilities.datacenter)) return;
+    const origin = data && data.origin;
+    if (!origin || origin.lat == null || origin.lon == null) return;
+    points = (points || []).filter((p) => p.lat != null && p.lon != null);
+    if (!points.length) return;
+    const maxVal = Math.max(1, ...points.map((p) => metricValue(p)));
+    const theme = activeTheme();
+    const originMarker = L.circleMarker([origin.lat, origin.lon], {
+      radius: 5, color: "#fff", weight: 2, fillColor: "#58a6ff", fillOpacity: 1, interactive: true,
+    }).bindTooltip(`${escapeHtml(origin.label || "Configured origin")} — visualization origin, not a verified location`, { direction: "top" });
+    state.layers.routes.addLayer(originMarker);
+    points.forEach((p) => {
+      const ratio = metricValue(p) / maxVal;
+      const arcPoints = greatCircleArc(origin.lat, origin.lon, p.lat, p.lon, 48);
+      const line = L.polyline(arcPoints, {
+        color: themeColor(ratio, theme),
+        weight: Math.max(1, 1 + ratio * 2.5),
+        opacity: 0.22 + ratio * 0.35,
+        interactive: true,
+      });
+      const label = p.city || p.country_name || p.country_code || "Unknown";
+      const provLabel = typeof provenanceLabel === "function" ? provenanceLabel(p) : null;
+      line.bindTooltip(`${escapeHtml(label)}${provLabel ? ` (${escapeHtml(provLabel)})` : ""}: ${num(p.observation_count)} observations — geographic/visual path, not the real network route`, { sticky: true });
+      line.on("click", () => activateCluster(p, data, capabilities));
+      state.layers.routes.addLayer(line);
+    });
   }
 
   function bubbleIcon(size, color, selected) {
@@ -235,27 +311,34 @@
       bucket.observation_count += p.observation_count || 0;
       bucket.domain_count += p.domain_count || 0;
     });
-    return Array.from(cells.values()).map((b) => ({
-      key: b.key,
-      lat: b.sumLat / b.points.length,
-      lon: b.sumLon / b.points.length,
-      unique_ip_count: b.points.length,
-      observation_count: b.observation_count,
-      domain_count: b.domain_count,
-      country_code: b.points[0].country_code,
-      country_name: b.points[0].country_name,
-      city: b.points.length === 1 ? b.points[0].city : null,
-      sample_domains: Array.from(new Set(b.points.flatMap((p) => p.sample_domains || []))).slice(0, 5),
-    }));
+    return Array.from(cells.values()).map((b) => {
+      const provenanceSet = new Set(b.points.map((p) => p.provenance).filter(Boolean));
+      const singlePoint = b.points.length === 1 ? b.points[0] : null;
+      return {
+        key: b.key,
+        lat: b.sumLat / b.points.length,
+        lon: b.sumLon / b.points.length,
+        unique_ip_count: b.points.length,
+        observation_count: b.observation_count,
+        domain_count: b.domain_count,
+        country_code: b.points[0].country_code,
+        country_name: b.points[0].country_name,
+        city: singlePoint ? singlePoint.city : null,
+        provenance: provenanceSet.size === 1 ? Array.from(provenanceSet)[0] : (provenanceSet.size > 1 ? "mixed" : null),
+        provider: singlePoint ? singlePoint.provider : null,
+        region: singlePoint ? singlePoint.region : null,
+        sample_domains: Array.from(new Set(b.points.flatMap((p) => p.sample_domains || []))).slice(0, 5),
+      };
+    });
   }
 
   function renderDestinations(data, capabilities) {
     banner(null);
     clearLayers();
     setVisibleLayer("destinations");
-    if (!capabilities || !capabilities.coordinates) {
+    if (!capabilities || (!capabilities.coordinates && !capabilities.datacenter)) {
       banner(
-        "Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database to enable Destinations mode, or switch to Countries. See docs/GEOIP.md."
+        "Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database, or a curated known-datacenter database, to enable Destinations mode, or switch to Countries. See docs/GEOIP.md."
       );
       renderMapDetail(null);
       return;
@@ -263,7 +346,7 @@
     const points = (data?.destinations || []).filter((p) => p.lat != null && p.lon != null);
     if (!points.length) {
       banner(
-        "No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate GeoIP database."
+        "No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate or known-datacenter GeoIP database."
       );
       renderMapDetail(null);
       return;
@@ -277,10 +360,12 @@
       const color = themeColor(ratio, theme);
       const size = Math.round(12 + Math.sqrt(ratio) * 26);
       const selected = mapSelectedDestinationKey === c.key;
+      const provLabel = typeof provenanceLabel === "function" ? provenanceLabel(c) : null;
       const label =
-        c.unique_ip_count > 1
+        (c.unique_ip_count > 1
           ? `${num(c.unique_ip_count)} destinations: ${num(c.observation_count)} observations, ${num(c.domain_count)} domains`
-          : `${c.city || c.country_name || c.country_code || "Unknown"}: ${num(c.observation_count)} observations, ${num(c.domain_count)} domains`;
+          : `${c.city || c.country_name || c.country_code || "Unknown"}: ${num(c.observation_count)} observations, ${num(c.domain_count)} domains`) +
+        (provLabel ? ` — ${provLabel}` : "");
       const marker = L.marker([c.lat, c.lon], {
         icon: bubbleIcon(size, color, selected),
         title: label,
@@ -289,6 +374,7 @@
       marker.on("click", () => activateCluster(c, data, capabilities));
       state.layers.destinations.addLayer(marker);
     });
+    renderRoutes(data, capabilities, clusters);
   }
 
   function activateCluster(cluster, data, capabilities) {
@@ -355,7 +441,7 @@
       renderMapDetail(null);
       return;
     }
-    if (!provider.configured && !capabilities.coordinates) {
+    if (!provider.configured && !capabilities.coordinates && !capabilities.datacenter) {
       clearLayers();
       banner("No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.");
       renderMapDetail(null);
