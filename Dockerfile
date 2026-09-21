@@ -3,7 +3,10 @@ ARG APP_VERSION=dev
 ARG RUNTIME_ENV=production
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends iputils-ping \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir -r requirements.txt
 COPY app.py VERSION /app/
 COPY static /app/static
 RUN mkdir -p /data
