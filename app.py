@@ -3877,7 +3877,6 @@ def ingest(force=False):
                 if existing:
                     if int(existing[0] or 0) == 0 and domain:
                         qstatus = query_status(e.get("reason"), e.get("answer"))
-                _record_domain_destination_ips(c, domain, observed_destination_ips, now)
                         row = c.execute("SELECT blocked_requests,allowed_requests,unknown_requests FROM domains WHERE domain=?", (domain,)).fetchone()
                         if row:
                             blocked, allowed, unknown = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
@@ -3896,6 +3895,7 @@ def ingest(force=False):
                     c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at,status_counted) VALUES(?,?,1)", (fp, now))
                     continue
                 qstatus = query_status(e.get("reason"), e.get("answer"))
+                _record_domain_destination_ips(c, domain, observed_destination_ips, now)
                 row = c.execute("SELECT clients_json,blocked_requests,allowed_requests,unknown_requests FROM domains WHERE domain=?", (domain,)).fetchone()
                 clients = json.loads(row[0]) if row else {}
                 clients[device_key] = clients.get(device_key, 0) + 1
