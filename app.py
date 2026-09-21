@@ -24,6 +24,8 @@ from urllib.parse import quote
 import requests
 from flask import Flask, jsonify, render_template_string, request, send_file
 
+from analytics_report import build_analytics_pdf
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
     with open(os.path.join(BASE_DIR, "VERSION"), "r", encoding="utf-8") as f:
@@ -1280,6 +1282,7 @@ function renderInstrumentGauges(data){
 <section id="tab-analytics" class="tab-panel active" data-panel="analytics">
   <div class="dash-toolbar">
     <button type="button" class="dash-customize-btn" id="dash-customize-btn" aria-pressed="false">Customize</button>
+    <button type="button" id="analytics-export-pdf-btn" title="Export the currently selected Analytics range as a visual PDF report">Export PDF</button>
     <select class="settings-select" id="dash-preset-select" aria-label="Dashboard preset">
       <option value="default">Default layout</option>
       <option value="monitoring">Monitoring</option>
@@ -5597,6 +5600,34 @@ def worker():
         ingest()
         elapsed = time.time() - started
         time.sleep(max(1, POLL_SECONDS - elapsed))
+
+
+@app.route("/api/analytics/report.pdf")
+def api_analytics_report_pdf():
+    range_key = request.args.get("range", "1h").strip() or "1h"
+    if range_key not in ANALYTICS_RANGE_OPTIONS:
+        range_key = "1h"
+    try:
+        analytics = analytics_payload(range_key)
+        report_buffer = build_analytics_pdf(
+            analytics=analytics,
+            stats=get_stats(limit=8),
+            breakdown=get_status_breakdown(),
+            map_data=geoip_map_payload(),
+            version=APP_VERSION,
+            environment=RUNTIME_ENV,
+            range_key=range_key,
+        )
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        return send_file(
+            report_buffer,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"dns-inspector-analytics-{range_key}-{stamp}.pdf",
+        )
+    except Exception as e:
+        print("analytics PDF export error:", repr(e), flush=True)
+        return jsonify({"ok": False, "error": "Analytics PDF generation failed"}), 500
 
 
 @app.route("/api/analytics")
