@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] - Analytics report period selector
+
+- added an explicit Report period control (1h/6h/24h/7d/30d/90d + custom From/To) next to Export PDF, decoupled from the Analytics dashboard's own chart range so exporting a report never changes what the live dashboard is displaying
+- the PDF filename, cover metadata and every KPI/chart in the export now reflect the exact selected window instead of always exporting the dashboard's current range
+- when the requested period extends further back than the retained query history, the PDF honestly reports the shorter coverage instead of fabricating completeness
+
 ## [Unreleased] - 0.8.6-dev.5 visual Analytics PDF report
 
 - added a report-style PDF export from the currently selected Analytics range

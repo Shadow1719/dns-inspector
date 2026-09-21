@@ -290,10 +290,15 @@ def _draw_insight(c, x, y, w, h, label, title, body, accent, bg):
     p.drawOn(c, x + 12, y + 10)
 
 
-def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, environment, range_key):
+def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, environment, range_key, window=None):
+    window = window or {}
+    window_label = window.get("label") or {"1h": "Last hour", "6h": "Last 6 hours", "24h": "Last 24 hours", "7d": "Last 7 days", "30d": "Last 30 days", "90d": "Last 90 days"}.get(range_key, range_key)
+    coverage = window.get("coverage") or {}
+    coverage_note = coverage.get("note")
+
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    c.setTitle(f"DNS Inspector Analytics — {range_key}")
+    c.setTitle(f"DNS Inspector Analytics — {window_label}")
     c.setAuthor("DNS Inspector / Inspector BEMO")
 
     s = _stats(analytics)
@@ -324,7 +329,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.drawRightString(PAGE_W - MARGIN, PAGE_H - 18 * mm, f"DNS Inspector v{version}")
     c.setFont("Helvetica", 8)
     c.setFillColor(HexColor("#CBD5E1"))
-    c.drawRightString(PAGE_W - MARGIN, PAGE_H - 30 * mm, f"{environment.upper()} · {range_key.upper()}")
+    c.drawRightString(PAGE_W - MARGIN, PAGE_H - 30 * mm, f"{environment.upper()} · {window_label.upper()}")
 
     c.setFillColor(INK)
     c.setFont("Helvetica-Bold", 12)
@@ -332,6 +337,8 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFont("Helvetica", 8)
     c.setFillColor(MUTED)
     c.drawString(MARGIN, PAGE_H - 99 * mm, "The timeline below is based on the retained processed-query history available to DNS Inspector.")
+    if window.get("start") and window.get("end"):
+        c.drawString(MARGIN, PAGE_H - 106 * mm, f"Report window: {_fmt_dt(window['start'])} → {_fmt_dt(window['end'])}")
 
     card_y = PAGE_H - 139 * mm
     gap = 8 * mm
@@ -351,7 +358,24 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
 
     # Page 2 — what stands out
     _draw_section_title(c, MARGIN, PAGE_H - 22 * mm, "What stands out", "Interpretation cards — concise, evidence-based, and intentionally free of invented root causes.")
-    cards_y = PAGE_H - 112 * mm
+
+    coverage_shift = 0
+    if coverage_note:
+        banner_h = 20 * mm
+        banner_y = PAGE_H - 46 * mm
+        _draw_round_rect(c, MARGIN, banner_y, PAGE_W - 2 * MARGIN, banner_h, PALE_AMBER, PALE_AMBER, 8)
+        c.setFillColor(AMBER)
+        c.circle(MARGIN + 12, banner_y + banner_h - 8, 3, fill=1, stroke=0)
+        c.setFont("Helvetica-Bold", 7.5)
+        c.setFillColor(INK)
+        c.drawString(MARGIN + 22, banner_y + banner_h - 10.5, "COVERAGE NOTE — REQUESTED PERIOD EXCEEDS RETAINED HISTORY")
+        note_style = ParagraphStyle("coverage", fontName="Helvetica", fontSize=7.6, leading=10, textColor=INK)
+        note_p = Paragraph(coverage_note, note_style)
+        note_p.wrapOn(c, PAGE_W - 2 * MARGIN - 24, banner_h - 12)
+        note_p.drawOn(c, MARGIN + 12, banner_y + 4)
+        coverage_shift = banner_h + 8 * mm
+
+    cards_y = PAGE_H - 112 * mm - coverage_shift
     card_gap = 6 * mm
     card_w2 = (PAGE_W - 2 * MARGIN - 2 * card_gap) / 3
     if peak:

@@ -888,6 +888,12 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 /* ---- Dashboard Builder (0.8.5): customizable Analytics widget grid ---- */
 .dash-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0}
 .dash-toolbar .settings-select{padding:7px 10px;font-size:.8rem}
+.report-export-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;border:1px solid var(--accent);border-radius:var(--radius-pill);background:var(--accent-soft)}
+.report-period-label{font-size:.78rem;font-weight:700;color:var(--text-secondary);white-space:nowrap}
+.report-custom-range{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:.76rem;color:var(--text-secondary)}
+.report-custom-range label{display:flex;align-items:center;gap:4px}
+.report-custom-range input[type="datetime-local"]{padding:5px 7px;font-size:.76rem}
+#analytics-export-pdf-btn{font-weight:700}
 .dash-customize-btn{border-radius:var(--radius-pill)}
 .dash-customize-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
 .dash-hint{color:var(--text-tertiary);font-size:.78rem}
@@ -1282,7 +1288,23 @@ function renderInstrumentGauges(data){
 <section id="tab-analytics" class="tab-panel active" data-panel="analytics">
   <div class="dash-toolbar">
     <button type="button" class="dash-customize-btn" id="dash-customize-btn" aria-pressed="false">Customize</button>
-    <button type="button" id="analytics-export-pdf-btn" title="Export the currently selected Analytics range as a visual PDF report">Export PDF</button>
+    <div class="report-export-group" id="report-export-group">
+      <label class="report-period-label" for="report-period-select">Report period</label>
+      <select class="settings-select" id="report-period-select" aria-label="Report export period" title="The period exported to PDF -- independent from the Analytics dashboard range above">
+        <option value="1h">Last hour</option>
+        <option value="6h">Last 6 hours</option>
+        <option value="24h">Last 24 hours</option>
+        <option value="7d">Last 7 days</option>
+        <option value="30d">Last 30 days</option>
+        <option value="90d">Last 90 days</option>
+        <option value="custom">Custom&hellip;</option>
+      </select>
+      <span class="report-custom-range" id="report-custom-range" hidden>
+        <label>From <input type="datetime-local" id="report-custom-from"></label>
+        <label>To <input type="datetime-local" id="report-custom-to"></label>
+      </span>
+      <button type="button" id="analytics-export-pdf-btn" title="Export the selected report period as a visual PDF report">Export PDF</button>
+    </div>
     <select class="settings-select" id="dash-preset-select" aria-label="Dashboard preset">
       <option value="default">Default layout</option>
       <option value="monitoring">Monitoring</option>
@@ -1471,8 +1493,9 @@ function isNewRow(r){const t=new Date(r.first_seen||'').getTime();return Number.
 function renderRecent(rows,force){window.__lastRecent=rows||[];if(!force&&!document.getElementById('tab-overview')?.classList.contains('active'))return;document.getElementById('recent-body').innerHTML=(rows||[]).map(r=>{const devices=(r.devices||[]).map(d=>{const label=deviceLabelFor(d);return `<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo?`<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">`:deviceTypeSvg(d.type,d.icon,false)}${esc(label||d.name)}</a>`;}).join('');const n=isNewRow(r);const badge=n?`<span class="new-badge" title="First seen ${esc(r.first_seen||'')}"><span class="new-badge-dot"></span>NEW · ${esc(ageText(r.first_seen))}</span>`:'';return `<tr class="${n?'row-new':''}" data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a>${badge}<div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices||'<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`}).join('');reapplyTableSorts()}
 function setSelectOptions(id,values,selected){const e=document.getElementById(id);if(!e)return;e.innerHTML='<option value="">All</option>'+(values||[]).map(v=>{const value=typeof v==='string'?v:v.value;const label=typeof v==='string'?v:v.label;return `<option value="${esc(value)}">${esc(label)}</option>`}).join('');e.value=selected||''}
 function renderRecentControls(meta,opts){recentMeta=meta||recentMeta;const c=recentMeta.status_counts||{};[['count-all','All'],['count-allowed','Allowed'],['count-blocked','Blocked'],['count-mixed','Mixed'],['count-unknown','Unknown']].forEach(([i,k])=>{const e=document.getElementById(i);if(e)e.textContent=c[k]!=null?` ${c[k]}`:''});const n=document.getElementById('count-new');if(n)n.textContent=recentMeta.new_count!=null?` ${recentMeta.new_count}`:'';document.getElementById('analytics-export-pdf-btn')?.addEventListener('click', () => {
-  const range = (typeof analyticsRange === 'string' && analyticsRange) ? analyticsRange : '1h';
-  window.location.href = '/api/analytics/report.pdf?range=' + encodeURIComponent(range);
+  const params = reportPeriodParams();
+  if (!params) return;
+  window.location.href = '/api/analytics/report.pdf?' + params;
 });
 document.querySelectorAll('[data-status-filter]').forEach(b=>b.classList.toggle('active',(b.dataset.statusFilter||'')===recentFilters.status));document.getElementById('new-filter')?.classList.toggle('active',recentFilters.newOnly);const sum=document.getElementById('results-summary');if(sum)sum.innerHTML=`<b>${recentMeta.total||0}</b> matching domain${(recentMeta.total||0)===1?'':'s'} · <b>${recentMeta.new_count||0}</b> new in the last 24h`;setSelectOptions('classification-filter',opts?.classifications,recentFilters.classification);setSelectOptions('severity-filter',opts?.severities,recentFilters.severity);setSelectOptions('device-filter',opts?.devices,recentFilters.device);setSelectOptions('vendor-filter',opts?.vendors,recentFilters.vendor);const ps=document.getElementById('page-size');if(ps)ps.value=String(recentFilters.page_size);const label=document.getElementById('page-label');if(label){const a=recentMeta.total?((recentMeta.page-1)*recentMeta.page_size)+1:0;const b=recentMeta.total?Math.min(recentMeta.page*recentMeta.page_size,recentMeta.total):0;label.textContent=`Showing ${a}–${b} of ${recentMeta.total||0}`}const prev=document.getElementById('page-prev'),next=document.getElementById('page-next');if(prev)prev.disabled=recentMeta.page<=1;if(next)next.disabled=recentMeta.page>=recentMeta.pages}
 function showNewBanner(entries){const b=document.getElementById('new-banner'),t=document.getElementById('new-banner-text');if(!b||!t||!entries.length)return;const items=entries.slice(0,3).map(r=>{const status=r.status||'Unknown';const statusClass=r.status_class||'unknown';const href=`/search?q=${encodeURIComponent(r.domain)}`;return `<span class="new-domain-item"><a class="new-domain-link" href="${href}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a><span class="status-pill status-${esc(statusClass)}">${esc(status)}</span></span>`}).join('');t.innerHTML=`<b>${entries.length}</b> new domain${entries.length===1?'':'s'} detected · <span class="new-domain-items">${items}</span>`;b.classList.add('show')}
@@ -1580,6 +1603,36 @@ const ANALYTICS_LIVE_MAX_SAMPLES = 100;
 let analyticsLiveSamples = [];
 let analyticsRange = '1h';
 let analyticsFullTimer = null;
+// The report/export period is deliberately independent of `analyticsRange` above -- exporting
+// a 7d report must never change what the live Analytics dashboard chart is currently showing.
+function reportPeriodParams(){
+  const sel = document.getElementById('report-period-select');
+  const range = sel ? sel.value : '1h';
+  if (range !== 'custom') return 'range=' + encodeURIComponent(range);
+  const fromEl = document.getElementById('report-custom-from');
+  const toEl = document.getElementById('report-custom-to');
+  const fromVal = fromEl ? fromEl.value : '';
+  const toVal = toEl ? toEl.value : '';
+  if (!fromVal || !toVal || new Date(fromVal).getTime() >= new Date(toVal).getTime()){
+    alert('Choose a valid custom From/To range before exporting (To must be after From).');
+    return null;
+  }
+  return 'range=custom&from=' + encodeURIComponent(fromVal) + '&to=' + encodeURIComponent(toVal);
+}
+function initReportPeriodControls(){
+  const sel = document.getElementById('report-period-select');
+  const customWrap = document.getElementById('report-custom-range');
+  if (!sel || !customWrap) return;
+  sel.addEventListener('change', () => {
+    customWrap.hidden = sel.value !== 'custom';
+    if (sel.value === 'custom'){
+      const toEl = document.getElementById('report-custom-to');
+      const fromEl = document.getElementById('report-custom-from');
+      if (toEl && !toEl.value) toEl.value = new Date(Date.now() - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+      if (fromEl && !fromEl.value) fromEl.value = new Date(Date.now() - 86400000 - new Date().getTimezoneOffset()*60000).toISOString().slice(0,16);
+    }
+  });
+}
 /* Issue #61: performance/render-storm fixes. `/api/analytics/map` runs
    heavier server-side GeoIP aggregation than `/api/analytics`, so it gets
    its own bounded timer (mapRefreshMs()) instead of being fetched on every
@@ -2699,6 +2752,7 @@ document.querySelectorAll('[data-analytics-range]').forEach(b => b.addEventListe
   document.querySelectorAll('[data-analytics-range]').forEach(x => x.classList.toggle('active', x === b));
   fetchAnalyticsFull();
 }));
+initReportPeriodControls();
 function analyticsTabChanged(name){
   if (name === 'analytics') startAnalyticsPolling(); else stopAnalyticsPolling();
 }
@@ -5416,6 +5470,22 @@ ANALYTICS_LIVE_WINDOW_SECONDS = 60
 ANALYTICS_ACTIVE_DEVICE_WINDOW_SECONDS = 300
 _ANALYTICS_RANGES = {"1h": (3600, 60, 60, "Last hour"), "6h": (21600, 300, 72, "Last 6 hours"), "24h": (86400, 900, 96, "Last 24 hours"), "7d": (604800, 7200, 84, "Last 7 days")}
 
+# The report/export period is intentionally a separate, wider set of options from the
+# dashboard's live ANALYTICS_RANGE_OPTIONS above -- selecting a report period must never
+# change what the Analytics dashboard itself is displaying.
+REPORT_RANGE_PRESETS = ["1h", "6h", "24h", "7d", "30d", "90d"]
+REPORT_RANGE_OPTIONS = REPORT_RANGE_PRESETS + ["custom"]
+_REPORT_RANGES = {
+    "1h": (3600, 60, 60, "Last hour"),
+    "6h": (21600, 300, 72, "Last 6 hours"),
+    "24h": (86400, 900, 96, "Last 24 hours"),
+    "7d": (604800, 7200, 84, "Last 7 days"),
+    "30d": (2592000, 21600, 120, "Last 30 days"),
+    "90d": (7776000, 86400, 90, "Last 90 days"),
+}
+REPORT_CUSTOM_MAX_SECONDS = _REPORT_RANGES["90d"][0]
+REPORT_CUSTOM_MIN_SECONDS = 300
+
 def _parse_iso(value):
     try: dt = datetime.fromisoformat(value)
     except (TypeError, ValueError): return None
@@ -5424,16 +5494,19 @@ def _parse_iso(value):
 
 def _analytics_range(range_key): return _ANALYTICS_RANGES.get(range_key, _ANALYTICS_RANGES["1h"])
 
-def _bucket_timestamps(timestamps, range_seconds, bucket_seconds, bucket_count, now_dt):
-    buckets = [0] * bucket_count; start = now_dt - timedelta(seconds=range_seconds)
+def _bucket_timestamps_window(timestamps, start_dt, bucket_seconds, bucket_count):
+    buckets = [0] * bucket_count; window_seconds = bucket_seconds * bucket_count
     for raw in timestamps:
         dt = _parse_iso(raw)
         if dt is None: continue
-        offset = (dt - start).total_seconds()
-        if 0 <= offset < range_seconds:
+        offset = (dt - start_dt).total_seconds()
+        if 0 <= offset < window_seconds:
             idx = int(offset // bucket_seconds)
             if 0 <= idx < bucket_count: buckets[idx] += 1
-    return [{"t": (start + timedelta(seconds=i * bucket_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
+    return [{"t": (start_dt + timedelta(seconds=i * bucket_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
+
+def _bucket_timestamps(timestamps, range_seconds, bucket_seconds, bucket_count, now_dt):
+    return _bucket_timestamps_window(timestamps, now_dt - timedelta(seconds=range_seconds), bucket_seconds, bucket_count)
 
 def get_query_volume_series(range_key):
     range_seconds, bucket_seconds, bucket_count, label = _analytics_range(range_key); now_dt = datetime.now(timezone.utc); start = now_dt - timedelta(seconds=range_seconds)
@@ -5485,6 +5558,83 @@ def analytics_payload(range_key="1h"):
     return {"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS,
             "series": {"queries": get_query_volume_series(range_key), "new_domains": get_new_domains_series(range_key), "new_devices": get_new_devices_series(range_key)},
             "status_breakdown": get_status_breakdown(), "recent_domains": activity["domains"], "recent_devices": activity["devices"], "active_devices": _active_devices_count(), "total_devices": _total_devices_count(), "new_domains_24h": new_domains_24h, "live": _analytics_live_snapshot()}
+
+
+class ReportRangeError(ValueError):
+    """Raised for an invalid/unsatisfiable report period request (never a 500)."""
+
+
+def _report_window(range_key, from_param=None, to_param=None):
+    """Resolve a report period into an explicit, absolute (start, end) window.
+
+    This is deliberately independent of the dashboard's ANALYTICS_RANGE_OPTIONS/_ANALYTICS_RANGES
+    so that exporting a report never changes -- and is never silently overridden by -- whatever
+    range the live Analytics dashboard currently happens to be showing.
+    """
+    now_dt = datetime.now(timezone.utc)
+    if range_key == "custom":
+        start_dt, end_dt = _parse_iso(from_param), _parse_iso(to_param)
+        if start_dt is None or end_dt is None:
+            raise ReportRangeError("Custom report period requires valid 'from' and 'to' timestamps.")
+        if end_dt > now_dt: end_dt = now_dt
+        duration = (end_dt - start_dt).total_seconds()
+        if duration < REPORT_CUSTOM_MIN_SECONDS:
+            raise ReportRangeError("Custom report period must span at least 5 minutes and 'to' must be after 'from'.")
+        if duration > REPORT_CUSTOM_MAX_SECONDS:
+            start_dt = end_dt - timedelta(seconds=REPORT_CUSTOM_MAX_SECONDS)
+            duration = REPORT_CUSTOM_MAX_SECONDS
+        bucket_seconds = max(60, int(duration // 120) or 1)
+        bucket_count = int((duration + bucket_seconds - 1) // bucket_seconds)
+        label = f"Custom · {start_dt.strftime('%Y-%m-%d %H:%M UTC')} → {end_dt.strftime('%Y-%m-%d %H:%M UTC')}"
+        return start_dt, end_dt, bucket_seconds, bucket_count, label
+    if range_key not in REPORT_RANGE_PRESETS: range_key = "1h"
+    seconds, bucket_seconds, bucket_count, label = _REPORT_RANGES[range_key]
+    return now_dt - timedelta(seconds=seconds), now_dt, bucket_seconds, bucket_count, label
+
+
+def _report_query_series(start_dt, end_dt, bucket_seconds, bucket_count, label):
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        min_seen_at = c.execute("SELECT MIN(seen_at) FROM processed_queries").fetchone()[0]
+        rows = c.execute("SELECT seen_at FROM processed_queries WHERE seen_at>=? AND seen_at<?", (start_dt.isoformat(), end_dt.isoformat())).fetchall()
+    points = _bucket_timestamps_window([r[0] for r in rows], start_dt, bucket_seconds, bucket_count)
+    min_dt = _parse_iso(min_seen_at)
+    for point in points:
+        bucket_end = _parse_iso(point["t"]) + timedelta(seconds=bucket_seconds)
+        if min_dt is None or bucket_end <= min_dt: point["count"] = None
+    return {"range": "report", "label": label, "bucket_seconds": bucket_seconds, "points": points}, min_dt
+
+
+def _report_coverage(range_key, start_dt, end_dt, retained_min_dt):
+    if retained_min_dt is None:
+        return {"requested_start": start_dt.isoformat(), "requested_end": end_dt.isoformat(), "retained_since": None, "complete": False,
+                "note": "No retained DNS query history is available yet -- this report has no query timeline data for the requested period."}
+    complete = retained_min_dt <= start_dt
+    note = None
+    if not complete:
+        covered_from = max(retained_min_dt, start_dt)
+        note = (f"Retained query history only goes back to {covered_from.strftime('%Y-%m-%d %H:%M UTC')}. "
+                f"The requested {range_key} period is shown honestly with that shorter coverage rather than fabricated as complete.")
+    return {"requested_start": start_dt.isoformat(), "requested_end": end_dt.isoformat(), "retained_since": retained_min_dt.isoformat(), "complete": complete, "note": note}
+
+
+def report_payload(range_key="1h", from_param=None, to_param=None):
+    """Build the analytics payload for a report/export period, decoupled from the dashboard range.
+
+    Only the query-count timeline is genuinely period-scoped -- processed_queries retains no
+    per-query domain/status/device data on this branch. Top domains/devices and the status mix
+    remain the honestly-labeled current-snapshot values the existing PDF already uses; this keeps
+    the report from ever fabricating period-only figures it cannot actually compute.
+    """
+    start_dt, end_dt, bucket_seconds, bucket_count, label = _report_window(range_key, from_param, to_param)
+    queries_series, retained_min_dt = _report_query_series(start_dt, end_dt, bucket_seconds, bucket_count, label)
+    window = {
+        "range_key": range_key, "label": label,
+        "start": start_dt.isoformat(), "end": end_dt.isoformat(),
+        "filename_part": (range_key if range_key != "custom" else f"custom-{start_dt.strftime('%Y%m%d%H%M')}-{end_dt.strftime('%Y%m%d%H%M')}"),
+        "coverage": _report_coverage(range_key, start_dt, end_dt, retained_min_dt),
+    }
+    analytics = {"updated": utcnow(), "range": range_key, "range_options": REPORT_RANGE_OPTIONS, "series": {"queries": queries_series}}
+    return analytics, window
 
 
 def get_stats(limit=10):
@@ -5608,11 +5758,14 @@ def worker():
 
 @app.route("/api/analytics/report.pdf")
 def api_analytics_report_pdf():
-    range_key = request.args.get("range", "1h").strip() or "1h"
-    if range_key not in ANALYTICS_RANGE_OPTIONS:
+    range_key = (request.args.get("range") or "1h").strip() or "1h"
+    if range_key not in REPORT_RANGE_OPTIONS:
         range_key = "1h"
     try:
-        analytics = analytics_payload(range_key)
+        analytics, window = report_payload(range_key, request.args.get("from"), request.args.get("to"))
+    except ReportRangeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    try:
         report_buffer = build_analytics_pdf(
             analytics=analytics,
             stats=get_stats(limit=8),
@@ -5621,13 +5774,14 @@ def api_analytics_report_pdf():
             version=APP_VERSION,
             environment=RUNTIME_ENV,
             range_key=range_key,
+            window=window,
         )
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         return send_file(
             report_buffer,
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=f"dns-inspector-analytics-{range_key}-{stamp}.pdf",
+            download_name=f"dns-inspector-analytics-{window['filename_part']}-{stamp}.pdf",
         )
     except Exception as e:
         print("analytics PDF export error:", repr(e), flush=True)
