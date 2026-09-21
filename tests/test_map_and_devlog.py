@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 
 def test_public_destination_ip_filtering(app_module):
@@ -98,3 +99,89 @@ def test_dev_ui_contains_banner_and_devlog_button(monkeypatch, app_module):
     assert "DEVELOPMENT ENVIRONMENT — NOT PRODUCTION" in app_module.HTML
     assert 'id="devlog-open-btn"' in app_module.HTML
     assert 'id="destination-map"' in app_module.HTML
+
+
+def test_debug_exports_are_small_and_bounded(app_module):
+    app_module.init_db()
+    app_module.log_event("INFO", "export test", source="pytest")
+    client = app_module.app.test_client()
+
+    devlog = client.get("/api/devlog/export")
+    assert devlog.status_code == 200
+    assert devlog.content_type.startswith("text/plain")
+    assert devlog.headers.get("Content-Disposition", "").startswith("attachment;")
+
+    debug = client.get("/api/debug/snapshot")
+    assert debug.status_code == 200
+    assert debug.content_type.startswith("application/json")
+    assert debug.headers.get("Content-Disposition", "").startswith("attachment;")
+    payload = json.loads(debug.data.decode("utf-8"))
+    assert payload["observability"]["version"] == app_module.APP_VERSION
+    assert len(payload["devlog"]) <= 200
+    assert len(payload["runtime"]["active_threads"]) >= 1
+
+
+def test_state_payload_exposes_observability_for_header(app_module):
+    app_module.init_db()
+    client = app_module.app.test_client()
+    state = client.get("/api/state?page=1&page_size=10")
+    assert state.status_code == 200
+    data = state.get_json()
+    assert "observability" in data
+    assert data["observability"]["uptime_seconds"] >= 0
+    assert data["observability"]["ram_mb"] is None or data["observability"]["ram_mb"] >= 0
+
+
+def test_leaflet_renderer_contains_osm_topography_and_satellite_layers():
+    js = (Path(__file__).resolve().parents[1] / "static" / "leaflet-map.js").read_text(encoding="utf-8")
+    assert "OpenStreetMap" in js
+    assert "OpenTopoMap" in js
+    assert "tile.opentopomap.org" in js
+    assert "Satellite (Esri)" in js
+    assert "L.control.layers" in js
+
+
+def test_dashboard_landing_and_diagnostic_controls_are_present(monkeypatch, app_module):
+    monkeypatch.setenv("DNS_INSPECTOR_ENV", "development")
+    app_module.init_db()
+    client = app_module.app.test_client()
+    html = client.get("/").get_data(as_text=True)
+    assert 'data-tab="analytics"' in html
+    assert 'id="debug-download-top-btn"' in html
+    assert 'id="devlog-download-btn"' in html
+    assert 'id="debug-download-btn"' in html
+    assert "defaultView:'analytics'" in html
+
+
+def test_ip_ping_validation_and_status_endpoint(app_module, monkeypatch):
+    app_module.init_db()
+    client = app_module.app.test_client()
+
+    assert app_module._validate_ping_ip("192.168.1.111") == "192.168.1.111"
+    for bad in ("8.8.8.8", "127.0.0.1", "224.0.0.1", "not-an-ip"):
+        try:
+            app_module._validate_ping_ip(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad} should not be pingable")
+
+    monkeypatch.setattr(app_module, "_run_ip_ping", lambda ip: {
+        "ip": ip, "online": True, "latency_ms": 1.2, "error": "", "last_checked": 123.0
+    })
+    response = client.post("/api/ip/ping", json={"ip": "192.168.1.111"})
+    assert response.status_code == 200
+    assert response.get_json()["result"]["online"] is True
+
+    status = client.get("/api/ip/ping/status")
+    assert status.status_code == 200
+    assert status.get_json()["ok"] is True
+
+
+def test_ip_ping_invalid_request_is_json(app_module):
+    app_module.init_db()
+    response = app_module.app.test_client().post("/api/ip/ping", json={"ip": "8.8.8.8"})
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert "private LAN" in payload["error"]

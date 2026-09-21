@@ -2,6 +2,7 @@ import array
 import bisect
 import csv
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -9,6 +10,7 @@ import queue
 import re
 import socket
 import signal
+import subprocess
 import sys
 import sqlite3
 import threading
@@ -20,7 +22,7 @@ from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
 import requests
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, send_file
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
@@ -73,6 +75,9 @@ DNS_RECORDS_CACHE_HOURS = int(os.getenv("DNS_RECORDS_CACHE_HOURS", "240"))  # 10
 ENRICHMENT_RETRY_HOURS = max(24.0, float(os.getenv("ENRICHMENT_RETRY_HOURS", "24")))
 DEVICE_IP_RETENTION_HOURS = max(1.0, float(os.getenv("DEVICE_IP_RETENTION_HOURS", "12")))
 DEVICE_IP_CLEANUP_INTERVAL_MINUTES = max(5, int(os.getenv("DEVICE_IP_CLEANUP_INTERVAL_MINUTES", "30")))
+IP_PING_INTERVAL_HOURS = max(1.0, float(os.getenv("IP_PING_INTERVAL_HOURS", "4")))
+IP_PING_INITIAL_DELAY_SECONDS = max(10, int(os.getenv("IP_PING_INITIAL_DELAY_SECONDS", "60")))
+IP_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("IP_PING_TIMEOUT_SECONDS", "1")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
 app = Flask(__name__)
@@ -830,13 +835,25 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .destination-map-layout{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,280px);gap:12px;align-items:stretch;container-type:inline-size}
 @media(max-width:900px){.destination-map-layout{grid-template-columns:minmax(0,1fr);align-items:start}}
 @media(min-width:901px){.map-breakdown{height:max(320px,calc((100cqw - 292px)/2))}}
-.map-breakdown{display:flex;flex-direction:column;min-width:0;height:100%;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.map-breakdown{display:flex;flex-direction:column;min-width:0;height:clamp(320px,40cqw,520px);max-height:520px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
+.diagnostics-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.diagnostics-actions button{padding:7px 10px;font-size:.78rem;border-radius:var(--radius-sm)}
+.dash-resize-handle{display:none;position:absolute;z-index:20;touch-action:none}
+.dash-resize-handle.edge{top:18%;right:-4px;width:8px;height:64%;cursor:ew-resize}
+.dash-resize-handle.corner{right:-5px;bottom:-5px;width:14px;height:14px;cursor:nwse-resize}
+.dash-grid.dash-customizing .dash-widget{position:relative}
+.dash-grid.dash-customizing .dash-resize-handle{display:block}
+.dash-grid.dash-customizing .dash-resize-handle.edge::after,.dash-grid.dash-customizing .dash-resize-handle.corner::after{content:'';position:absolute;background:var(--accent);opacity:.8;border-radius:4px}
+.dash-grid.dash-customizing .dash-resize-handle.edge::after{left:3px;top:0;width:2px;height:100%}
+.dash-grid.dash-customizing .dash-resize-handle.corner::after{right:0;bottom:0;width:10px;height:10px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);background:transparent}
+.dash-widget[data-fixed-height="1"]{height:var(--dash-widget-height)}
+.dash-widget[data-fixed-height="1"]>.card{height:100%;box-sizing:border-box;overflow:auto}
 .map-breakdown-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);flex:0 0 auto}
 .map-breakdown-title{font-size:.78rem;font-weight:600;color:var(--text-primary)}
 .map-breakdown-sort-btn{padding:3px 8px;font-size:.72rem;border-radius:var(--radius-sm);background:var(--surface-3);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
 .map-breakdown-sort-btn:hover{background:var(--surface-1)}
 .map-breakdown-list{list-style:none;margin:0;padding:0;flex:1 1 auto;min-height:0;max-height:none;overflow-y:auto}
-@media(max-width:900px){.map-breakdown{height:auto}.map-breakdown-list{flex:0 1 auto;max-height:340px}}
+@media(max-width:900px){.map-breakdown{height:340px;max-height:340px}.map-breakdown-list{flex:1 1 auto;max-height:none}}
 .map-breakdown-row{display:block;width:100%;text-align:left;padding:7px 10px;border:none;border-bottom:1px solid var(--border);background:transparent;color:var(--text-primary);cursor:pointer;font:inherit}
 .map-breakdown-row:last-child{border-bottom:none}
 .map-breakdown-row:hover{background:var(--surface-3)}
@@ -917,7 +934,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
     <div class="observability-strip" aria-label="Application runtime status">
       <span class="observability-pill"><span class="observability-dot"></span><span id="obs-uptime">Uptime —</span></span>
       <span class="observability-pill"><span id="obs-memory">RAM —</span></span>
-      <button type="button" class="debug-button" id="settings-open-btn" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button><button type="button" class="debug-button" id="devlog-open-btn" aria-label="Open DevLog">DevLog</button>
+      <button type="button" class="debug-button" id="debug-download-top-btn" title="Download a bounded diagnostic snapshot">Debug</button><button type="button" class="debug-button" id="settings-open-btn" aria-haspopup="dialog" aria-controls="settings-dialog"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5a3.5 3.5 0 100-7 3.5 3.5 0 000 7z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>Settings</button><button type="button" class="debug-button" id="devlog-open-btn" aria-label="Open DevLog">DevLog</button>
     </div>
     <p class="muted shell-meta">Watching AdGuard activity · <span class="live">● Live</span> · refresh every {{refresh_seconds}}s · updated <span id="last-update-time" class="updated-time"></span> · <span id="last-update-date" class="updated-date"></span></p>
   </div>
@@ -987,6 +1004,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
         <div class="settings-row-label" style="padding-top:14px"><b>Analytics render performance</b><small>Last fetch/render timing for the Analytics poll and the destination map, split by network vs. on-page render time</small></div>
         <div class="settings-kv" id="diagnostics-perf-kv"><b>No samples yet</b><span>Open the Analytics tab first</span></div>
         <div class="settings-row-label" style="padding-top:14px"><b>DevLog</b><small>Recent bounded operational events from this process</small></div>
+        <div class="diagnostics-actions"><button type="button" id="devlog-download-btn">Download DevLog</button><button type="button" id="debug-download-btn">Download Debug Snapshot</button></div>
         <div class="devlog-scroll" id="devlog-list"><div class="settings-kv"><b>Loading…</b><span></span></div></div>
         
       </section>
@@ -1019,9 +1037,9 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 </dialog>
 <form class="toolbar" action="/search"><input name="q" placeholder="hostname..." value="{{q}}"><button type="submit">Inspect</button><button type="button" onclick="window.location='/'">Reset</button></form>
 <nav class="tabs" role="tablist" aria-label="DNS Inspector sections">
-  <button class="tab-btn active" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
+  <button class="tab-btn" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
   <button class="tab-btn" data-tab="devices" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Devices</button>
-  <button class="tab-btn" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
+  <button class="tab-btn active" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
 </nav>
 <script>
 /* ---- Inspector BEMO preferences (0.8.4) ----
@@ -1037,7 +1055,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
-const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'last', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent'};
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'analytics', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent'};
 function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
 let prefs = loadPrefs();
@@ -1232,7 +1250,7 @@ function renderInstrumentGauges(data){
   }
 }
 </script>
-<section id="tab-overview" class="tab-panel active" data-panel="overview">
+<section id="tab-overview" class="tab-panel" data-panel="overview">
   <div id="inspect-root">
   {% if inspect_html %}{{ inspect_html|safe }}{% endif %}
   </div>
@@ -1259,7 +1277,7 @@ function renderInstrumentGauges(data){
   <tbody id="clients-body">{{ clients_html|safe }}</tbody></table>
   <p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
 </section>
-<section id="tab-analytics" class="tab-panel" data-panel="analytics">
+<section id="tab-analytics" class="tab-panel active" data-panel="analytics">
   <div class="dash-toolbar">
     <button type="button" class="dash-customize-btn" id="dash-customize-btn" aria-pressed="false">Customize</button>
     <select class="settings-select" id="dash-preset-select" aria-label="Dashboard preset">
@@ -1513,8 +1531,8 @@ try{
   if(currentQuery || hasInspectContent){ setActiveTab('overview'); }
   else if(prefs.defaultView && prefs.defaultView !== 'last' && ['overview','devices','analytics'].includes(prefs.defaultView)){ setActiveTab(prefs.defaultView); }
   else{
-    const saved=localStorage.getItem('dnsInspectorTab');
-    if(saved && ['overview','devices','analytics'].includes(saved)) setActiveTab(saved);
+    const landing = (prefs.defaultView && prefs.defaultView !== 'last' && ['overview','devices','analytics'].includes(prefs.defaultView)) ? prefs.defaultView : 'analytics';
+    setActiveTab(landing);
   }
 }catch(e){}
 renderStats({{ stats|tojson }});
@@ -2711,7 +2729,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     const widgets = {};
     WIDGET_IDS.forEach(id => {
       const el = grid.querySelector(`[data-widget-id="${id}"]`);
-      widgets[id] = { w: normalizeWidth(el.dataset.w), h: el.dataset.h || 'normal', hidden: false };
+      widgets[id] = { w: normalizeWidth(el.dataset.w), h: el.dataset.h || 'normal', hp: null, hidden: false };
     });
     return { preset: 'default', order: WIDGET_IDS.slice(), widgets };
   }
@@ -2776,7 +2794,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       if (!raw || !raw.widgets || !raw.order) return clone(DEFAULT_LAYOUT);
       const widgets = {};
       WIDGET_IDS.forEach(id => {
-        const merged = Object.assign({w:'4',h:'normal',hidden:false}, raw.widgets[id] || {});
+        const merged = Object.assign({w:'4',h:'normal',hp:null,hidden:false}, raw.widgets[id] || {});
         merged.w = normalizeWidth(merged.w);
         widgets[id] = merged;
       });
@@ -2802,9 +2820,16 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       const el = grid.querySelector(`[data-widget-id="${id}"]`);
       if (!el) return;
       el.style.order = String(i);
-      const w = layout.widgets[id] || {w:'4',h:'normal',hidden:false};
+      const w = layout.widgets[id] || {w:'4',h:'normal',hp:null,hidden:false};
       el.dataset.w = normalizeWidth(w.w);
       el.dataset.h = w.h || 'normal';
+      if (Number.isFinite(Number(w.hp)) && Number(w.hp) >= 160){
+        el.dataset.fixedHeight = '1';
+        el.style.setProperty('--dash-widget-height', Math.round(Number(w.hp)) + 'px');
+      } else {
+        el.dataset.fixedHeight = '0';
+        el.style.removeProperty('--dash-widget-height');
+      }
       el.dataset.hidden = w.hidden ? '1' : '0';
       const hideBtn = el.querySelector('[data-dash-action="hide"]');
       if (hideBtn){ hideBtn.innerHTML = w.hidden ? '&#43;' : '&times;'; hideBtn.title = w.hidden ? 'Show widget' : 'Hide widget'; }
@@ -2882,6 +2907,71 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     applyLayout();
   });
 
+  // Pointer resize: width snaps to the 4-column grid; the corner handle also
+  // snaps height to a small persisted set of pixel rows. Resize work is local
+  // during pointer movement and is committed once on pointerup.
+  const HEIGHT_STEPS = [180, 260, 340, 420, 500];
+  WIDGET_IDS.forEach(id => {
+    const el = grid.querySelector('[data-widget-id="' + id + '"]');
+    if (!el) return;
+    if (!el.querySelector('.dash-resize-handle.edge')){
+      el.insertAdjacentHTML('beforeend', '<div class="dash-resize-handle edge" data-resize-axis="x" aria-hidden="true"></div><div class="dash-resize-handle corner" data-resize-axis="both" aria-hidden="true"></div>');
+    }
+  });
+
+  function gridColumnSpanFromPointer(rect, clientX){
+    const gridRect = grid.getBoundingClientRect();
+    const gap = parseFloat(getComputedStyle(grid).columnGap || '14') || 14;
+    const colWidth = Math.max(1, (gridRect.width - gap * 3) / 4);
+    const relative = Math.max(0, clientX - rect.left);
+    return String(Math.max(1, Math.min(4, Math.round((relative + gap * 0.5) / (colWidth + gap)))));
+  }
+  function snapHeight(px){
+    return HEIGHT_STEPS.reduce((best, step) => Math.abs(step - px) < Math.abs(best - px) ? step : best, HEIGHT_STEPS[0]);
+  }
+
+  grid.addEventListener('pointerdown', (e) => {
+    const handle = e.target.closest('.dash-resize-handle');
+    if (!handle || !customizing) return;
+    const widget = handle.closest('.dash-widget');
+    if (!widget) return;
+    const id = widget.dataset.widgetId;
+    const cur = layout.widgets[id] || (layout.widgets[id] = {w:'4',h:'normal',hp:null,hidden:false});
+    const startRect = widget.getBoundingClientRect();
+    const startX = e.clientX, startY = e.clientY;
+    const startHp = Number(cur.hp) || startRect.height;
+    const axis = handle.dataset.resizeAxis || 'x';
+    const pointerId = e.pointerId;
+    e.preventDefault();
+    handle.setPointerCapture?.(pointerId);
+    widget.dataset.resizing = '1';
+
+    const move = (ev) => {
+      const width = gridColumnSpanFromPointer(startRect, ev.clientX);
+      cur.w = width;
+      widget.dataset.w = width;
+      if (axis === 'both'){
+        const hp = snapHeight(Math.max(160, startHp + (ev.clientY - startY)));
+        cur.hp = hp;
+        widget.dataset.fixedHeight = '1';
+        widget.style.setProperty('--dash-widget-height', hp + 'px');
+      }
+    };
+    const done = () => {
+      widget.removeAttribute('data-resizing');
+      layout.preset = 'custom';
+      saveLayout();
+      applyLayout();
+      handle.releasePointerCapture?.(pointerId);
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', done);
+      handle.removeEventListener('pointercancel', done);
+    };
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', done);
+    handle.addEventListener('pointercancel', done);
+  });
+
   applyLayout();
 })();
 </script>
@@ -2912,6 +3002,27 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       el.innerHTML = '<div class="settings-kv"><b>DevLog unavailable</b><span>—</span></div>';
     }
   }
+
+  async function downloadBoundedArtifact(url){
+    try{
+      const r = await fetch(url, {cache:'no-store'});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const blob = await r.blob();
+      const disposition = r.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="?([^";]+)"?/i);
+      const filename = match ? match[1] : (url.includes('debug') ? 'dns-inspector-debug.json' : 'dns-inspector-devlog.txt');
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 1000);
+    }catch(e){
+      console.error('diagnostic download failed', e);
+      alert('Diagnostic download failed. Check the DNS Inspector server logs.');
+    }
+  }
+  document.getElementById('devlog-download-btn')?.addEventListener('click', () => downloadBoundedArtifact('/api/devlog/export'));
+  document.getElementById('debug-download-btn')?.addEventListener('click', () => downloadBoundedArtifact('/api/debug/snapshot'));
+  document.getElementById('debug-download-top-btn')?.addEventListener('click', () => downloadBoundedArtifact('/api/debug/snapshot'));
 
   function openDialog(){
     if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open','');
@@ -3256,6 +3367,13 @@ def init_db():
             domain TEXT PRIMARY KEY, fetched_at TEXT NOT NULL, status TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '')""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_processed_seen ON processed_queries(seen_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_device_ips_last_seen ON device_ips(last_seen)")
+        c.execute("""CREATE TABLE IF NOT EXISTS ip_ping_status(
+            ip TEXT PRIMARY KEY,
+            last_checked REAL NOT NULL,
+            online INTEGER NOT NULL,
+            latency_ms REAL,
+            error TEXT NOT NULL DEFAULT '')""")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_ip_ping_status_last_checked ON ip_ping_status(last_checked)")
         c.execute("""CREATE TABLE IF NOT EXISTS enrichment_attempts(
             domain TEXT PRIMARY KEY,
             attempted_at REAL NOT NULL,
@@ -3968,6 +4086,116 @@ def _device_ip_cleanup_worker():
     while True:
         time.sleep(DEVICE_IP_CLEANUP_INTERVAL_MINUTES * 60)
         _prune_stale_device_ips()
+
+
+def _validate_ping_ip(value):
+    value = str(value or "").strip()
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError("Invalid IP address")
+    if addr.is_loopback or addr.is_multicast or addr.is_unspecified or not addr.is_private:
+        raise ValueError("Only private LAN IP addresses can be pinged")
+    return value
+
+
+def _run_ip_ping(ip):
+    ip = _validate_ping_ip(ip)
+    started = time.monotonic()
+    online = False
+    latency_ms = None
+    error = ""
+    try:
+        proc = subprocess.run(
+            ["ping", "-c", "1", "-W", str(IP_PING_TIMEOUT_SECONDS), ip],
+            capture_output=True,
+            text=True,
+            timeout=IP_PING_TIMEOUT_SECONDS + 2,
+            check=False,
+        )
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        online = proc.returncode == 0
+        if online:
+            match = re.search(r"time[=<]([0-9.]+)\s*ms", output)
+            latency_ms = float(match.group(1)) if match else round((time.monotonic() - started) * 1000.0, 1)
+        else:
+            error = "No reply"
+    except FileNotFoundError:
+        error = "ping command unavailable"
+    except subprocess.TimeoutExpired:
+        error = "Timeout"
+    except Exception as e:
+        error = str(e)[:200]
+
+    checked = time.time()
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+        c.execute(
+            "INSERT OR REPLACE INTO ip_ping_status(ip,last_checked,online,latency_ms,error) VALUES(?,?,?,?,?)",
+            (ip, checked, 1 if online else 0, latency_ms, error),
+        )
+        c.commit()
+    return {"ip": ip, "online": online, "latency_ms": latency_ms, "error": error, "last_checked": checked}
+
+
+def _ping_active_ips():
+    cutoff = time.time() - DEVICE_IP_RETENTION_HOURS * 3600.0
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        ips = [row[0] for row in c.execute(
+            "SELECT DISTINCT ip FROM device_ips WHERE last_seen>=? AND ip IS NOT NULL AND TRIM(ip)<>''",
+            (cutoff,),
+        ).fetchall()]
+    for ip in ips:
+        try:
+            _run_ip_ping(ip)
+        except Exception as e:
+            print(f"IP ping error for {ip}: {e!r}", flush=True)
+    if ips:
+        log_event("INFO", "IP reachability sweep completed", checked=len(ips))
+
+
+def _ip_ping_worker():
+    time.sleep(IP_PING_INITIAL_DELAY_SECONDS)
+    while True:
+        try:
+            _ping_active_ips()
+        except Exception as e:
+            print("IP reachability sweep error:", repr(e), flush=True)
+        time.sleep(IP_PING_INTERVAL_HOURS * 3600.0)
+
+
+@app.route("/api/ip/ping/status", methods=["GET"])
+def api_ip_ping_status():
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            rows = c.execute("SELECT ip,last_checked,online,latency_ms,error FROM ip_ping_status").fetchall()
+        return jsonify({
+            "ok": True,
+            "statuses": {
+                row[0]: {
+                    "last_checked": row[1],
+                    "online": bool(row[2]),
+                    "latency_ms": row[3],
+                    "error": row[4] or "",
+                }
+                for row in rows
+            },
+        })
+    except Exception as e:
+        print("IP ping status error:", repr(e), flush=True)
+        return jsonify({"ok": False, "statuses": {}}), 500
+
+
+@app.route("/api/ip/ping", methods=["POST"])
+def api_ip_ping():
+    try:
+        data = request.get_json(silent=True) or {}
+        ip = _validate_ping_ip(data.get("ip"))
+        return jsonify({"ok": True, "result": _run_ip_ping(ip)})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        print("manual IP ping error:", repr(e), flush=True)
+        return jsonify({"ok": False, "error": "Ping failed"}), 500
 
 
 def refresh_runtime_clients():
@@ -5269,7 +5497,7 @@ def get_stats(limit=10):
 def state_payload(q="",status_filter="",new_only=False,classification_filter="",severity_filter="",device_filter="",vendor_filter="",page=1,page_size=50):
     result=inspect_domain(q) if q else None
     recent=get_recent(page=page,page_size=page_size,status_filter=status_filter,new_only=new_only,classification_filter=classification_filter,severity_filter=severity_filter,device_filter=device_filter,vendor_filter=vendor_filter)
-    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"inspect_html":inspect_html(result) if result else None}
+    return {"updated":utcnow(),"recent":recent["rows"],"recent_meta":recent["meta"],"filter_options":get_filter_options(),"clients":get_clients(),"stats":get_stats(),"observability":_observability_payload(),"inspect_html":inspect_html(result) if result else None}
 
 def client_display(c, device_key, count):
     row = c.execute("SELECT device_key,name,hostname,mac,vendor,device_type,icon,confidence,source,request_count FROM devices WHERE device_key=?", (device_key,)).fetchone()
@@ -5458,6 +5686,55 @@ def api_system_stop():
         _stop_in_progress=True
     threading.Thread(target=_perform_self_stop,daemon=True,name="self-stop").start(); return jsonify({"ok":True,"status":"stopping"}),202
 
+def _debug_snapshot_payload():
+    """Small, bounded diagnostic snapshot; intentionally excludes deep proc/GC/tracemalloc collectors."""
+    with _devlog_lock:
+        events = list(_devlog)[-200:]
+    with _geoip_cache_lock:
+        geoip_cache_entries = len(_geoip_cache)
+    with _geoip_map_cache_lock:
+        map_cache_at = _geoip_map_cache.get("at", 0.0)
+        map_cache_ready = _geoip_map_cache.get("data") is not None
+    observability = _observability_payload()
+    return {
+        "generated_at": utcnow(),
+        "application": {"version": APP_VERSION, "environment": RUNTIME_ENV, "pid": os.getpid()},
+        "observability": observability,
+        "geoip": {
+            "provider": _geoip_diagnostics(),
+            "cache_entries": geoip_cache_entries,
+            "map_cache_ready": map_cache_ready,
+            "map_cache_age_seconds": round(max(0.0, time.time() - map_cache_at), 1) if map_cache_at else None,
+        },
+        "runtime": {
+            "poll_seconds": POLL_SECONDS,
+            "ui_refresh_seconds": UI_REFRESH_SECONDS,
+            "active_threads": [{"name": t.name, "daemon": bool(t.daemon), "alive": bool(t.is_alive())} for t in threading.enumerate()],
+            "devlog_entries_exported": len(events),
+        },
+        "devlog": events,
+    }
+
+
+@app.route("/api/devlog/export")
+def api_devlog_export():
+    with _devlog_lock:
+        events = list(_devlog)[-500:]
+    lines = []
+    for entry in events:
+        context = json.dumps(entry.get("context", {}), ensure_ascii=False, sort_keys=True) if entry.get("context") else ""
+        suffix = " · " + context if context else ""
+        lines.append(f"{entry.get('at','')}	{entry.get('level','INFO')}	{entry.get('message','')}{suffix}")
+    payload = ("\n".join(lines) + ("\n" if lines else "")).encode("utf-8")
+    return send_file(io.BytesIO(payload), mimetype="text/plain; charset=utf-8", as_attachment=True, download_name=f"dns-inspector-devlog-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.txt")
+
+
+@app.route("/api/debug/snapshot")
+def api_debug_snapshot():
+    payload = json.dumps(_debug_snapshot_payload(), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
+    return send_file(io.BytesIO(payload), mimetype="application/json", as_attachment=True, download_name=f"dns-inspector-debug-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json")
+
+
 @app.route("/api/devlog")
 def api_devlog():
     level_filter = request.args.get("level", "").strip().upper()
@@ -5605,5 +5882,6 @@ if __name__ == "__main__":
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=_enrichment_worker, daemon=True, name="enrichment-queue").start()
     threading.Thread(target=_device_ip_cleanup_worker, daemon=True, name="device-ip-cleanup").start()
+    threading.Thread(target=_ip_ping_worker, daemon=True, name="ip-ping").start()
     threading.Thread(target=_geoip_initial_load_worker, daemon=True, name="geoip-loader").start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))

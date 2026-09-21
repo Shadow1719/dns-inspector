@@ -43,11 +43,32 @@
   // not just a load-time check.
   const legacyRenderDestinationMap = typeof window.renderDestinationMap === "function" ? window.renderDestinationMap : null;
 
-  const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
-  const OSM_ATTRIBUTION =
-    '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors';
+  const BASEMAP_DEFINITIONS = {
+    "OpenStreetMap": {
+      url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+      options: {
+        maxZoom: 19,
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
+      },
+    },
+    "OpenTopoMap": {
+      url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+      options: {
+        maxZoom: 17,
+        subdomains: ["a", "b", "c"],
+        attribution: 'Kartendaten: &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>-Mitwirkende, SRTM | Kartendarstellung: &copy; <a href="https://opentopomap.org/" target="_blank" rel="noopener noreferrer">OpenTopoMap</a> (CC-BY-SA)',
+      },
+    },
+    "Satellite (Esri)": {
+      url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      options: {
+        maxZoom: 19,
+        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
+      },
+    },
+  };
 
-  const state = { map: null, layers: null, initialized: false, failed: false };
+  const state = { map: null, layers: null, baseLayers: null, initialized: false, failed: false };
 
   const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
   const reducedMotion = () =>
@@ -76,10 +97,13 @@
         markerZoomAnimation: !reducedMotion(),
       }).setView([20, 0], 2);
 
-      L.tileLayer(OSM_TILE_URL, {
-        maxZoom: 19,
-        attribution: OSM_ATTRIBUTION,
-      }).addTo(map);
+      const baseLayers = {};
+      Object.entries(BASEMAP_DEFINITIONS).forEach(([label, def]) => {
+        baseLayers[label] = L.tileLayer(def.url, def.options);
+      });
+      baseLayers["OpenStreetMap"].addTo(map);
+      L.control.layers(baseLayers, null, { collapsed: true, position: "topright" }).addTo(map);
+      state.baseLayers = baseLayers;
 
       // Future-ready layer-group structure (Issue #69): only the two
       // datasets that already exist (country aggregates, observed
