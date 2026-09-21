@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.5 visual Analytics PDF report
+
+- added a report-style PDF export from the currently selected Analytics range
+- PDF uses a visual executive-summary layout with KPI cards, timeline chart, status donut, ranked bars, destination context and concise interpretation cards
+- report distinguishes period activity from the current visibility snapshot instead of presenting all values as period-only statistics
+- export is bounded to the retained Analytics history and does not invoke the old deep debug collectors or create a giant in-memory diagnostic archive
+- added ReportLab 5.0.1 as the PDF generation dependency
+
 ## [Unreleased] - 0.8.6-dev.4 dashboard polish + diagnostics
 
 - made Analytics the default landing view while keeping Overview and Devices one click away for deeper investigation
