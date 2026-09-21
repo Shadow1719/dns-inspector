@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from io import BytesIO
 
 from reportlab.lib import colors
@@ -199,18 +199,18 @@ def _draw_donut(c, x, y, w, h, breakdown):
     total = sum(float(breakdown.get(k) or 0) for k in ("Allowed", "Blocked", "Mixed", "Unknown"))
     cx, cy = x + 72, y + h / 2
     radius = 43
+    mapping = [
+        ("Allowed", GREEN),
+        ("Blocked", RED),
+        ("Mixed", AMBER),
+        ("Unknown", HexColor("#98A2B3")),
+    ]
     if total <= 0:
         c.setStrokeColor(GRID)
         c.setLineWidth(14)
         c.circle(cx, cy, radius, fill=0, stroke=1)
     else:
         start = 90
-        mapping = [
-            ("Allowed", GREEN),
-            ("Blocked", RED),
-            ("Mixed", AMBER),
-            ("Unknown", HexColor("#98A2B3")),
-        ]
         for key, color in mapping:
             val = float(breakdown.get(key) or 0)
             sweep = 360 * val / total
@@ -346,7 +346,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
 
     c.setFont("Helvetica-Bold", 8)
     c.setFillColor(MUTED)
-    c.drawRightString(PAGE_W - MARGIN, 12 * mm, f"Generated {_fmt_dt(datetime.utcnow().isoformat())}")
+    c.drawRightString(PAGE_W - MARGIN, 12 * mm, f"Generated {_fmt_dt(datetime.now(timezone.utc).isoformat())}")
     c.showPage()
 
     # Page 2 — what stands out
