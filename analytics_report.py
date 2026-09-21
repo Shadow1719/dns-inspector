@@ -274,6 +274,67 @@ def _draw_bar_list(c, x, y, w, h, title, rows, color):
         c.drawRightString(x + w - 12, yy + 4, _fmt_num(value))
 
 
+def _draw_investigation_callout(c, card_x, card_y, card_w, card_h):
+    """Draw the dark 'Investigation prompt' callout as a vertical stack.
+
+    Each block's position is derived from the measured height of the block
+    above it (rather than a hand-picked coordinate), so later copy edits
+    cannot make two blocks overlap or spill outside the card. Returns the
+    drawn boxes as (x0, y0, x1, y1) tuples, keyed by block name, so tests can
+    assert on the same geometry that was actually rendered.
+    """
+    pad_x = 14 * mm
+    content_w = card_w - 2 * pad_x
+    _draw_round_rect(c, card_x, card_y, card_w, card_h, NAVY, NAVY, 12)
+    boxes = {}
+
+    heading_text = "Investigation prompt"
+    c.setFont("Helvetica-Bold", 13)
+    c.setFillColor(WHITE)
+    heading_baseline = card_y + card_h - 15 * mm
+    c.drawString(card_x + pad_x, heading_baseline, heading_text)
+    heading_w = stringWidth(heading_text, "Helvetica-Bold", 13)
+    boxes["heading"] = (card_x + pad_x, heading_baseline - 3, card_x + pad_x + heading_w, heading_baseline + 10)
+    cursor = heading_baseline - 3 * mm - 6 * mm
+
+    sentence_style = ParagraphStyle(
+        "invest-sentence", fontName="Helvetica", fontSize=9, leading=12.5, textColor=HexColor("#CBD5E1")
+    )
+    sentence = Paragraph(
+        "Use the dashboard's interactive timeline to drill into the exact intervals behind a spike.",
+        sentence_style,
+    )
+    _, sentence_h = sentence.wrapOn(c, content_w, 30 * mm)
+    cursor -= sentence_h
+    sentence.drawOn(c, card_x + pad_x, cursor)
+    boxes["sentence"] = (card_x + pad_x, cursor, card_x + pad_x + content_w, cursor + sentence_h)
+    cursor -= 7 * mm
+
+    pill_w, pill_h = 45 * mm, 8 * mm
+    cursor -= pill_h
+    c.setFillColor(TEAL)
+    c.roundRect(card_x + pad_x, cursor, pill_w, pill_h, 4, fill=1, stroke=0)
+    c.setFillColor(NAVY)
+    c.setFont("Helvetica-Bold", 7.5)
+    c.drawCentredString(card_x + pad_x + pill_w / 2, cursor + pill_h / 2 - 2.6, "CLICKABLE TIMELINE")
+    boxes["pill"] = (card_x + pad_x, cursor, card_x + pad_x + pill_w, cursor + pill_h)
+    cursor -= 7 * mm
+
+    followup_style = ParagraphStyle(
+        "invest-followup", fontName="Helvetica", fontSize=8, leading=11, textColor=HexColor("#CBD5E1")
+    )
+    followup = Paragraph(
+        "Select a bucket to inspect domains, devices and status changes around that time.",
+        followup_style,
+    )
+    _, followup_h = followup.wrapOn(c, content_w, 30 * mm)
+    cursor -= followup_h
+    followup.drawOn(c, card_x + pad_x, cursor)
+    boxes["followup"] = (card_x + pad_x, cursor, card_x + pad_x + content_w, cursor + followup_h)
+
+    return boxes
+
+
 def _draw_insight(c, x, y, w, h, label, title, body, accent, bg):
     _draw_round_rect(c, x, y, w, h, bg, bg, 10)
     c.setFillColor(accent)
@@ -399,7 +460,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
 
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(INK)
-    c.drawString(MARGIN + 12, 244 * mm, "Observed destination countries")
+    c.drawString(MARGIN + 12 * mm, 244 * mm, "Observed destination countries")
     max_obs = max([float(x.get("observation_count") or 0) for x in countries[:10]] or [1])
     row_y = 232 * mm
     for country in countries[:10]:
@@ -407,14 +468,14 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
         obs = float(country.get("observation_count") or 0)
         c.setFont("Helvetica", 8)
         c.setFillColor(INK)
-        c.drawString(MARGIN + 12, row_y, name[:30])
+        c.drawString(MARGIN + 12 * mm, row_y, name[:30])
         c.setFillColor(HexColor("#EDF2F7"))
-        c.roundRect(MARGIN + 82, row_y - 2, 82 * mm, 6, 3, fill=1, stroke=0)
+        c.roundRect(MARGIN + 82 * mm, row_y - 2, 64 * mm, 6, 3, fill=1, stroke=0)
         c.setFillColor(PURPLE)
-        c.roundRect(MARGIN + 82, row_y - 2, 82 * mm * (obs / max_obs), 6, 3, fill=1, stroke=0)
+        c.roundRect(MARGIN + 82 * mm, row_y - 2, 64 * mm * (obs / max_obs), 6, 3, fill=1, stroke=0)
         c.setFillColor(MUTED)
-        c.drawRightString(PAGE_W - MARGIN - 12, row_y, _fmt_num(obs))
-        row_y -= 17
+        c.drawRightString(PAGE_W - MARGIN - 12 * mm, row_y, _fmt_num(obs))
+        row_y -= 17 * mm
         if row_y < 159 * mm:
             break
 
@@ -431,21 +492,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     note.wrapOn(c, PAGE_W - 2 * MARGIN, 30 * mm)
     note.drawOn(c, MARGIN, 112 * mm)
 
-    _draw_round_rect(c, MARGIN, 28 * mm, PAGE_W - 2 * MARGIN, 69 * mm, NAVY, NAVY, 12)
-    c.setFont("Helvetica-Bold", 13)
-    c.setFillColor(WHITE)
-    c.drawString(MARGIN + 14, 82 * mm, "Investigation prompt")
-    c.setFont("Helvetica", 8.5)
-    c.setFillColor(HexColor("#CBD5E1"))
-    c.drawString(MARGIN + 14, 70 * mm, "Use the dashboard's interactive timeline to drill into the exact intervals behind a spike.")
-    c.setFillColor(TEAL)
-    c.roundRect(MARGIN + 14, 47 * mm, 45 * mm, 8 * mm, 4, fill=1, stroke=0)
-    c.setFillColor(NAVY)
-    c.setFont("Helvetica-Bold", 7.5)
-    c.drawCentredString(MARGIN + 36.5, 49.8 * mm, "CLICKABLE TIMELINE")
-    c.setFillColor(HexColor("#CBD5E1"))
-    c.setFont("Helvetica", 7.3)
-    c.drawString(MARGIN + 68, 50 * mm, "Select a bucket to inspect domains, devices and status changes around that time.")
+    _draw_investigation_callout(c, MARGIN, 28 * mm, PAGE_W - 2 * MARGIN, 69 * mm)
     c.showPage()
 
     c.setFillColor(NAVY)

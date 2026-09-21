@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased] - Analytics PDF layout fixes
+
+- rebuilt the page 3 "Investigation prompt" callout as a vertical stack (heading, sentence, badge, follow-up text) whose position is derived from the actual measured height of the block above it, so the teal "CLICKABLE TIMELINE" badge and its caption can no longer overlap or spill outside the dark card
+- fixed a units bug in the "Observed destination countries" bar list (page 3) where several offsets were mistakenly left in raw points instead of millimetres, causing a large dead gap between the bars and their value labels; also narrowed the bar's max width so a near-maximum bar can no longer be overlapped by its own value label
+
 ## [Unreleased] - 0.8.6-dev.5 visual Analytics PDF report
 
 - added a report-style PDF export from the currently selected Analytics range
