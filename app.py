@@ -395,17 +395,32 @@ def trackerdb_refresh_needed():
 
 
 def _execute_sql_file(conn, path):
-    """Execute a SQL dump incrementally to avoid holding the full snapshot in RAM."""
+    """Execute a SQLite .dump incrementally while preserving explicit transactions.
+    
+    sqlite3.Connection.executescript() implicitly commits any active transaction
+    before running the supplied script. That is incompatible with SQLite dumps
+    containing BEGIN TRANSACTION / ... / COMMIT because feeding the dump one
+    complete statement at a time through executescript() commits the transaction
+    after every statement and makes the final COMMIT fail with:
+    "cannot commit - no transaction is active".
+    
+    Execute each complete statement with connection.execute() instead. This
+    keeps the dump streaming/bounded in Python memory and preserves the dump's
+    own transaction boundaries.
+    """
     statement = []
     with open(path, "r", encoding="utf-8-sig", errors="replace") as f:
         for raw_line in f:
             statement.append(raw_line)
             candidate = "".join(statement)
             if sqlite3.complete_statement(candidate):
-                conn.executescript(candidate)
+                sql = candidate.strip()
+                if sql:
+                    conn.execute(sql)
                 statement.clear()
-    if statement and "".join(statement).strip():
-        conn.executescript("".join(statement))
+    trailing = "".join(statement).strip()
+    if trailing:
+        conn.execute(trailing)
 
 
 def refresh_trackerdb(force=False):
