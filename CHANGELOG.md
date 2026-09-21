@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.7 live widget merge + known-datacenter provenance (Issue #88 follow-up)
+
+- merged the "Live activity" widget (live rate, gauge, sparkline, Allowed/Blocked/Active devices/New domains tiles) into the "Visibility report" widget instead of shipping two adjacent Analytics widgets, so the first widget on the dashboard is always a single, always-populated, useful surface rather than a separate one that could look inert
+- added a second, strictly lower-priority destination coordinate layer for **known datacenter/cloud/hosting provider** ranges (`GEOIP_DATACENTER_DB_PATH`, documented in `docs/GEOIP.md`): only consulted once the real city/coordinate GeoIP database has already missed for an IP, never overrides a real city match, and coordinates are always region-derived (e.g. a cloud region's published location), never presented as an exact server address
+- every observed destination IP now resolves to exactly one provenance tier -- `city_geoip`, `known_datacenter`, `country_only` or `unmapped` -- exposed via `/api/analytics/map`'s `coverage.provenance` counts; `country_only` still contributes to the Countries aggregate but, consistent with the existing rule, is never placed as a Destinations-mode bubble
+- the destination map (marker labels, click-to-investigate detail card, legend), the in-app destination coverage note and the PDF export's destination section all label which provenance tier a given point/count came from, instead of treating every destination as equally precise
+- bumped candidate to `0.8.6-dev.7`
+
 ## [Unreleased] - 0.8.6-dev.6 ShadowDNS-style visibility report, interactive charts, scheduling (Issue #88)
 
 - fixed the Docker image not actually containing `analytics_report.py` (only `app.py`/`VERSION`/`static` were `COPY`'d), which would crash the container at import time; also copies the new `report_scheduler.py` and pre-creates `/data/reports`

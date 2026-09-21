@@ -152,6 +152,13 @@ GEOIP_LOAD_YIELD_SECONDS = max(0.0, float(os.getenv("GEOIP_LOAD_YIELD_SECONDS", 
 # destination route/arc rendering stay disabled unless this is explicitly
 # configured and loads successfully. See docs/GEOIP.md.
 GEOIP_CITY_DB_PATH = os.getenv("GEOIP_CITY_DB_PATH", "/data/geoip_city_coordinates.csv")
+# Optional second, lower-priority coordinate layer: curated known datacenter/
+# cloud/hosting provider ranges (Issue #88 follow-up). Only used when a real
+# IP falls inside an explicitly-sourced range; region-level coordinates are
+# labeled "known_datacenter" provenance, never presented as an exact server
+# location and never used to override a real city-GeoIP match. See
+# docs/GEOIP.md for the CSV format and how to source/refresh it.
+GEOIP_DATACENTER_DB_PATH = os.getenv("GEOIP_DATACENTER_DB_PATH", "/data/geoip_datacenter_ranges.csv")
 
 # --- Bounded analytics history (Issue #88) -----------------------------------
 # processed_queries stays bounded to 100k rows (see ingest()); this is a
@@ -374,10 +381,99 @@ class CsvRangeCityGeoIPProvider(GeoIPProvider):
         return code, name, city, lat, lon
 
 
+class CsvRangeDatacenterGeoIPProvider(GeoIPProvider):
+    """Optional curated known-datacenter/cloud/hosting provider range lookup.
+
+    This is a *second, lower-priority* coordinate layer (Issue #88 follow-up):
+    it only ever fills in a destination point when the real city/coordinate
+    GeoIP database (CsvRangeCityGeoIPProvider) has no match for that IP.
+    Coordinates here are provider/region-derived (e.g. a cloud region's
+    published location), not a claim about the exact physical server -- the
+    caller must always keep the "known_datacenter" provenance attached to
+    whatever this returns.
+
+    Expected CSV columns: start_ip,end_ip,country_code,provider,region,lat,lon
+    (header row optional; extra trailing columns are ignored). Rows must come
+    from an authoritative, explicit source for that IP/range/provider/region
+    (e.g. a cloud provider's own published IP-range document) -- never a
+    geographic guess. See docs/GEOIP.md.
+    """
+    def __init__(self, path):
+        self._path = path
+        self._v4_start = array.array("Q"); self._v4_end = array.array("Q")
+        self._v4_entry_idx = array.array("I"); self._v4_lat = array.array("d"); self._v4_lon = array.array("d")
+        self._v6 = []; self._v6_starts = []
+        self._entries = []; self._entry_index = {}
+        self._loaded = False; self._load()
+
+    def _intern_entry(self, code, provider, region):
+        key = (code, provider, region)
+        idx = self._entry_index.get(key)
+        if idx is None:
+            idx = len(self._entries); self._entries.append(key); self._entry_index[key] = idx
+        return idx
+
+    def _load(self):
+        builder = _CompactRangeTableBuilder(("I", "d", "d")); v6_rows = []
+        try:
+            with open(self._path, "r", encoding="utf-8", newline="") as f:
+                for row in _iter_csv_rows_throttled(csv.reader(f)):
+                    if not row or len(row) < 7: continue
+                    start_raw, end_raw = row[0].strip(), row[1].strip()
+                    code, provider, region = row[2].strip().upper(), row[3].strip(), row[4].strip()
+                    if start_raw.lower() in {"start_ip", "start", "network_start"}: continue
+                    if not provider: continue
+                    try:
+                        start_addr = ipaddress.ip_address(start_raw); end_addr = ipaddress.ip_address(end_raw)
+                        lat = float(row[5]); lon = float(row[6])
+                    except ValueError: continue
+                    if start_addr.version != end_addr.version: continue
+                    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0): continue
+                    idx = self._intern_entry(code or None, provider, region or None)
+                    if start_addr.version == 4: builder.append(int(start_addr), int(end_addr), idx, lat, lon)
+                    else: v6_rows.append((int(start_addr), int(end_addr), idx, lat, lon))
+            builder.finalize()
+            self._v4_start, self._v4_end = builder.start, builder.end
+            self._v4_entry_idx, self._v4_lat, self._v4_lon = builder.extra
+            v6_rows.sort(key=lambda r: r[0]); self._v6 = v6_rows; self._v6_starts = [r[0] for r in v6_rows]
+            self._loaded = bool(self._v4_start or self._v6)
+        except (OSError, csv.Error): self._loaded = False
+
+    @property
+    def available(self): return self._loaded
+    @property
+    def range_count(self): return len(self._v4_start) + len(self._v6)
+    @property
+    def path(self): return self._path
+
+    def lookup(self, ip):
+        """Returns (country_code, provider, region, lat, lon), all None on a miss."""
+        miss = (None, None, None, None, None)
+        try: addr = ipaddress.ip_address(ip)
+        except ValueError: return miss
+        value = int(addr)
+        if addr.version == 4:
+            if not self._v4_start: return miss
+            idx = bisect.bisect_right(self._v4_start, value) - 1
+            if idx < 0 or not (self._v4_start[idx] <= value <= self._v4_end[idx]): return miss
+            code, provider, region = self._entries[self._v4_entry_idx[idx]]
+            return code, provider, region, self._v4_lat[idx], self._v4_lon[idx]
+        if not self._v6: return miss
+        idx = bisect.bisect_right(self._v6_starts, value) - 1
+        if idx < 0: return miss
+        start, end, entry_idx, lat, lon = self._v6[idx]
+        if not (start <= value <= end): return miss
+        code, provider, region = self._entries[entry_idx]
+        return code, provider, region, lat, lon
+
+
 _geoip_provider = NullGeoIPProvider(); _geoip_cache = {}; _geoip_cache_order = deque(); _geoip_cache_lock = threading.Lock(); _geoip_load_lock = threading.Lock(); _geoip_load_started = False
 # City/coordinate provider is None (not a NullGeoIPProvider) when unconfigured, so callers can
 # distinguish "no coordinate database at all" from "database configured but empty" cleanly.
 _geoip_city_provider = None; _geoip_city_cache = {}; _geoip_city_cache_order = deque(); _geoip_city_cache_lock = threading.Lock(); _geoip_city_load_lock = threading.Lock(); _geoip_city_load_started = False
+# Known-datacenter provider follows the same "None means unconfigured" convention as
+# the city provider, and is always subordinate to it (Issue #88 follow-up).
+_geoip_datacenter_provider = None; _geoip_datacenter_cache = {}; _geoip_datacenter_cache_order = deque(); _geoip_datacenter_cache_lock = threading.Lock(); _geoip_datacenter_load_lock = threading.Lock(); _geoip_datacenter_load_started = False
 _geoip_map_cache = {"at": 0.0, "data": None}; _geoip_map_cache_lock = threading.Lock()
 GEOIP_DIAGNOSTIC_MESSAGES = {
     "not_configured": "No GeoIP database configured; observed destinations remain unmapped rather than guessed.",
@@ -454,6 +550,47 @@ def _geoip_city_initial_load_worker():
         _geoip_city_load_started = True
     try: log_event("INFO", "GeoIP city background load started", path=os.path.basename(GEOIP_CITY_DB_PATH)); _reload_geoip_city_provider()
     except Exception as exc: log_event("ERROR", "GeoIP city background load failed", error=repr(exc))
+
+
+def geoip_datacenter_lookup(ip):
+    """Second-tier, lower-priority coordinate lookup (Issue #88 follow-up).
+
+    Callers must only use this once a real city/coordinate GeoIP lookup has
+    already missed for the same IP -- see geoip_map_payload(). Returned
+    coordinates are provider/region-derived, never an exact server claim.
+    """
+    provider = _geoip_datacenter_provider
+    if provider is None or not provider.available:
+        return {"country_code": None, "provider": None, "region": None, "lat": None, "lon": None}
+    with _geoip_datacenter_cache_lock:
+        if ip in _geoip_datacenter_cache: return _geoip_datacenter_cache[ip]
+    code, provider_name, region, lat, lon = provider.lookup(ip)
+    result = {"country_code": code, "provider": provider_name, "region": region, "lat": lat, "lon": lon}
+    with _geoip_datacenter_cache_lock:
+        if ip not in _geoip_datacenter_cache:
+            _geoip_datacenter_cache[ip] = result; _geoip_datacenter_cache_order.append(ip)
+            while len(_geoip_datacenter_cache_order) > GEOIP_CACHE_MAX_ENTRIES: _geoip_datacenter_cache.pop(_geoip_datacenter_cache_order.popleft(), None)
+    return result
+def _geoip_datacenter_diagnostics():
+    p = _geoip_datacenter_provider
+    if p is None: return {"provider_type": "NoneConfigured", "configured": False, "db_path_basename": None, "range_count": 0}
+    return {"provider_type": type(p).__name__, "configured": bool(p.available), "db_path_basename": os.path.basename(p.path) if p.available and p.path else None, "range_count": p.range_count if p.available else 0}
+def _reload_geoip_datacenter_provider():
+    global _geoip_datacenter_provider
+    with _geoip_datacenter_load_lock:
+        path_exists = os.path.exists(GEOIP_DATACENTER_DB_PATH)
+        provider = CsvRangeDatacenterGeoIPProvider(GEOIP_DATACENTER_DB_PATH) if path_exists else None
+        with _geoip_datacenter_cache_lock: _geoip_datacenter_provider = provider; _geoip_datacenter_cache.clear(); _geoip_datacenter_cache_order.clear()
+    state = "loaded" if (provider and provider.available) else ("load_failed" if path_exists else "not_configured")
+    log_event("INFO" if state == "loaded" else "WARNING", "GeoIP datacenter provider state changed", state=state, ranges=str(provider.range_count if provider and provider.available else 0))
+def _geoip_datacenter_initial_load_worker():
+    global _geoip_datacenter_load_started
+    if not os.path.exists(GEOIP_DATACENTER_DB_PATH): log_event("INFO", "GeoIP datacenter database not configured", path=os.path.basename(GEOIP_DATACENTER_DB_PATH)); return
+    with _geoip_datacenter_load_lock:
+        if _geoip_datacenter_load_started: return
+        _geoip_datacenter_load_started = True
+    try: log_event("INFO", "GeoIP datacenter background load started", path=os.path.basename(GEOIP_DATACENTER_DB_PATH)); _reload_geoip_datacenter_provider()
+    except Exception as exc: log_event("ERROR", "GeoIP datacenter background load failed", error=repr(exc))
 
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
@@ -535,6 +672,7 @@ a{color:#79c0ff;text-decoration:none}a:hover{text-decoration:underline}
 pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88em;color:#8b949e}.error{color:#ff9b9b}
 .tag{display:inline-block;padding:4px 9px;border-radius:999px;background:#30363d;margin:2px;font-size:.82rem}.green{background:#174d2a}.yellow{background:#5a4610}.orange{background:#6a3510}.red{background:#6a1717}.blue{background:#16395c}.gray{background:#30363d}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.dot-green{background:#3fb950}.dot-blue{background:#58a6ff}.dot-yellow{background:#d29922}.dot-orange{background:#db6d28}.dot-red{background:#f85149}.dot-gray{background:#8b949e}.status-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:999px;font-size:.78rem;font-weight:700}.status-allowed{background:#174d2a;color:#7ee787}.status-blocked{background:#6a1717;color:#ffb4b4}.status-mixed{background:#5a4610;color:#f2cc60}.status-unknown{background:#30363d;color:#8b949e}.severity-info{color:#3fb950;font-weight:700}.severity-low{color:#d29922;font-weight:700}.severity-medium{color:#db6d28;font-weight:700}.severity-high{color:#f85149;font-weight:700}.severity-unknown{color:#8b949e;font-weight:700}
+.provenance-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:.7rem;font-weight:700;vertical-align:middle;background:#30363d;color:#8b949e}.provenance-city_geoip{background:#174d2a;color:#7ee787}.provenance-known_datacenter{background:#16395c;color:#8fc7ff}.provenance-mixed{background:#5a4610;color:#f2cc60}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.sub{font-size:.82rem;color:#8b949e}.right{float:right}
 .device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .device-type-icon{margin-right:0;width:16px;height:16px;flex-basis:16px;background:transparent}
@@ -709,6 +847,10 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 .tag.blue{background:rgba(88,166,255,.14);border-color:rgba(88,166,255,.35);color:#8fc7ff}
 .tag.gray{background:var(--surface-3);border-color:var(--border);color:var(--text-secondary)}
 .status-pill{border-radius:var(--radius-pill);font-weight:750}
+.provenance-badge{border-radius:var(--radius-pill);font-weight:750}
+.provenance-city_geoip{background:rgba(63,185,80,.14);color:#7ee787;border:1px solid rgba(63,185,80,.3)}
+.provenance-known_datacenter{background:rgba(88,166,255,.14);color:#8fc7ff;border:1px solid rgba(88,166,255,.3)}
+.provenance-mixed{background:rgba(210,153,34,.14);color:#f2cc60;border:1px solid rgba(210,153,34,.3)}
 .status-allowed{background:rgba(63,185,80,.14);color:#7ee787;border:1px solid rgba(63,185,80,.3)}
 .status-blocked{background:rgba(248,81,73,.14);color:#ffb4b4;border:1px solid rgba(248,81,73,.3)}
 .status-mixed{background:rgba(210,153,34,.14);color:#f2cc60;border:1px solid rgba(210,153,34,.3)}
@@ -1274,6 +1416,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
           <b>Environment</b><span>{% if is_dev_environment %}Development{% else %}Production{% endif %}</span>
           <b>Uptime</b><span id="about-uptime">—</span>
           <b>GeoIP data</b><span>IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0)</span>
+          <b>Known datacenter data</b><span>Optional, operator-supplied curated provider/region ranges &mdash; see docs/GEOIP.md for sourcing and licensing</span>
         </div>
       </section>
     </div>
@@ -1560,27 +1703,25 @@ function renderInstrumentGauges(data){
     <span class="dash-hint" id="dash-hint" hidden>Use the handle to drag, or the arrow/size/hide buttons &mdash; changes save to this browser.</span>
   </div>
   <div class="dash-grid" id="analytics-dash-grid">
-    <div class="dash-widget" data-widget-id="live-overview" data-title="Live activity" data-w="4" data-h="normal">
-      <div class="analytics-hero">
-        <div class="card live-card" id="live-card">
-          <div class="live-title"><span class="live-dot"></span>Live activity</div>
-          <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
-          <div id="live-gauge-slot"></div>
-          <div class="live-sparkline-wrap" id="live-sparkline"></div>
-          <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
-        </div>
-        <div class="stat-tiles">
-          <div class="stat-tile ok"><div class="stat-tile-label">Allowed domains</div><div class="stat-tile-value" id="tile-allowed">&mdash;</div></div>
-          <div class="stat-tile blocked"><div class="stat-tile-label">Blocked domains</div><div class="stat-tile-value" id="tile-blocked">&mdash;</div></div>
-          <div class="stat-tile info"><div class="stat-tile-label">Active devices</div><div class="stat-tile-value" id="tile-devices">&mdash;</div></div>
-          <div class="stat-tile warn"><div class="stat-tile-label">New domains (24h)</div><div class="stat-tile-value" id="tile-new-domains">&mdash;</div></div>
-        </div>
-      </div>
-    </div>
     <div class="dash-widget" data-widget-id="visibility-report" data-title="Visibility report" data-w="4" data-h="normal">
       <div class="card">
         <h2>Visibility report <span class="sub">executive overview</span></h2>
         <div class="stats-note" style="margin-top:0">A factual first-glance summary for the selected period above &mdash; every figure here is derived from the same retained data as the charts below, never invented.</div>
+        <div class="analytics-hero">
+          <div class="card live-card" id="live-card">
+            <div class="live-title"><span class="live-dot"></span>Live activity</div>
+            <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
+            <div id="live-gauge-slot"></div>
+            <div class="live-sparkline-wrap" id="live-sparkline"></div>
+            <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
+          </div>
+          <div class="stat-tiles">
+            <div class="stat-tile ok"><div class="stat-tile-label">Allowed domains</div><div class="stat-tile-value" id="tile-allowed">&mdash;</div></div>
+            <div class="stat-tile blocked"><div class="stat-tile-label">Blocked domains</div><div class="stat-tile-value" id="tile-blocked">&mdash;</div></div>
+            <div class="stat-tile info"><div class="stat-tile-label">Active devices</div><div class="stat-tile-value" id="tile-devices">&mdash;</div></div>
+            <div class="stat-tile warn"><div class="stat-tile-label">New domains (24h)</div><div class="stat-tile-value" id="tile-new-domains">&mdash;</div></div>
+          </div>
+        </div>
         <div id="visibility-report"><div class="empty-state">Loading…</div></div>
       </div>
     </div>
@@ -1675,6 +1816,10 @@ function renderInstrumentGauges(data){
             <span class="map-legend-title">Particles</span>
             <span class="map-legend-caption">More particles/brighter glow around a real observed location means more traffic there &mdash; they are an intensity visualization, not independent physical servers.</span>
           </div>
+          <div class="map-legend-group" id="map-legend-provenance">
+            <span class="map-legend-title">Destination provenance</span>
+            <span class="map-legend-caption"><span class="provenance-badge provenance-city_geoip">City GeoIP</span> exact-coordinate match &middot; <span class="provenance-badge provenance-known_datacenter">Known datacenter</span> region-derived from a curated provider database, never an exact server location &middot; Country-only/unmapped destinations are never shown as a bubble here.</span>
+          </div>
         </div>
         <div class="destination-map-layout">
           <div>
@@ -1690,7 +1835,7 @@ function renderInstrumentGauges(data){
           </div>
         </div>
         <div class="stats-note" style="margin-top:0" id="destination-map-history"></div>
-        <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
+        <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0). Known-datacenter points, when configured, come from an operator-supplied curated provider/region database &mdash; see docs/GEOIP.md.</div>
       </div>
     </div>
     <div class="dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" data-w="2" data-h="normal">
@@ -2517,6 +2662,16 @@ function mapEntityMarkup(opts){
   const anchor = `<circle class="map-bubble${selected}" style="fill:${color};stroke:${color}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>`;
   return `<g class="map-entity" ${attr}="${esc(id)}" tabindex="0" role="button" aria-pressed="${ariaSelected}" aria-label="${esc(label)}">${hit}${pulse}${particles}${pin}${anchor}${countLabel || ''}<title>${label}</title></g>`;
 }
+/* Destination coordinate provenance (Issue #88 known-datacenter follow-up):
+   the map/report/PDF must all label *how* a destination point was placed
+   rather than presenting every bubble as equally precise. */
+function provenanceLabel(entity){
+  if (!entity || !entity.provenance) return null;
+  if (entity.provenance === 'city_geoip') return 'City GeoIP';
+  if (entity.provenance === 'known_datacenter') return 'Known datacenter' + (entity.provider ? ` (${entity.provider}${entity.region ? ' · ' + entity.region : ''})` : '');
+  if (entity.provenance === 'mixed') return 'Mixed provenance';
+  return null;
+}
 function renderMapDetail(entity, kind){
   const el = document.getElementById('destination-map-detail'); if (!el) return;
   if (!entity){ el.hidden = true; el.innerHTML = ''; return; }
@@ -2526,8 +2681,10 @@ function renderMapDetail(entity, kind){
     const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
     const ipCount = entity.unique_ip_count || 1;
     const where = entity.city ? `${entity.city}, ${entity.country_name || entity.country_code || 'unknown location'}` : (entity.country_name || entity.country_code || 'Unknown location');
-    el.innerHTML = closeBtn + `<h3>${esc(where)} <span class="sub">${esc(ipCount)} IP${ipCount===1?'':'s'}</span></h3>`
-      + `<div class="stats-note">${esc(entity.observation_count)} observed destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; approximate coordinates from observed DNS destinations, not a verified physical location</div>`
+    const provLabel = provenanceLabel(entity);
+    const provBadge = provLabel ? `<span class="provenance-badge provenance-${esc(entity.provenance)}">${esc(provLabel)}</span>` : '';
+    el.innerHTML = closeBtn + `<h3>${esc(where)} <span class="sub">${esc(ipCount)} IP${ipCount===1?'':'s'}</span> ${provBadge}</h3>`
+      + `<div class="stats-note">${esc(entity.observation_count)} observed destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; approximate coordinates from observed DNS destinations, not a verified physical location${entity.provenance === 'known_datacenter' ? ' &middot; region-derived from a curated known-datacenter range, not an exact server location' : ''}</div>`
       + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`;
   } else {
     const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
@@ -2583,13 +2740,22 @@ let mapBreakdownSortMode = 'metric';
 function renderMapBreakdownHistory(data){
   const el = document.getElementById('destination-map-history'); if (!el) return;
   const h = data?.history;
-  if (!h || !h.tracked_domains_all_time){ el.textContent = ''; return; }
+  const prov = data?.coverage?.provenance;
+  const provParts = [];
+  if (prov){
+    if (prov.city_geoip) provParts.push(`${esc(prov.city_geoip)} City GeoIP`);
+    if (prov.known_datacenter) provParts.push(`${esc(prov.known_datacenter)} Known datacenter`);
+    if (prov.country_only) provParts.push(`${esc(prov.country_only)} Country only`);
+    if (prov.unmapped) provParts.push(`${esc(prov.unmapped)} Unmapped`);
+  }
+  const provText = provParts.length ? ` Destination observations by provenance: ${provParts.join(' &middot; ')}.` : '';
+  if (!h || !h.tracked_domains_all_time){ el.innerHTML = provText.trim(); return; }
   let since = '';
   if (h.tracking_since){
     const d = new Date(h.tracking_since);
     if (!isNaN(d.getTime())) since = ` since ${d.toLocaleDateString()}`;
   }
-  el.textContent = `Tracking ${esc(h.tracked_domains_all_time)} domain${h.tracked_domains_all_time===1?'':'s'} with observed destinations all-time${since} -- this history is stored in SQLite and persists across restarts.`;
+  el.innerHTML = `Tracking ${esc(h.tracked_domains_all_time)} domain${h.tracked_domains_all_time===1?'':'s'} with observed destinations all-time${since} -- this history is stored in SQLite and persists across restarts.${provText}`;
 }
 function renderMapBreakdown(data){
   const list = document.getElementById('map-breakdown-list'); if (!list) return;
@@ -2641,19 +2807,26 @@ function clusterDestinationPoints(points, zoom){
     bucket.observation_count += (p.observation_count || 0);
     bucket.domain_count += (p.domain_count || 0);
   });
-  return Array.from(cells.values()).map(b => ({
-    key: b.key,
-    x: b.sumX / b.points.length,
-    y: b.sumY / b.points.length,
-    points: b.points,
-    unique_ip_count: b.points.length,
-    observation_count: b.observation_count,
-    domain_count: b.domain_count,
-    country_code: b.points[0].country_code,
-    country_name: b.points[0].country_name,
-    city: b.points.length === 1 ? b.points[0].city : null,
-    sample_domains: Array.from(new Set(b.points.flatMap(p => p.sample_domains || []))).slice(0, 5),
-  }));
+  return Array.from(cells.values()).map(b => {
+    const provenanceSet = new Set(b.points.map(p => p.provenance).filter(Boolean));
+    const singlePoint = b.points.length === 1 ? b.points[0] : null;
+    return {
+      key: b.key,
+      x: b.sumX / b.points.length,
+      y: b.sumY / b.points.length,
+      points: b.points,
+      unique_ip_count: b.points.length,
+      observation_count: b.observation_count,
+      domain_count: b.domain_count,
+      country_code: b.points[0].country_code,
+      country_name: b.points[0].country_name,
+      city: singlePoint ? singlePoint.city : null,
+      provenance: provenanceSet.size === 1 ? Array.from(provenanceSet)[0] : (provenanceSet.size > 1 ? 'mixed' : null),
+      provider: singlePoint ? singlePoint.provider : null,
+      region: singlePoint ? singlePoint.region : null,
+      sample_domains: Array.from(new Set(b.points.flatMap(p => p.sample_domains || []))).slice(0, 5),
+    };
+  });
 }
 function renderCountriesMode(data){
   const el = document.getElementById('destination-map'); if (!el) return;
@@ -2737,11 +2910,11 @@ function renderCountriesMode(data){
 }
 function renderDestinationsMode(data, capabilities){
   const el = document.getElementById('destination-map'); if (!el) return;
-  if (!capabilities.coordinates){
+  if (!capabilities.coordinates && !capabilities.datacenter){
     el.innerHTML = mapBaseSvg(
       'World map; coordinate-level destination data unavailable',
       mapStatusBanner(
-        'Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database to enable Destinations mode, or switch to Countries. See docs/GEOIP.md.',
+        'Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database, or a curated known-datacenter database, to enable Destinations mode, or switch to Countries. See docs/GEOIP.md.',
         '<button type="button" class="map-zoom-btn" id="map-switch-countries-btn">Switch to Countries</button>'
       )
     );
@@ -2758,7 +2931,7 @@ function renderDestinationsMode(data, capabilities){
   if (!points.length){
     el.innerHTML = mapBaseSvg(
       'World map; no geolocated destination coordinates yet',
-      mapStatusBanner('No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate GeoIP database.')
+      mapStatusBanner('No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate or known-datacenter GeoIP database.')
     );
     mapFinishRender(el);
     renderMapDetail(null);
@@ -2775,9 +2948,10 @@ function renderDestinationsMode(data, capabilities){
     const color = mapThemeColor(ratio, theme);
     const r = (4 + Math.sqrt(ratio) * 15).toFixed(1);
     const selected = mapSelectedDestinationKey === c.key ? ' map-bubble-selected' : '';
-    const label = c.unique_ip_count > 1
+    const provLabel = provenanceLabel(c);
+    const label = (c.unique_ip_count > 1
       ? `${esc(c.unique_ip_count)} destinations: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`
-      : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`;
+      : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`) + (provLabel ? ` — ${esc(provLabel)}` : '');
     const countLabel = c.unique_ip_count > 1
       ? `<text class="map-cluster-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${c.unique_ip_count > 99 ? '99+' : c.unique_ip_count}</text>`
       : (Number(r) >= 9 ? `<text class="map-bubble-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>` : '');
@@ -2822,7 +2996,7 @@ function renderDestinationMap(data){
   const mode = prefs.mapMode === 'destinations' ? 'destinations' : 'countries';
   if (subtitleEl){
     subtitleEl.textContent = mode === 'destinations'
-      ? 'Real observed DNS destination IPs plotted by coordinate and clustered when nearby — not verified physical server locations.'
+      ? 'Real observed DNS destination IPs plotted by coordinate and clustered when nearby — City GeoIP points are exact-coordinate matches; Known datacenter points are region-derived from a curated provider database, not a verified physical server location.'
       : 'Country-level aggregate of resolved DNS response IPs — not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.';
   }
   const legendMetricEl = document.getElementById('map-legend-metric-label');
@@ -2841,7 +3015,7 @@ function renderDestinationMap(data){
     renderMapDetail(null);
     return;
   }
-  if (!provider.configured && !capabilities.coordinates){
+  if (!provider.configured && !capabilities.coordinates && !capabilities.datacenter){
     el.innerHTML = mapBaseSvg(
       'World map; GeoIP not configured, destinations unmapped',
       mapStatusBanner('No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.')
@@ -3187,8 +3361,8 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     base.preset = name;
     const set = (id, patch) => { if (base.widgets[id]) Object.assign(base.widgets[id], patch); };
     if (name === 'monitoring'){
-      base.order = ['live-overview','status-breakdown','query-volume','new-domains','new-devices','activity-domains','activity-devices','top-activity'];
-      set('live-overview', {h:'tall'});
+      base.order = ['visibility-report','status-breakdown','query-volume','new-domains','new-devices','activity-domains','activity-devices','top-activity'];
+      set('visibility-report', {h:'tall'});
       set('activity-domains', {h:'compact'});
       set('activity-devices', {h:'compact'});
       set('top-activity', {hidden:true});
@@ -3196,11 +3370,11 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       WIDGET_IDS.forEach(id => set(id, {h:'compact'}));
       set('top-activity', {hidden:true});
     } else if (name === 'investigation'){
-      base.order = ['query-volume','status-breakdown','top-activity','activity-domains','activity-devices','new-domains','new-devices','live-overview'];
+      base.order = ['query-volume','status-breakdown','top-activity','activity-domains','activity-devices','new-domains','new-devices','visibility-report'];
       set('top-activity', {h:'tall'});
       set('activity-domains', {h:'tall'});
       set('activity-devices', {h:'tall'});
-      set('live-overview', {w:'2', h:'compact'});
+      set('visibility-report', {w:'2', h:'compact'});
     }
     base.order = insertWidgetsAtDefaultPosition(base.order, DEFAULT_LAYOUT.order);
     return base;
@@ -6774,7 +6948,14 @@ def geoip_map_payload():
     countries = {}
     destination_points = {}
     city_provider_ready = _geoip_city_provider is not None and _geoip_city_provider.available
+    datacenter_provider_ready = _geoip_datacenter_provider is not None and _geoip_datacenter_provider.available
     total_observations = geolocated_observations = 0
+    # Per-provenance observation counts for the coordinate hierarchy (Issue
+    # #88 follow-up): city_geoip and known_datacenter are real map points;
+    # country_only/unmapped never place a Destinations bubble, but are still
+    # counted so the map/report/PDF can say honestly how much coverage each
+    # tier actually has.
+    provenance_counts = {"city_geoip": 0, "known_datacenter": 0, "country_only": 0, "unmapped": 0}
     total_domains = len(domain_rows); geolocated_domains = unknown_domains = unknown_observations = 0
     for domain, clients_json in domain_rows:
         try: clients = json.loads(clients_json or "{}")
@@ -6783,21 +6964,42 @@ def geoip_map_payload():
         for ip, observations in by_domain.get(domain, []):
             total_observations += observations
             result = geoip_lookup(ip); code, name = result["country_code"], result["country_name"]
-            # Destinations mode uses only real observed coordinates from the
-            # optional, independent city/coordinate GeoIP database -- never a
-            # country centroid fallback, and never gated on whether the
-            # separate country-range provider also happened to match this IP
-            # (Issue #88 #5/#6).
+            # Destination coordinate hierarchy (Issue #88 #5/#6 + known-
+            # datacenter follow-up): a real city/coordinate GeoIP match wins
+            # first; only when that misses does an explicitly-sourced known
+            # datacenter/provider range fill in a region-derived point;
+            # otherwise the IP is country-only (counted for the Countries
+            # aggregate, never a Destinations bubble) or fully unmapped.
+            # Neither tier is gated on whether the separate country-range
+            # provider also happened to match this IP.
+            point_provenance = None
             if city_provider_ready:
                 city_result = geoip_city_lookup(ip)
                 if city_result["lat"] is not None and city_result["lon"] is not None:
-                    point_key = (round(city_result["lat"], 3), round(city_result["lon"], 3))
+                    point_key = ("city", round(city_result["lat"], 3), round(city_result["lon"], 3))
                     dbucket = destination_points.setdefault(point_key, {
                         "lat": city_result["lat"], "lon": city_result["lon"],
                         "country_code": city_result["country_code"] or code, "country_name": city_result["country_name"] or name,
-                        "city": city_result["city"], "observation_count": 0, "domain_keys": set(), "ip_keys": set(),
+                        "city": city_result["city"], "provider": None, "region": None, "provenance": "city_geoip",
+                        "observation_count": 0, "domain_keys": set(), "ip_keys": set(),
                     })
                     dbucket["observation_count"] += observations; dbucket["domain_keys"].add(domain); dbucket["ip_keys"].add(ip)
+                    point_provenance = "city_geoip"
+            if point_provenance is None and datacenter_provider_ready:
+                dc_result = geoip_datacenter_lookup(ip)
+                if dc_result["lat"] is not None and dc_result["lon"] is not None:
+                    point_key = ("dc", round(dc_result["lat"], 3), round(dc_result["lon"], 3), dc_result["provider"], dc_result["region"])
+                    dbucket = destination_points.setdefault(point_key, {
+                        "lat": dc_result["lat"], "lon": dc_result["lon"],
+                        "country_code": dc_result["country_code"] or code, "country_name": name,
+                        "city": None, "provider": dc_result["provider"], "region": dc_result["region"], "provenance": "known_datacenter",
+                        "observation_count": 0, "domain_keys": set(), "ip_keys": set(),
+                    })
+                    dbucket["observation_count"] += observations; dbucket["domain_keys"].add(domain); dbucket["ip_keys"].add(ip)
+                    point_provenance = "known_datacenter"
+            if point_provenance is None:
+                point_provenance = "country_only" if code else "unmapped"
+            provenance_counts[point_provenance] += observations
             if not code:
                 unmatched += observations
                 continue
@@ -6811,6 +7013,7 @@ def geoip_map_payload():
     destination_list = [
         {
             "lat": b["lat"], "lon": b["lon"], "country_code": b["country_code"], "country_name": b["country_name"], "city": b["city"],
+            "provider": b["provider"], "region": b["region"], "provenance": b["provenance"],
             "observation_count": b["observation_count"], "domain_count": len(b["domain_keys"]), "unique_ip_count": len(b["ip_keys"]),
             "sample_domains": list(b["domain_keys"])[:5],
         }
@@ -6835,10 +7038,10 @@ def geoip_map_payload():
         "provider": {"configured": bool(_geoip_provider.available), "db_path_basename": os.path.basename(_geoip_provider.path) if _geoip_provider.available and _geoip_provider.path else None, "range_count": _geoip_provider.range_count if _geoip_provider.available else 0},
         "countries": country_list, "destinations": destination_list,
         "unknown": {"domain_count": unknown_domains, "observation_count": unknown_observations},
-        "coverage": {"total_domains": total_domains, "geolocated_domains": geolocated_domains, "total_observations": total_observations, "geolocated_observations": geolocated_observations, "geolocated_pct": round(100.0 * geolocated_observations / total_observations, 1) if total_observations else 0.0},
-        "capabilities": {"country": bool(_geoip_provider.available), "coordinates": city_provider_ready, "heatmap": False},
+        "coverage": {"total_domains": total_domains, "geolocated_domains": geolocated_domains, "total_observations": total_observations, "geolocated_observations": geolocated_observations, "geolocated_pct": round(100.0 * geolocated_observations / total_observations, 1) if total_observations else 0.0, "provenance": provenance_counts},
+        "capabilities": {"country": bool(_geoip_provider.available), "coordinates": city_provider_ready, "datacenter": datacenter_provider_ready, "heatmap": False},
         "history": {"tracked_domains_all_time": int(history_row[0] or 0), "tracking_since": history_row[1] if history_row and history_row[1] else None},
-        "diagnostics": {"state": diagnostic_state, "message": GEOIP_DIAGNOSTIC_MESSAGES[diagnostic_state], "country": _geoip_diagnostics(), "city": _geoip_city_diagnostics()},
+        "diagnostics": {"state": diagnostic_state, "message": GEOIP_DIAGNOSTIC_MESSAGES[diagnostic_state], "country": _geoip_diagnostics(), "city": _geoip_city_diagnostics(), "datacenter": _geoip_datacenter_diagnostics()},
         # Visualization-only origin for destination route/arc rendering. Real
         # coordinates only ever come from an explicit operator setting --
         # never derived/guessed (Issue #88 #5).
@@ -6855,7 +7058,7 @@ def api_analytics_map():
         return jsonify(geoip_map_payload())
     except Exception as exc:
         log_event("ERROR", "Destination map payload failed", error=repr(exc))
-        return jsonify({"updated": utcnow(), "provider": {"configured": False, "range_count": 0}, "countries": [], "destinations": [], "unknown": {"domain_count": 0, "observation_count": 0}, "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0}, "capabilities": {"country": False, "coordinates": False, "heatmap": False}, "history": {"tracked_domains_all_time": 0, "tracking_since": None}, "diagnostics": {"state": "load_failed", "message": "Destination map backend error."}}), 200
+        return jsonify({"updated": utcnow(), "provider": {"configured": False, "range_count": 0}, "countries": [], "destinations": [], "unknown": {"domain_count": 0, "observation_count": 0}, "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0, "provenance": {"city_geoip": 0, "known_datacenter": 0, "country_only": 0, "unmapped": 0}}, "capabilities": {"country": False, "coordinates": False, "datacenter": False, "heatmap": False}, "history": {"tracked_domains_all_time": 0, "tracking_since": None}, "diagnostics": {"state": "load_failed", "message": "Destination map backend error."}}), 200
 
 
 @app.route("/")
@@ -6921,6 +7124,7 @@ if __name__ == "__main__":
     threading.Thread(target=_ip_ping_worker, daemon=True, name="ip-ping").start()
     threading.Thread(target=_geoip_initial_load_worker, daemon=True, name="geoip-loader").start()
     threading.Thread(target=_geoip_city_initial_load_worker, daemon=True, name="geoip-city-loader").start()
+    threading.Thread(target=_geoip_datacenter_initial_load_worker, daemon=True, name="geoip-datacenter-loader").start()
     _report_scheduler.start()
     signal.signal(signal.SIGTERM, lambda *_: (_report_scheduler.shutdown(), sys.exit(0)))
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))

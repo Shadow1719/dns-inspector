@@ -438,10 +438,23 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFillColor(INK)
     c.drawString(MARGIN, 137 * mm, "How to read this")
     style = ParagraphStyle("note", fontName="Helvetica", fontSize=8.2, leading=11.5, textColor=MUTED)
+    # Known-datacenter follow-up (Issue #88): the destination coordinate
+    # hierarchy (exact city GeoIP > curated known-datacenter region > country
+    # only > unmapped) must stay visible in the PDF, not just on the map.
+    provenance = ((map_data or {}).get("coverage") or {}).get("provenance") or {}
+    city_n = int(provenance.get("city_geoip") or 0)
+    dc_n = int(provenance.get("known_datacenter") or 0)
+    provenance_note = ""
+    if city_n or dc_n:
+        provenance_note = (
+            f" Includes {_fmt_num(city_n)} City GeoIP (exact coordinate) and {_fmt_num(dc_n)} Known datacenter "
+            "(region-derived, not exact) matched observations."
+        )
     note = Paragraph(
         "The destination section intentionally avoids implying exact physical infrastructure. "
         "A country bubble is an aggregation of observed answer IPs that matched the configured country database. "
-        "This is useful for traffic distribution, but it should not be interpreted as a map of individual servers.",
+        "This is useful for traffic distribution, but it should not be interpreted as a map of individual servers."
+        + provenance_note,
         style,
     )
     note.wrapOn(c, PAGE_W - 2 * MARGIN, 30 * mm)

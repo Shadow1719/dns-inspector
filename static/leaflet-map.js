@@ -217,7 +217,7 @@
     state.layers.routes.clearLayers();
     const routesEnabled = typeof prefs !== "undefined" && !!prefs.mapRoutes;
     if (!routesEnabled) return;
-    if (!capabilities || !capabilities.coordinates) return;
+    if (!capabilities || (!capabilities.coordinates && !capabilities.datacenter)) return;
     const origin = data && data.origin;
     if (!origin || origin.lat == null || origin.lon == null) return;
     points = (points || []).filter((p) => p.lat != null && p.lon != null);
@@ -238,7 +238,8 @@
         interactive: true,
       });
       const label = p.city || p.country_name || p.country_code || "Unknown";
-      line.bindTooltip(`${escapeHtml(label)}: ${num(p.observation_count)} observations — geographic/visual path, not the real network route`, { sticky: true });
+      const provLabel = typeof provenanceLabel === "function" ? provenanceLabel(p) : null;
+      line.bindTooltip(`${escapeHtml(label)}${provLabel ? ` (${escapeHtml(provLabel)})` : ""}: ${num(p.observation_count)} observations — geographic/visual path, not the real network route`, { sticky: true });
       line.on("click", () => activateCluster(p, data, capabilities));
       state.layers.routes.addLayer(line);
     });
@@ -310,27 +311,34 @@
       bucket.observation_count += p.observation_count || 0;
       bucket.domain_count += p.domain_count || 0;
     });
-    return Array.from(cells.values()).map((b) => ({
-      key: b.key,
-      lat: b.sumLat / b.points.length,
-      lon: b.sumLon / b.points.length,
-      unique_ip_count: b.points.length,
-      observation_count: b.observation_count,
-      domain_count: b.domain_count,
-      country_code: b.points[0].country_code,
-      country_name: b.points[0].country_name,
-      city: b.points.length === 1 ? b.points[0].city : null,
-      sample_domains: Array.from(new Set(b.points.flatMap((p) => p.sample_domains || []))).slice(0, 5),
-    }));
+    return Array.from(cells.values()).map((b) => {
+      const provenanceSet = new Set(b.points.map((p) => p.provenance).filter(Boolean));
+      const singlePoint = b.points.length === 1 ? b.points[0] : null;
+      return {
+        key: b.key,
+        lat: b.sumLat / b.points.length,
+        lon: b.sumLon / b.points.length,
+        unique_ip_count: b.points.length,
+        observation_count: b.observation_count,
+        domain_count: b.domain_count,
+        country_code: b.points[0].country_code,
+        country_name: b.points[0].country_name,
+        city: singlePoint ? singlePoint.city : null,
+        provenance: provenanceSet.size === 1 ? Array.from(provenanceSet)[0] : (provenanceSet.size > 1 ? "mixed" : null),
+        provider: singlePoint ? singlePoint.provider : null,
+        region: singlePoint ? singlePoint.region : null,
+        sample_domains: Array.from(new Set(b.points.flatMap((p) => p.sample_domains || []))).slice(0, 5),
+      };
+    });
   }
 
   function renderDestinations(data, capabilities) {
     banner(null);
     clearLayers();
     setVisibleLayer("destinations");
-    if (!capabilities || !capabilities.coordinates) {
+    if (!capabilities || (!capabilities.coordinates && !capabilities.datacenter)) {
       banner(
-        "Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database to enable Destinations mode, or switch to Countries. See docs/GEOIP.md."
+        "Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database, or a curated known-datacenter database, to enable Destinations mode, or switch to Countries. See docs/GEOIP.md."
       );
       renderMapDetail(null);
       return;
@@ -338,7 +346,7 @@
     const points = (data?.destinations || []).filter((p) => p.lat != null && p.lon != null);
     if (!points.length) {
       banner(
-        "No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate GeoIP database."
+        "No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate or known-datacenter GeoIP database."
       );
       renderMapDetail(null);
       return;
@@ -352,10 +360,12 @@
       const color = themeColor(ratio, theme);
       const size = Math.round(12 + Math.sqrt(ratio) * 26);
       const selected = mapSelectedDestinationKey === c.key;
+      const provLabel = typeof provenanceLabel === "function" ? provenanceLabel(c) : null;
       const label =
-        c.unique_ip_count > 1
+        (c.unique_ip_count > 1
           ? `${num(c.unique_ip_count)} destinations: ${num(c.observation_count)} observations, ${num(c.domain_count)} domains`
-          : `${c.city || c.country_name || c.country_code || "Unknown"}: ${num(c.observation_count)} observations, ${num(c.domain_count)} domains`;
+          : `${c.city || c.country_name || c.country_code || "Unknown"}: ${num(c.observation_count)} observations, ${num(c.domain_count)} domains`) +
+        (provLabel ? ` — ${provLabel}` : "");
       const marker = L.marker([c.lat, c.lon], {
         icon: bubbleIcon(size, color, selected),
         title: label,
@@ -431,7 +441,7 @@
       renderMapDetail(null);
       return;
     }
-    if (!provider.configured && !capabilities.coordinates) {
+    if (!provider.configured && !capabilities.coordinates && !capabilities.datacenter) {
       clearLayers();
       banner("No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.");
       renderMapDetail(null);
