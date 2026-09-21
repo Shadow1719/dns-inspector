@@ -10,7 +10,7 @@ All notable DNS Inspector changes are tracked here.
 - fixed a real bug found while reimplementing device-IP retention (not present in the shipped 0.7.14 image's behavior as observed, since the historical patch's own cutoff comparison could never match): the retention cutoff is now formatted as ISO-8601 to match the `device_ips.last_seen` column instead of being compared as a raw Unix timestamp
 - added `tests/` (pytest) and `requirements-dev.txt` for the first time on this line; not executed in this hand-off's sandbox, see `docs/tasks/ISSUE-81-MILESTONE-1-FOUNDATION.md`
 - explicitly not ported yet: device-label UI, observability header/`/debug/bundle`, memory diagnostics, and IP reachability ping (feature + UI) -- see the task doc for the full list and reasoning
-- `VERSION` intentionally left at `0.7.14`; this is foundation work on an unmerged branch, not a release
+- `VERSION` is set to `0.8.6-dev.1` for this test candidate; this is foundation work on an unmerged branch, not a production release
 
 ## [0.7.14]
 
