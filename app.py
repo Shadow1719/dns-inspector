@@ -5515,7 +5515,7 @@ def geoip_map_payload():
             "observation_count": bucket["observation_count"], "unique_ip_count": len(bucket["ip_keys"]),
             "sample_domains": [d for d, _ in top_domains],
             "sample_devices": [device_labels.get(k, k) for k in list(bucket["device_keys"])[:5]],
-            "centroid": centroid[:2] if centroid else None,
+            "centroid": list(centroid[:2]) if centroid else None,
         })
     country_list.sort(key=lambda row: -row["observation_count"])
     diagnostic_state = _geoip_diagnostic_state(total_observations, geolocated_observations)
