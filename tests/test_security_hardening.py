@@ -67,7 +67,9 @@ def test_admin_login_issues_secure_http_only_session(admin_app_module):
 
     status = client.get("/api/admin/status")
     assert status.get_json()["authenticated"] is True
-    assert client.get("/api/devlog").status_code == 200
+    devlog = client.get("/api/devlog")
+    assert devlog.status_code == 200
+    assert "no-store" in devlog.headers.get("Cache-Control", "")
 
 
 def test_state_changing_admin_endpoints_require_csrf_header(admin_app_module):
