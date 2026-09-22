@@ -2,6 +2,7 @@ import array
 import bisect
 import csv
 import hashlib
+import hmac
 import io
 import ipaddress
 import json
@@ -12,6 +13,7 @@ import socket
 import signal
 import subprocess
 import sys
+import secrets
 import sqlite3
 import threading
 import time
@@ -19,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
+from functools import wraps
 from urllib.parse import quote
 
 import requests
@@ -90,10 +93,172 @@ IP_PING_INTERVAL_HOURS = max(1.0, float(os.getenv("IP_PING_INTERVAL_HOURS", "4")
 IP_PING_INITIAL_DELAY_SECONDS = max(10, int(os.getenv("IP_PING_INITIAL_DELAY_SECONDS", "60")))
 IP_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("IP_PING_TIMEOUT_SECONDS", "1")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
+ADMIN_TOKEN = os.getenv("DNS_INSPECTOR_ADMIN_TOKEN", "").strip()
 
 app = Flask(__name__)
+
+
+@app.context_processor
+def _security_template_context():
+    return {"admin_auth_enabled": bool(ADMIN_TOKEN)}
+
+
 db_lock = threading.Lock()
 session = requests.Session()
+
+# Administrative lifecycle, mutable-label and diagnostic endpoints can be
+# protected without breaking existing trusted-LAN deployments. When
+# DNS_INSPECTOR_ADMIN_TOKEN is set, the browser performs an explicit token
+# login and receives a short-lived, random HttpOnly/SameSite session cookie.
+# The configured token is never rendered into HTML/JS, logged, or stored in
+# browser storage. When the token is unset, the existing trusted-LAN behavior
+# remains unchanged.
+ADMIN_SESSION_COOKIE = "dns_inspector_admin"
+ADMIN_SESSION_TTL_SECONDS = max(300, int(os.getenv("DNS_INSPECTOR_ADMIN_SESSION_TTL_SECONDS", "28800")))
+ADMIN_SESSION_MAX = max(8, int(os.getenv("DNS_INSPECTOR_ADMIN_SESSION_MAX", "128")))
+ADMIN_LOGIN_WINDOW_SECONDS = max(30, int(os.getenv("DNS_INSPECTOR_ADMIN_LOGIN_WINDOW_SECONDS", "300")))
+ADMIN_LOGIN_MAX_ATTEMPTS = max(1, int(os.getenv("DNS_INSPECTOR_ADMIN_LOGIN_MAX_ATTEMPTS", "5")))
+ADMIN_COOKIE_SECURE_OVERRIDE = os.getenv("DNS_INSPECTOR_ADMIN_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+ADMIN_TOKEN_FINGERPRINT = hashlib.sha256(ADMIN_TOKEN.encode("utf-8")).hexdigest() if ADMIN_TOKEN else ""
+_admin_sessions = {}
+_admin_sessions_lock = threading.Lock()
+_admin_login_attempts = deque(maxlen=512)
+_admin_login_lock = threading.Lock()
+
+
+def _admin_cookie_secure():
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    return bool(request.is_secure or forwarded_proto == "https" or ADMIN_COOKIE_SECURE_OVERRIDE)
+
+
+def _prune_admin_sessions(now=None):
+    now = time.time() if now is None else now
+    expired = [key for key, record in _admin_sessions.items() if record[1] <= now]
+    for key in expired:
+        _admin_sessions.pop(key, None)
+    if len(_admin_sessions) <= ADMIN_SESSION_MAX:
+        return
+    oldest = sorted(_admin_sessions.items(), key=lambda item: item[1][0])[: len(_admin_sessions) - ADMIN_SESSION_MAX]
+    for key, _ in oldest:
+        _admin_sessions.pop(key, None)
+
+
+def _issue_admin_session():
+    raw = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _admin_sessions_lock:
+        _prune_admin_sessions(now)
+        _admin_sessions[digest] = (now, now + ADMIN_SESSION_TTL_SECONDS, ADMIN_TOKEN_FINGERPRINT)
+    return raw
+
+
+def _admin_session_valid(req):
+    if not ADMIN_TOKEN:
+        return True
+    raw = req.cookies.get(ADMIN_SESSION_COOKIE, "")
+    if not raw:
+        return False
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _admin_sessions_lock:
+        record = _admin_sessions.get(digest)
+        if record is None:
+            return False
+        if record[1] <= now or not hmac.compare_digest(record[2], ADMIN_TOKEN_FINGERPRINT):
+            _admin_sessions.pop(digest, None)
+            return False
+        return True
+
+
+def _admin_login_rate_limited(client_id):
+    now = time.monotonic()
+    cutoff = now - ADMIN_LOGIN_WINDOW_SECONDS
+    with _admin_login_lock:
+        while _admin_login_attempts and _admin_login_attempts[0][1] <= cutoff:
+            _admin_login_attempts.popleft()
+        attempts = sum(1 for address, _ in _admin_login_attempts if address == client_id)
+        if attempts >= ADMIN_LOGIN_MAX_ATTEMPTS:
+            retry_after = max(1, int((_admin_login_attempts[0][1] + ADMIN_LOGIN_WINDOW_SECONDS) - now))
+            return True, retry_after
+        _admin_login_attempts.append((client_id, now))
+    return False, 0
+
+
+def _csrf_request_valid(req):
+    if req.method in {"GET", "HEAD", "OPTIONS"}:
+        return True
+    # Same-origin browser fetch() sends this custom header; a cross-site HTML
+    # form cannot set it, and a cross-origin fetch would require CORS before
+    # the browser could send it. This is an additional CSRF defense alongside
+    # the Strict SameSite session cookie.
+    return hmac.compare_digest(req.headers.get("X-DNS-Inspector-Requested-With", ""), "fetch")
+
+
+def _json_no_store(payload, status=200):
+    resp = jsonify(payload)
+    resp.status_code = status
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+def require_admin(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if not ADMIN_TOKEN:
+            return view(*args, **kwargs)
+        if not _admin_session_valid(request):
+            return _json_no_store({"ok": False, "error": "Admin authentication required"}, 401)
+        if not _csrf_request_valid(request):
+            return _json_no_store({"ok": False, "error": "CSRF validation failed"}, 403)
+        return view(*args, **kwargs)
+    return wrapper
+
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=(), usb=()",
+    # script-src/style-src keep 'unsafe-inline' because the UI is a single
+    # server-rendered template with inline <script>/<style> blocks and no
+    # nonce plumbing; see docs/SECURITY_AUDIT_0.8.6.md for the tracked
+    # follow-up to remove it. Every directive below only allow-lists hosts the
+    # UI actually loads resources from (unpkg for Leaflet, the OSM/OpenTopoMap/
+    # Esri tile hosts the map renderer requests) -- see static/leaflet-map.js.
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "img-src 'self' data: https://tile.openstreetmap.org https://*.tile.opentopomap.org https://server.arcgisonline.com; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+}
+
+
+_ADMIN_PROTECTED_PATHS = {
+    "/api/system/restart",
+    "/api/system/stop",
+    "/api/device/label",
+    "/api/debug/snapshot",
+    "/api/devlog/export",
+    "/api/devlog",
+}
+
+
+@app.after_request
+def _apply_security_headers(response):
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    if ADMIN_TOKEN and request.path in _ADMIN_PROTECTED_PATHS:
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 # Bounded in-memory operational event log for the DEV/Diagnostics UI.
 # It is ephemeral and cannot grow with uptime.
@@ -1275,6 +1440,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
   <div class="settings-head"><h2>Settings</h2><button type="button" class="settings-close" id="settings-close-btn" aria-label="Close settings">✕</button></div>
   <div class="settings-body">
     <nav class="settings-nav" role="tablist" aria-label="Settings sections">
+      {% if admin_auth_enabled %}<button type="button" class="settings-nav-btn" data-settings-tab="security" role="tab">Security</button>{% endif %}
       <button type="button" class="settings-nav-btn active" data-settings-tab="appearance" role="tab">Appearance</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="dashboard" role="tab">Dashboard</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="monitoring" role="tab">Monitoring</button>
@@ -1284,6 +1450,22 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
       <button type="button" class="settings-nav-btn" data-settings-tab="about" role="tab">About</button>
     </nav>
     <div class="settings-panels">
+      {% if admin_auth_enabled %}
+      <section class="settings-section" data-settings-panel="security">
+        <h3>Admin security</h3>
+        <div class="settings-kv">
+          <b>Session</b><span id="admin-auth-status">Checking…</span>
+        </div>
+        <div class="settings-row" style="margin-top:14px">
+          <div class="settings-row-label"><b>Admin token</b><small>Creates a short-lived HttpOnly session cookie. The token is not stored in page source, localStorage or sessionStorage.</small></div>
+          <div class="settings-control">
+            <input class="settings-select" type="password" id="admin-token-input" autocomplete="off" placeholder="Admin token">
+            <button type="button" id="admin-login-btn">Sign in</button>
+            <button type="button" id="admin-logout-btn">Sign out</button>
+          </div>
+        </div>
+      </section>
+      {% endif %}
       <section class="settings-section active" data-settings-panel="appearance">
         <h3>Theme</h3>
         <div class="settings-row"><div class="settings-row-label"><b>Color theme</b><small>Applies across Overview, Devices, DNS views and Analytics</small></div>
@@ -1440,6 +1622,111 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
    to reference names (like `refreshMs`, `renderLiveHero`) that later
    blocks define, as long as nothing here calls them before those blocks
    have executed. */
+const ADMIN_AUTH_ENABLED = {{ 'true' if admin_auth_enabled else 'false' }};
+let adminSessionActive = false;
+let adminLoginPromise = null;
+
+function setAdminAuthStatus(text, ok){
+  const el = document.getElementById('admin-auth-status');
+  if (!el) return;
+  el.textContent = text;
+  el.dataset.state = ok ? 'ok' : 'error';
+}
+
+async function refreshAdminAuthStatus(){
+  if (!ADMIN_AUTH_ENABLED) return false;
+  try{
+    const r = await fetch('/api/admin/status', {cache:'no-store', credentials:'same-origin'});
+    const d = await r.json();
+    adminSessionActive = d.authenticated === true;
+    setAdminAuthStatus(adminSessionActive ? 'Authenticated' : 'Not authenticated', adminSessionActive);
+    return adminSessionActive;
+  }catch(e){
+    adminSessionActive = false;
+    setAdminAuthStatus('Status unavailable', false);
+    return false;
+  }
+}
+
+async function loginAdminToken(token){
+  const value = String(token || '');
+  if (!value) return false;
+  try{
+    const r = await fetch('/api/admin/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      credentials:'same-origin',
+      cache:'no-store',
+      body:JSON.stringify({token:value}),
+    });
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok || !d.ok){
+      setAdminAuthStatus(r.status === 429 ? 'Too many attempts — try again later' : 'Authentication failed', false);
+      return false;
+    }
+    adminSessionActive = true;
+    setAdminAuthStatus('Authenticated', true);
+    return true;
+  }catch(e){
+    setAdminAuthStatus('Authentication request failed', false);
+    return false;
+  }
+}
+
+async function ensureAdminAuth(){
+  if (!ADMIN_AUTH_ENABLED || adminSessionActive) return true;
+  if (adminLoginPromise) return adminLoginPromise;
+  adminLoginPromise = (async()=>{
+    const statusOk = await refreshAdminAuthStatus();
+    if (statusOk) return true;
+    const token = window.prompt('DNS Inspector admin token:');
+    if (token === null || token === '') return false;
+    return loginAdminToken(token);
+  })().finally(()=>{ adminLoginPromise = null; });
+  return adminLoginPromise;
+}
+
+async function adminFetch(url, options = {}){
+  if (!ADMIN_AUTH_ENABLED) return fetch(url, options);
+  const method = String(options.method || 'GET').toUpperCase();
+  const headers = new Headers(options.headers || {});
+  if (!['GET','HEAD','OPTIONS'].includes(method)) headers.set('X-DNS-Inspector-Requested-With', 'fetch');
+  const requestOptions = Object.assign({}, options, {credentials:'same-origin', headers});
+  let r = await fetch(url, requestOptions);
+  if (r.status === 401){
+    adminSessionActive = false;
+    const authenticated = await ensureAdminAuth();
+    if (!authenticated) return r;
+    r = await fetch(url, requestOptions);
+  }
+  return r;
+}
+
+document.getElementById('admin-login-btn')?.addEventListener('click', async()=>{
+  const input = document.getElementById('admin-token-input');
+  const token = input?.value || '';
+  if (input) input.value = '';
+  const ok = await loginAdminToken(token);
+  if (ok) input?.blur();
+});
+
+document.getElementById('admin-logout-btn')?.addEventListener('click', async()=>{
+  try{
+    const r = await fetch('/api/admin/logout', {
+      method:'POST',
+      headers:{'X-DNS-Inspector-Requested-With':'fetch'},
+      credentials:'same-origin',
+      cache:'no-store',
+    });
+    adminSessionActive = false;
+    setAdminAuthStatus(r.ok ? 'Signed out' : 'Sign-out failed', false);
+  }catch(e){
+    setAdminAuthStatus('Sign-out failed', false);
+  }
+});
+
+if (ADMIN_AUTH_ENABLED) refreshAdminAuthStatus();
+
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
@@ -1915,8 +2202,8 @@ function bindIpPingButtons(){document.querySelectorAll('[data-ping-button]').for
 function injectIpPingControls(){decorateDeviceIps();loadIpPingStatuses();}
 function placeDeviceLabelsInColumn(){const body=document.getElementById('clients-body');const table=body?.closest('table');if(!body||!table)return;table.classList.add('device-table');const head=table.tHead?.rows?.[0];if(head&&!head.querySelector('.device-label-head')){const th=document.createElement('th');th.className='device-label-head';th.textContent='Label';head.insertBefore(th,head.cells[1]||null)}body.querySelectorAll('tr').forEach(row=>{if(row.querySelector('.device-label-cell'))return;const label=row.querySelector('.device-label-inline');if(!label)return;const td=document.createElement('td');td.className='device-label-cell';td.appendChild(label);row.insertBefore(td,row.cells[1]||null)});}
 
-async function loadDeviceLabels(){try{const r=await fetch('/api/device/label',{cache:'no-store'});if(!r.ok)return;const data=await r.json();window.deviceLabels=data.labels||{};}catch(e){console.debug('device labels load failed',e)}}
-async function editDeviceLabel(button){const key=button?.dataset?.deviceKey||'';if(!key)return;const current=button.dataset.deviceLabel||'';const value=window.prompt('Device label',current);if(value===null)return;const label=value.trim().slice(0,80);try{const r=await fetch('/api/device/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_key:key,label})});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'Save failed');window.deviceLabels[key]=label;renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();}catch(e){alert('Could not save device label: '+e.message)}}
+async function loadDeviceLabels(){try{const r=await adminFetch('/api/device/label',{cache:'no-store'});if(!r.ok)return;const data=await r.json();window.deviceLabels=data.labels||{};}catch(e){console.debug('device labels load failed',e)}}
+async function editDeviceLabel(button){const key=button?.dataset?.deviceKey||'';if(!key)return;const current=button.dataset.deviceLabel||'';const value=window.prompt('Device label',current);if(value===null)return;const label=value.trim().slice(0,80);try{const r=await adminFetch('/api/device/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_key:key,label})});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'Save failed');window.deviceLabels[key]=label;renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();}catch(e){alert('Could not save device label: '+e.message)}}
 function bindDeviceLabelButtons(){document.querySelectorAll('.device-label-btn').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>editDeviceLabel(b));})}
 function renderClients(rows,force){ window.__lastClients=rows||[]; if(!force&&!document.getElementById('tab-devices')?.classList.contains('active'))return; document.getElementById('clients-body').innerHTML = (rows||[]).map(deviceRow).join(''); bindDeviceLabelButtons(); placeDeviceLabelsInColumn(); injectIpPingControls(); reapplyTableSorts(); }
 let tableSortState = {recent:{key:null,dir:1}, clients:{key:null,dir:1}};
@@ -3583,7 +3870,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   async function refreshDevLogPanel(){
     const el = document.getElementById('devlog-list'); if (!el) return;
     try{
-      const r = await fetch('/api/devlog', {cache:'no-store'});
+      const r = await adminFetch('/api/devlog', {cache:'no-store'});
       const d = await r.json();
       const rows = d.entries || [];
       el.innerHTML = rows.length ? rows.slice(-100).reverse().map(x => {
@@ -3597,7 +3884,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
 
   async function downloadBoundedArtifact(url){
     try{
-      const r = await fetch(url, {cache:'no-store'});
+      const r = await adminFetch(url, {cache:'no-store'});
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const blob = await r.blob();
       const disposition = r.headers.get('Content-Disposition') || '';
@@ -3619,7 +3906,6 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   function openDialog(){
     if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open','');
     refreshDiagnosticsPanel();
-    refreshDevLogPanel();
     refreshSystemPanel();
     refreshAboutUptime();
     refreshReportsPanel();
@@ -3633,6 +3919,8 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   dialog.querySelectorAll('.settings-nav-btn').forEach(btn => btn.addEventListener('click', () => {
     dialog.querySelectorAll('.settings-nav-btn').forEach(b => b.classList.toggle('active', b === btn));
     dialog.querySelectorAll('.settings-section').forEach(s => s.classList.toggle('active', s.dataset.settingsPanel === btn.dataset.settingsTab));
+    if (btn.dataset.settingsTab === 'diagnostics') refreshDevLogPanel();
+    if (btn.dataset.settingsTab === 'security') refreshAdminAuthStatus();
   }));
 
   const accentGroup = document.getElementById('accent-choice-group');
@@ -3864,7 +4152,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       btn.textContent = 'Restarting…';
       if (note) note.textContent = 'Restarting DNS Inspector — this page will reload automatically once it is back.';
       try{
-        const r = await fetch('/api/system/restart', {
+        const r = await adminFetch('/api/system/restart', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({confirm: true}),
@@ -3935,7 +4223,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       btn.textContent = 'Stopping…';
       if (note) note.textContent = 'Stopping DNS Inspector…';
       try{
-        const r = await fetch('/api/system/stop', {
+        const r = await adminFetch('/api/system/stop', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({confirm: true}),
@@ -4917,11 +5205,42 @@ def api_ip_ping_status():
         return jsonify({"ok": False, "statuses": {}}), 500
 
 
+MANUAL_PING_MIN_INTERVAL_SECONDS = max(1.0, float(os.getenv("MANUAL_PING_MIN_INTERVAL_SECONDS", "3")))
+MANUAL_PING_MAX_PER_MINUTE = max(1, int(os.getenv("MANUAL_PING_MAX_PER_MINUTE", "20")))
+_manual_ping_lock = threading.Lock()
+_manual_ping_last_by_ip = {}
+_manual_ping_recent = deque()
+
+
+def _check_manual_ping_rate_limit(ip):
+    """Bound user-triggered LAN pings: a per-target cooldown (stop a single
+    button mash from re-spawning `ping` back-to-back for the same host) plus a
+    server-wide per-minute cap (stop a caller from sweeping many LAN
+    addresses quickly, effectively using this endpoint as a network scanner).
+    """
+    now = time.monotonic()
+    with _manual_ping_lock:
+        last = _manual_ping_last_by_ip.get(ip)
+        if last is not None and (now - last) < MANUAL_PING_MIN_INTERVAL_SECONDS:
+            wait = MANUAL_PING_MIN_INTERVAL_SECONDS - (now - last)
+            return False, f"Ping {ip} again in {wait:.1f}s"
+        while _manual_ping_recent and (now - _manual_ping_recent[0]) > 60.0:
+            _manual_ping_recent.popleft()
+        if len(_manual_ping_recent) >= MANUAL_PING_MAX_PER_MINUTE:
+            return False, "Too many manual pings; try again shortly"
+        _manual_ping_last_by_ip[ip] = now
+        _manual_ping_recent.append(now)
+        return True, ""
+
+
 @app.route("/api/ip/ping", methods=["POST"])
 def api_ip_ping():
     try:
         data = request.get_json(silent=True) or {}
         ip = _validate_ping_ip(data.get("ip"))
+        allowed, reason = _check_manual_ping_rate_limit(ip)
+        if not allowed:
+            return jsonify({"ok": False, "error": reason}), 429
         return jsonify({"ok": True, "result": _run_ip_ping(ip)})
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
@@ -6788,7 +7107,57 @@ def api_settings_map_origin():
     set_setting("map_origin", origin)
     return jsonify({"ok": True, "origin": origin})
 
+
+@app.post("/api/admin/login")
+def api_admin_login():
+    if not ADMIN_TOKEN:
+        return _json_no_store({"ok": False, "enabled": False, "error": "Admin authentication is not enabled"}, 404)
+
+    limited, retry_after = _admin_login_rate_limited(request.remote_addr or "unknown")
+    if limited:
+        resp = _json_no_store({"ok": False, "error": "Too many login attempts"}, 429)
+        resp.headers["Retry-After"] = str(retry_after)
+        return resp
+
+    data = request.get_json(silent=True) or {}
+    supplied = data.get("token")
+    if not isinstance(supplied, str) or not hmac.compare_digest(supplied, ADMIN_TOKEN):
+        return _json_no_store({"ok": False, "error": "Invalid admin token"}, 401)
+
+    raw = _issue_admin_session()
+    resp = _json_no_store({"ok": True, "authenticated": True, "expires_in": ADMIN_SESSION_TTL_SECONDS})
+    resp.set_cookie(
+        ADMIN_SESSION_COOKIE,
+        raw,
+        max_age=ADMIN_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=_admin_cookie_secure(),
+        samesite="Strict",
+        path="/",
+    )
+    return resp
+
+
+@app.get("/api/admin/status")
+def api_admin_status():
+    authenticated = _admin_session_valid(request) if ADMIN_TOKEN else False
+    return _json_no_store({"ok": True, "enabled": bool(ADMIN_TOKEN), "authenticated": authenticated})
+
+
+@app.post("/api/admin/logout")
+def api_admin_logout():
+    raw = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+    if raw:
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        with _admin_sessions_lock:
+            _admin_sessions.pop(digest, None)
+    resp = _json_no_store({"ok": True, "authenticated": False})
+    resp.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+    return resp
+
+
 @app.route("/api/device/label", methods=["GET", "POST"])
+@require_admin
 def api_device_label():
     try:
         with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
@@ -6842,6 +7211,7 @@ def _perform_self_restart():
         print(f"Self-restart failed: {e!r}",flush=True)
         with _lifecycle_lock:_restart_in_progress=False
 @app.route("/api/system/restart",methods=["POST"])
+@require_admin
 def api_system_restart():
     global _restart_in_progress; payload=request.get_json(silent=True) or {}
     if payload.get("confirm") is not True:return jsonify({"ok":False,"error":'restart requires {"confirm": true}'}),400
@@ -6857,6 +7227,7 @@ def _perform_self_stop():
         print(f"Self-stop failed: {e!r}",flush=True)
         with _lifecycle_lock:_stop_in_progress=False
 @app.route("/api/system/stop",methods=["POST"])
+@require_admin
 def api_system_stop():
     global _stop_in_progress; payload=request.get_json(silent=True) or {}
     if payload.get("confirm") is not True:return jsonify({"ok":False,"error":'stop requires {"confirm": true}'}),400
@@ -6897,6 +7268,7 @@ def _debug_snapshot_payload():
 
 
 @app.route("/api/devlog/export")
+@require_admin
 def api_devlog_export():
     with _devlog_lock:
         events = list(_devlog)[-500:]
@@ -6910,12 +7282,14 @@ def api_devlog_export():
 
 
 @app.route("/api/debug/snapshot")
+@require_admin
 def api_debug_snapshot():
     payload = json.dumps(_debug_snapshot_payload(), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
     return send_file(io.BytesIO(payload), mimetype="application/json", as_attachment=True, download_name=f"dns-inspector-debug-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json")
 
 
 @app.route("/api/devlog")
+@require_admin
 def api_devlog():
     level_filter = request.args.get("level", "").strip().upper()
     query = request.args.get("q", "").strip().lower()
@@ -7112,7 +7486,10 @@ def ip_view():
 
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "version": APP_VERSION, "environment": RUNTIME_ENV, "adguard": AGH_URL, "trackerdb": trackerdb_ready(), "poll_seconds": POLL_SECONDS, "ui_refresh_seconds": UI_REFRESH_SECONDS})
+    # Intentionally minimal: no internal hostnames/IPs (e.g. the configured
+    # AdGuard URL) or runtime configuration, since this endpoint is
+    # unauthenticated by design so container/orchestrator health checks work.
+    return jsonify({"ok": True, "version": APP_VERSION, "environment": RUNTIME_ENV})
 
 
 if __name__ == "__main__":
