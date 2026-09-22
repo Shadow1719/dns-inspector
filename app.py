@@ -94,6 +94,8 @@ IP_PING_INITIAL_DELAY_SECONDS = max(10, int(os.getenv("IP_PING_INITIAL_DELAY_SEC
 IP_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("IP_PING_TIMEOUT_SECONDS", "1")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
 
+ADMIN_TOKEN = os.getenv("DNS_INSPECTOR_ADMIN_TOKEN", "").strip()
+
 app = Flask(__name__)
 
 @app.context_processor
