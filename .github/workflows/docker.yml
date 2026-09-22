@@ -5,7 +5,7 @@ on:
     branches: ["stable", "dev"]
     tags: ["v*.*.*"]
   pull_request:
-    branches: ["main", "dev"]
+    branches: ["stable", "dev"]
   workflow_dispatch:
 
 permissions:
