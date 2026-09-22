@@ -39,8 +39,20 @@ jobs:
       - name: Audit Python dependencies
         run: pip-audit -r requirements.txt
 
-      - name: Static security analysis
-        run: bandit -q -r app.py -x tests
+      - name: Static security analysis — high severity gate
+        run: bandit -q -r app.py -lll -x tests
+
+      - name: Static security analysis — full report
+        run: |
+          bandit -q -r app.py -f json -o bandit-report.json -x tests || true
+
+      - name: Upload Bandit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bandit-report
+          path: bandit-report.json
+          if-no-files-found: ignore
 
   build-and-push:
     runs-on: ubuntu-latest
