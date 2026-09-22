@@ -12,8 +12,8 @@ import re
 import socket
 import signal
 import subprocess
-import sys
 import secrets
+import sys
 import sqlite3
 import threading
 import time
@@ -28,6 +28,15 @@ import requests
 from flask import Flask, jsonify, render_template_string, request, send_file
 
 from analytics_report import build_analytics_pdf
+from report_scheduler import (
+    ReportPathError,
+    ReportScheduler,
+    filename_context,
+    prune_report_history,
+    render_filename_template,
+    resolve_report_path,
+    send_report_email,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 try:
@@ -84,10 +93,8 @@ IP_PING_INTERVAL_HOURS = max(1.0, float(os.getenv("IP_PING_INTERVAL_HOURS", "4")
 IP_PING_INITIAL_DELAY_SECONDS = max(10, int(os.getenv("IP_PING_INITIAL_DELAY_SECONDS", "60")))
 IP_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("IP_PING_TIMEOUT_SECONDS", "1")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
-ADMIN_TOKEN = os.getenv("DNS_INSPECTOR_ADMIN_TOKEN", "").strip()
 
 app = Flask(__name__)
-
 
 @app.context_processor
 def _security_template_context():
@@ -253,6 +260,11 @@ def _apply_security_headers(response):
 
 # Bounded in-memory operational event log for the DEV/Diagnostics UI.
 # It is ephemeral and cannot grow with uptime.
+db_lock = threading.Lock()
+session = requests.Session()
+
+# Bounded in-memory operational event log for the DEV/Diagnostics UI.
+# It is ephemeral and cannot grow with uptime.
 _devlog_lock = threading.Lock()
 _devlog = deque(maxlen=500)
 
@@ -303,6 +315,31 @@ GEOIP_MAP_DOMAIN_LIMIT = max(50, int(os.getenv("GEOIP_MAP_DOMAIN_LIMIT", "1500")
 GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT = max(4, int(os.getenv("GEOIP_DESTINATION_IPS_PER_DOMAIN_LIMIT", "32")))
 GEOIP_LOAD_CHUNK_ROWS = max(1, int(os.getenv("GEOIP_LOAD_CHUNK_ROWS", "5000")))
 GEOIP_LOAD_YIELD_SECONDS = max(0.0, float(os.getenv("GEOIP_LOAD_YIELD_SECONDS", "0.01")))
+# Optional coordinate-capable GeoIP database. Unlike GEOIP_DB_PATH (country
+# ranges only), this is never guessed or derived -- Destinations map mode and
+# destination route/arc rendering stay disabled unless this is explicitly
+# configured and loads successfully. See docs/GEOIP.md.
+GEOIP_CITY_DB_PATH = os.getenv("GEOIP_CITY_DB_PATH", "/data/geoip_city_coordinates.csv")
+# Optional second, lower-priority coordinate layer: curated known datacenter/
+# cloud/hosting provider ranges (Issue #88 follow-up). Only used when a real
+# IP falls inside an explicitly-sourced range; region-level coordinates are
+# labeled "known_datacenter" provenance, never presented as an exact server
+# location and never used to override a real city-GeoIP match. See
+# docs/GEOIP.md for the CSV format and how to source/refresh it.
+GEOIP_DATACENTER_DB_PATH = os.getenv("GEOIP_DATACENTER_DB_PATH", "/data/geoip_datacenter_ranges.csv")
+
+# --- Bounded analytics history (Issue #88) -----------------------------------
+# processed_queries stays bounded to 100k rows (see ingest()); this is a
+# separate, much smaller, hourly-aggregated table so historical charts and
+# scheduled reports keep working long after raw rows roll off.
+ANALYTICS_BUCKET_SECONDS = 3600
+ANALYTICS_HISTORY_RETENTION_HOURS = max(24, int(os.getenv("ANALYTICS_HISTORY_RETENTION_HOURS", str(24 * 90))))
+ANALYTICS_HISTORY_MAX_CATCHUP_BUCKETS = 6  # bounds the work done in a single tick after downtime
+
+# --- Scheduled report generation / storage / email (Issue #88) --------------
+REPORTS_BASE_DIR = os.getenv("REPORTS_DIR", "/data/reports")
+REPORTS_DEFAULT_RETENTION = 14
+SMTP_PASSWORD_ENV_VAR = "SMTP_PASSWORD"
 _CGNAT_V4_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 COUNTRY_CENTROIDS = {
     "US": (39.8, -98.6, "United States"), "CA": (56.1, -106.3, "Canada"), "MX": (23.6, -102.5, "Mexico"),
@@ -435,7 +472,176 @@ class CsvRangeGeoIPProvider(GeoIPProvider):
         start, end, country_idx = self._v6[idx]
         return self._countries[country_idx] if start <= value <= end else (None, None)
 
+class CsvRangeCityGeoIPProvider(GeoIPProvider):
+    """Optional coordinate-capable local CSV range lookup.
+
+    Expected CSV columns: start_ip,end_ip,country_code,country_name,city,lat,lon
+    (header row optional; extra trailing columns are ignored). This is a
+    separate, optional database from GEOIP_DB_PATH (country ranges only) --
+    Destinations map mode and route/arc rendering only ever activate when
+    this loads real rows, never by falling back to country centroids.
+    """
+    def __init__(self, path):
+        self._path = path
+        self._v4_start = array.array("Q"); self._v4_end = array.array("Q")
+        self._v4_city_idx = array.array("I"); self._v4_lat = array.array("d"); self._v4_lon = array.array("d")
+        self._v6 = []; self._v6_starts = []
+        self._cities = []; self._city_index = {}
+        self._loaded = False; self._load()
+
+    def _intern_city(self, code, name, city):
+        key = (code, name, city)
+        idx = self._city_index.get(key)
+        if idx is None:
+            idx = len(self._cities); self._cities.append(key); self._city_index[key] = idx
+        return idx
+
+    def _load(self):
+        builder = _CompactRangeTableBuilder(("I", "d", "d")); v6_rows = []
+        try:
+            with open(self._path, "r", encoding="utf-8", newline="") as f:
+                for row in _iter_csv_rows_throttled(csv.reader(f)):
+                    if not row or len(row) < 7: continue
+                    start_raw, end_raw = row[0].strip(), row[1].strip()
+                    code, name, city = row[2].strip().upper(), row[3].strip(), row[4].strip()
+                    if start_raw.lower() in {"start_ip", "start", "network_start"}: continue
+                    try:
+                        start_addr = ipaddress.ip_address(start_raw); end_addr = ipaddress.ip_address(end_raw)
+                        lat = float(row[5]); lon = float(row[6])
+                    except ValueError: continue
+                    if start_addr.version != end_addr.version: continue
+                    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0): continue
+                    idx = self._intern_city(code, name or code, city)
+                    if start_addr.version == 4: builder.append(int(start_addr), int(end_addr), idx, lat, lon)
+                    else: v6_rows.append((int(start_addr), int(end_addr), idx, lat, lon))
+            builder.finalize()
+            self._v4_start, self._v4_end = builder.start, builder.end
+            self._v4_city_idx, self._v4_lat, self._v4_lon = builder.extra
+            v6_rows.sort(key=lambda r: r[0]); self._v6 = v6_rows; self._v6_starts = [r[0] for r in v6_rows]
+            self._loaded = bool(self._v4_start or self._v6)
+        except (OSError, csv.Error): self._loaded = False
+
+    @property
+    def available(self): return self._loaded
+    @property
+    def range_count(self): return len(self._v4_start) + len(self._v6)
+    @property
+    def path(self): return self._path
+
+    def lookup(self, ip):
+        """Returns (country_code, country_name, city, lat, lon), all None on a miss."""
+        miss = (None, None, None, None, None)
+        try: addr = ipaddress.ip_address(ip)
+        except ValueError: return miss
+        value = int(addr)
+        if addr.version == 4:
+            if not self._v4_start: return miss
+            idx = bisect.bisect_right(self._v4_start, value) - 1
+            if idx < 0 or not (self._v4_start[idx] <= value <= self._v4_end[idx]): return miss
+            code, name, city = self._cities[self._v4_city_idx[idx]]
+            return code, name, city, self._v4_lat[idx], self._v4_lon[idx]
+        if not self._v6: return miss
+        idx = bisect.bisect_right(self._v6_starts, value) - 1
+        if idx < 0: return miss
+        start, end, city_idx, lat, lon = self._v6[idx]
+        if not (start <= value <= end): return miss
+        code, name, city = self._cities[city_idx]
+        return code, name, city, lat, lon
+
+
+class CsvRangeDatacenterGeoIPProvider(GeoIPProvider):
+    """Optional curated known-datacenter/cloud/hosting provider range lookup.
+
+    This is a *second, lower-priority* coordinate layer (Issue #88 follow-up):
+    it only ever fills in a destination point when the real city/coordinate
+    GeoIP database (CsvRangeCityGeoIPProvider) has no match for that IP.
+    Coordinates here are provider/region-derived (e.g. a cloud region's
+    published location), not a claim about the exact physical server -- the
+    caller must always keep the "known_datacenter" provenance attached to
+    whatever this returns.
+
+    Expected CSV columns: start_ip,end_ip,country_code,provider,region,lat,lon
+    (header row optional; extra trailing columns are ignored). Rows must come
+    from an authoritative, explicit source for that IP/range/provider/region
+    (e.g. a cloud provider's own published IP-range document) -- never a
+    geographic guess. See docs/GEOIP.md.
+    """
+    def __init__(self, path):
+        self._path = path
+        self._v4_start = array.array("Q"); self._v4_end = array.array("Q")
+        self._v4_entry_idx = array.array("I"); self._v4_lat = array.array("d"); self._v4_lon = array.array("d")
+        self._v6 = []; self._v6_starts = []
+        self._entries = []; self._entry_index = {}
+        self._loaded = False; self._load()
+
+    def _intern_entry(self, code, provider, region):
+        key = (code, provider, region)
+        idx = self._entry_index.get(key)
+        if idx is None:
+            idx = len(self._entries); self._entries.append(key); self._entry_index[key] = idx
+        return idx
+
+    def _load(self):
+        builder = _CompactRangeTableBuilder(("I", "d", "d")); v6_rows = []
+        try:
+            with open(self._path, "r", encoding="utf-8", newline="") as f:
+                for row in _iter_csv_rows_throttled(csv.reader(f)):
+                    if not row or len(row) < 7: continue
+                    start_raw, end_raw = row[0].strip(), row[1].strip()
+                    code, provider, region = row[2].strip().upper(), row[3].strip(), row[4].strip()
+                    if start_raw.lower() in {"start_ip", "start", "network_start"}: continue
+                    if not provider: continue
+                    try:
+                        start_addr = ipaddress.ip_address(start_raw); end_addr = ipaddress.ip_address(end_raw)
+                        lat = float(row[5]); lon = float(row[6])
+                    except ValueError: continue
+                    if start_addr.version != end_addr.version: continue
+                    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0): continue
+                    idx = self._intern_entry(code or None, provider, region or None)
+                    if start_addr.version == 4: builder.append(int(start_addr), int(end_addr), idx, lat, lon)
+                    else: v6_rows.append((int(start_addr), int(end_addr), idx, lat, lon))
+            builder.finalize()
+            self._v4_start, self._v4_end = builder.start, builder.end
+            self._v4_entry_idx, self._v4_lat, self._v4_lon = builder.extra
+            v6_rows.sort(key=lambda r: r[0]); self._v6 = v6_rows; self._v6_starts = [r[0] for r in v6_rows]
+            self._loaded = bool(self._v4_start or self._v6)
+        except (OSError, csv.Error): self._loaded = False
+
+    @property
+    def available(self): return self._loaded
+    @property
+    def range_count(self): return len(self._v4_start) + len(self._v6)
+    @property
+    def path(self): return self._path
+
+    def lookup(self, ip):
+        """Returns (country_code, provider, region, lat, lon), all None on a miss."""
+        miss = (None, None, None, None, None)
+        try: addr = ipaddress.ip_address(ip)
+        except ValueError: return miss
+        value = int(addr)
+        if addr.version == 4:
+            if not self._v4_start: return miss
+            idx = bisect.bisect_right(self._v4_start, value) - 1
+            if idx < 0 or not (self._v4_start[idx] <= value <= self._v4_end[idx]): return miss
+            code, provider, region = self._entries[self._v4_entry_idx[idx]]
+            return code, provider, region, self._v4_lat[idx], self._v4_lon[idx]
+        if not self._v6: return miss
+        idx = bisect.bisect_right(self._v6_starts, value) - 1
+        if idx < 0: return miss
+        start, end, entry_idx, lat, lon = self._v6[idx]
+        if not (start <= value <= end): return miss
+        code, provider, region = self._entries[entry_idx]
+        return code, provider, region, lat, lon
+
+
 _geoip_provider = NullGeoIPProvider(); _geoip_cache = {}; _geoip_cache_order = deque(); _geoip_cache_lock = threading.Lock(); _geoip_load_lock = threading.Lock(); _geoip_load_started = False
+# City/coordinate provider is None (not a NullGeoIPProvider) when unconfigured, so callers can
+# distinguish "no coordinate database at all" from "database configured but empty" cleanly.
+_geoip_city_provider = None; _geoip_city_cache = {}; _geoip_city_cache_order = deque(); _geoip_city_cache_lock = threading.Lock(); _geoip_city_load_lock = threading.Lock(); _geoip_city_load_started = False
+# Known-datacenter provider follows the same "None means unconfigured" convention as
+# the city provider, and is always subordinate to it (Issue #88 follow-up).
+_geoip_datacenter_provider = None; _geoip_datacenter_cache = {}; _geoip_datacenter_cache_order = deque(); _geoip_datacenter_cache_lock = threading.Lock(); _geoip_datacenter_load_lock = threading.Lock(); _geoip_datacenter_load_started = False
 _geoip_map_cache = {"at": 0.0, "data": None}; _geoip_map_cache_lock = threading.Lock()
 GEOIP_DIAGNOSTIC_MESSAGES = {
     "not_configured": "No GeoIP database configured; observed destinations remain unmapped rather than guessed.",
@@ -477,6 +683,82 @@ def _geoip_initial_load_worker():
         _geoip_load_started = True
     try: log_event("INFO", "GeoIP background load started", path=os.path.basename(GEOIP_DB_PATH)); _reload_geoip_provider()
     except Exception as exc: log_event("ERROR", "GeoIP background load failed", error=repr(exc))
+
+
+def geoip_city_lookup(ip):
+    provider = _geoip_city_provider
+    if provider is None or not provider.available:
+        return {"country_code": None, "country_name": None, "city": None, "lat": None, "lon": None}
+    with _geoip_city_cache_lock:
+        if ip in _geoip_city_cache: return _geoip_city_cache[ip]
+    code, name, city, lat, lon = provider.lookup(ip)
+    result = {"country_code": code, "country_name": name, "city": city, "lat": lat, "lon": lon}
+    with _geoip_city_cache_lock:
+        if ip not in _geoip_city_cache:
+            _geoip_city_cache[ip] = result; _geoip_city_cache_order.append(ip)
+            while len(_geoip_city_cache_order) > GEOIP_CACHE_MAX_ENTRIES: _geoip_city_cache.pop(_geoip_city_cache_order.popleft(), None)
+    return result
+def _geoip_city_diagnostics():
+    p = _geoip_city_provider
+    if p is None: return {"provider_type": "NoneConfigured", "configured": False, "db_path_basename": None, "range_count": 0}
+    return {"provider_type": type(p).__name__, "configured": bool(p.available), "db_path_basename": os.path.basename(p.path) if p.available and p.path else None, "range_count": p.range_count if p.available else 0}
+def _reload_geoip_city_provider():
+    global _geoip_city_provider
+    with _geoip_city_load_lock:
+        path_exists = os.path.exists(GEOIP_CITY_DB_PATH)
+        provider = CsvRangeCityGeoIPProvider(GEOIP_CITY_DB_PATH) if path_exists else None
+        with _geoip_city_cache_lock: _geoip_city_provider = provider; _geoip_city_cache.clear(); _geoip_city_cache_order.clear()
+    state = "loaded" if (provider and provider.available) else ("load_failed" if path_exists else "not_configured")
+    log_event("INFO" if state == "loaded" else "WARNING", "GeoIP city provider state changed", state=state, ranges=str(provider.range_count if provider and provider.available else 0))
+def _geoip_city_initial_load_worker():
+    global _geoip_city_load_started
+    if not os.path.exists(GEOIP_CITY_DB_PATH): log_event("INFO", "GeoIP city database not configured", path=os.path.basename(GEOIP_CITY_DB_PATH)); return
+    with _geoip_city_load_lock:
+        if _geoip_city_load_started: return
+        _geoip_city_load_started = True
+    try: log_event("INFO", "GeoIP city background load started", path=os.path.basename(GEOIP_CITY_DB_PATH)); _reload_geoip_city_provider()
+    except Exception as exc: log_event("ERROR", "GeoIP city background load failed", error=repr(exc))
+
+
+def geoip_datacenter_lookup(ip):
+    """Second-tier, lower-priority coordinate lookup (Issue #88 follow-up).
+
+    Callers must only use this once a real city/coordinate GeoIP lookup has
+    already missed for the same IP -- see geoip_map_payload(). Returned
+    coordinates are provider/region-derived, never an exact server claim.
+    """
+    provider = _geoip_datacenter_provider
+    if provider is None or not provider.available:
+        return {"country_code": None, "provider": None, "region": None, "lat": None, "lon": None}
+    with _geoip_datacenter_cache_lock:
+        if ip in _geoip_datacenter_cache: return _geoip_datacenter_cache[ip]
+    code, provider_name, region, lat, lon = provider.lookup(ip)
+    result = {"country_code": code, "provider": provider_name, "region": region, "lat": lat, "lon": lon}
+    with _geoip_datacenter_cache_lock:
+        if ip not in _geoip_datacenter_cache:
+            _geoip_datacenter_cache[ip] = result; _geoip_datacenter_cache_order.append(ip)
+            while len(_geoip_datacenter_cache_order) > GEOIP_CACHE_MAX_ENTRIES: _geoip_datacenter_cache.pop(_geoip_datacenter_cache_order.popleft(), None)
+    return result
+def _geoip_datacenter_diagnostics():
+    p = _geoip_datacenter_provider
+    if p is None: return {"provider_type": "NoneConfigured", "configured": False, "db_path_basename": None, "range_count": 0}
+    return {"provider_type": type(p).__name__, "configured": bool(p.available), "db_path_basename": os.path.basename(p.path) if p.available and p.path else None, "range_count": p.range_count if p.available else 0}
+def _reload_geoip_datacenter_provider():
+    global _geoip_datacenter_provider
+    with _geoip_datacenter_load_lock:
+        path_exists = os.path.exists(GEOIP_DATACENTER_DB_PATH)
+        provider = CsvRangeDatacenterGeoIPProvider(GEOIP_DATACENTER_DB_PATH) if path_exists else None
+        with _geoip_datacenter_cache_lock: _geoip_datacenter_provider = provider; _geoip_datacenter_cache.clear(); _geoip_datacenter_cache_order.clear()
+    state = "loaded" if (provider and provider.available) else ("load_failed" if path_exists else "not_configured")
+    log_event("INFO" if state == "loaded" else "WARNING", "GeoIP datacenter provider state changed", state=state, ranges=str(provider.range_count if provider and provider.available else 0))
+def _geoip_datacenter_initial_load_worker():
+    global _geoip_datacenter_load_started
+    if not os.path.exists(GEOIP_DATACENTER_DB_PATH): log_event("INFO", "GeoIP datacenter database not configured", path=os.path.basename(GEOIP_DATACENTER_DB_PATH)); return
+    with _geoip_datacenter_load_lock:
+        if _geoip_datacenter_load_started: return
+        _geoip_datacenter_load_started = True
+    try: log_event("INFO", "GeoIP datacenter background load started", path=os.path.basename(GEOIP_DATACENTER_DB_PATH)); _reload_geoip_datacenter_provider()
+    except Exception as exc: log_event("ERROR", "GeoIP datacenter background load failed", error=repr(exc))
 
 HTML = """
 <!doctype html><html><head><meta charset="utf-8"><link rel="icon" type="image/svg+xml" href="{{favicon_path}}"><title>{{page_title}}</title>
@@ -558,6 +840,7 @@ a{color:#79c0ff;text-decoration:none}a:hover{text-decoration:underline}
 pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88em;color:#8b949e}.error{color:#ff9b9b}
 .tag{display:inline-block;padding:4px 9px;border-radius:999px;background:#30363d;margin:2px;font-size:.82rem}.green{background:#174d2a}.yellow{background:#5a4610}.orange{background:#6a3510}.red{background:#6a1717}.blue{background:#16395c}.gray{background:#30363d}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}.dot-green{background:#3fb950}.dot-blue{background:#58a6ff}.dot-yellow{background:#d29922}.dot-orange{background:#db6d28}.dot-red{background:#f85149}.dot-gray{background:#8b949e}.status-pill{display:inline-flex;align-items:center;gap:5px;padding:4px 8px;border-radius:999px;font-size:.78rem;font-weight:700}.status-allowed{background:#174d2a;color:#7ee787}.status-blocked{background:#6a1717;color:#ffb4b4}.status-mixed{background:#5a4610;color:#f2cc60}.status-unknown{background:#30363d;color:#8b949e}.severity-info{color:#3fb950;font-weight:700}.severity-low{color:#d29922;font-weight:700}.severity-medium{color:#db6d28;font-weight:700}.severity-high{color:#f85149;font-weight:700}.severity-unknown{color:#8b949e;font-weight:700}
+.provenance-badge{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:.7rem;font-weight:700;vertical-align:middle;background:#30363d;color:#8b949e}.provenance-city_geoip{background:#174d2a;color:#7ee787}.provenance-known_datacenter{background:#16395c;color:#8fc7ff}.provenance-mixed{background:#5a4610;color:#f2cc60}
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.sub{font-size:.82rem;color:#8b949e}.right{float:right}
 .device{display:flex;align-items:flex-start;gap:10px}.icon{font-size:1.55rem;line-height:1.2}.device-name{font-size:1rem;font-weight:700;line-height:1.25}.confidence{font-size:.78rem;color:#8b949e}.technical{font-size:.76rem;color:#6e7681;margin-top:2px}
 .device-list{display:flex;flex-wrap:wrap;gap:5px}.device-chip{display:inline-flex;align-items:center;gap:5px;background:#161b22;border:1px solid #30363d;border-radius:999px;padding:4px 8px;font-size:.8rem}.device-chip .device-type-icon{margin-right:0;width:16px;height:16px;flex-basis:16px;background:transparent}
@@ -585,6 +868,46 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .live-rate small{font-size:.4em;color:#8b949e;font-weight:700;margin-left:6px}
 .live-sparkline-wrap{margin-top:8px;position:relative}
 .history-svg{width:100%;height:120px;display:block}
+.history-svg-clickable{cursor:pointer}
+.history-svg-clickable:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.metric-crosshair{stroke:var(--accent);stroke-width:1.4;stroke-dasharray:3 2;opacity:.85}
+.metric-selected-dot{fill:var(--accent);stroke:var(--surface-0);stroke-width:1.6}
+.interval-detail{margin-top:10px;padding:12px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2)}
+.interval-detail-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.interval-detail-sub{display:block;font-size:.72rem;color:var(--text-secondary);font-weight:500}
+.interval-detail-close{background:transparent;border:none;color:var(--text-secondary);font-size:1.1rem;line-height:1;cursor:pointer;padding:2px 6px}
+.interval-detail-close:hover{color:var(--text-primary)}
+.interval-detail-stats{display:flex;gap:16px;margin:10px 0;flex-wrap:wrap}
+.interval-detail-stats div{display:flex;flex-direction:column}
+.interval-detail-stats b{font-size:1.1rem;font-variant-numeric:tabular-nums}
+.interval-detail-stats span{font-size:.7rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.03em}
+.interval-status-row{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+.interval-status-chip{font-size:.7rem;padding:2px 8px;border-radius:999px;background:var(--surface-3);color:var(--text-secondary)}
+.interval-status-chip.interval-status-blocked{color:var(--sem-blocked)}
+.interval-status-chip.interval-status-allowed{color:var(--sem-ok)}
+.interval-detail-note{font-size:.75rem;color:var(--text-secondary);margin-bottom:8px;font-style:italic}
+.interval-detail-lists{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.interval-detail-lists h4{margin:0 0 4px;font-size:.75rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.03em}
+.interval-detail-lists ul{list-style:none;margin:0;padding:0;max-height:160px;overflow-y:auto}
+.interval-detail-lists li{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:3px 0;font-size:.8rem;border-bottom:1px solid var(--border)}
+.interval-detail-lists li.empty{color:var(--text-secondary);font-style:italic;border-bottom:none}
+.interval-detail-lists a{color:var(--accent);text-decoration:none}
+.interval-detail-lists a:hover{text-decoration:underline}
+.interval-detail-loading,.interval-detail-error{font-size:.8rem;color:var(--text-secondary)}
+.report-headline{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}
+.report-headline h3{margin:0;font-size:1rem}
+.report-kpi-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:12px}
+.report-kpi{background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 10px;display:flex;flex-direction:column;gap:2px}
+.report-kpi-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--text-secondary)}
+.report-kpi-value{font-size:1.25rem;font-weight:800;font-variant-numeric:tabular-nums}
+.report-kpi-sub{font-size:.7rem;color:var(--text-secondary)}
+.report-observations{display:flex;flex-direction:column;gap:8px}
+.report-observation{border-radius:var(--radius-sm);padding:9px 11px;background:var(--surface-2);border:1px solid var(--border);font-size:.82rem}
+.report-observation b{display:block;margin-bottom:2px}
+.report-observation p{margin:0;color:var(--text-secondary);font-size:.78rem;line-height:1.4}
+.report-observation-warn{border-color:var(--sem-warn);background:color-mix(in srgb, var(--sem-warn) 10%, var(--surface-2))}
+.report-observation-blocked{border-color:var(--sem-blocked);background:color-mix(in srgb, var(--sem-blocked) 10%, var(--surface-2))}
+.report-observation-ok{border-color:var(--sem-ok);background:color-mix(in srgb, var(--sem-ok) 10%, var(--surface-2))}
 .stat-tiles{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 .stat-tile{background:#0d1117;border:1px solid #30363d;border-radius:10px;padding:12px;display:flex;flex-direction:column;justify-content:center}
 .stat-tile-label{font-size:.72rem;color:#8b949e;text-transform:uppercase;letter-spacing:.05em}
@@ -692,6 +1015,10 @@ tbody tr:hover{background:rgba(255,255,255,.02)}
 .tag.blue{background:rgba(88,166,255,.14);border-color:rgba(88,166,255,.35);color:#8fc7ff}
 .tag.gray{background:var(--surface-3);border-color:var(--border);color:var(--text-secondary)}
 .status-pill{border-radius:var(--radius-pill);font-weight:750}
+.provenance-badge{border-radius:var(--radius-pill);font-weight:750}
+.provenance-city_geoip{background:rgba(63,185,80,.14);color:#7ee787;border:1px solid rgba(63,185,80,.3)}
+.provenance-known_datacenter{background:rgba(88,166,255,.14);color:#8fc7ff;border:1px solid rgba(88,166,255,.3)}
+.provenance-mixed{background:rgba(210,153,34,.14);color:#f2cc60;border:1px solid rgba(210,153,34,.3)}
 .status-allowed{background:rgba(63,185,80,.14);color:#7ee787;border:1px solid rgba(63,185,80,.3)}
 .status-blocked{background:rgba(248,81,73,.14);color:#ffb4b4;border:1px solid rgba(248,81,73,.3)}
 .status-mixed{background:rgba(210,153,34,.14);color:#f2cc60;border:1px solid rgba(210,153,34,.3)}
@@ -778,6 +1105,10 @@ pre{color:var(--text-secondary);background:var(--surface-2);border:1px solid var
 .settings-swatch{width:26px;height:26px;border-radius:50%;border:2px solid var(--border);padding:0;background:var(--swatch-color,var(--accent))}
 .settings-swatch.active{border-color:var(--text-primary);box-shadow:0 0 0 2px var(--swatch-color,var(--accent))}
 .settings-select{border-radius:var(--radius-sm)}
+.settings-hint{font-size:.8rem;color:var(--text-secondary);line-height:1.5;margin:0 0 14px}
+.settings-hint code{font-family:var(--font-mono)}
+#reports-smtp-recipients-input{resize:vertical}
+.settings-choice[href]{text-decoration:none;display:inline-flex;align-items:center}
 .settings-kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:.84rem}
 .settings-kv b{color:var(--text-secondary);font-weight:600}
 .settings-kv span{font-family:var(--font-mono)}
@@ -977,6 +1308,8 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .map-bubble-count{font-size:7px;fill:rgba(4,10,18,.85);font-weight:600;pointer-events:none;text-anchor:middle;dominant-baseline:central}
 .map-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0}
 .map-controls .settings-select{padding:6px 8px;font-size:.78rem}
+.map-routes-toggle-label{display:inline-flex;align-items:center;gap:5px;font-size:.78rem;color:var(--text-secondary);padding:5px 8px;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);cursor:pointer;user-select:none}
+.map-routes-toggle-label input{margin:0}
 .map-zoom-group{display:inline-flex;gap:4px}
 .map-zoom-btn{padding:5px 10px;font-size:.78rem;border-radius:var(--radius-sm);background:var(--surface-2);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
 .map-zoom-btn:hover{background:var(--surface-3)}
@@ -1110,16 +1443,17 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
   <div class="settings-head"><h2>Settings</h2><button type="button" class="settings-close" id="settings-close-btn" aria-label="Close settings">✕</button></div>
   <div class="settings-body">
     <nav class="settings-nav" role="tablist" aria-label="Settings sections">
-      {% if admin_auth_enabled %}<button type="button" class="settings-nav-btn" data-settings-tab="security" role="tab">Security</button>{% endif %}
+            {% if admin_auth_enabled %}<button type="button" class="settings-nav-btn" data-settings-tab="security" role="tab">Security</button>{% endif %}
       <button type="button" class="settings-nav-btn active" data-settings-tab="appearance" role="tab">Appearance</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="dashboard" role="tab">Dashboard</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="monitoring" role="tab">Monitoring</button>
+      <button type="button" class="settings-nav-btn" data-settings-tab="reports" role="tab">Reports</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="diagnostics" role="tab">Diagnostics</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="system" role="tab">System</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="about" role="tab">About</button>
     </nav>
     <div class="settings-panels">
-      {% if admin_auth_enabled %}
+{% if admin_auth_enabled %}
       <section class="settings-section" data-settings-panel="security">
         <h3>Admin security</h3>
         <div class="settings-kv">
@@ -1182,6 +1516,60 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
           <div class="settings-control"><select class="settings-select" id="refresh-interval-select"><option value="0">Server default ({{refresh_seconds}}s)</option></select></div>
         </div>
       </section>
+      <section class="settings-section" data-settings-panel="reports">
+        <h3>Reports</h3>
+        <p class="settings-hint">Scheduled Visibility reports reuse the exact same generator as "Export report now" &mdash; no separate code path, no fabricated data. Files are written only under a fixed base directory (<code id="reports-base-dir">/data/reports</code>) using a validated relative filename; path traversal is rejected.</p>
+        <div class="settings-row"><div class="settings-row-label"><b>Export &amp; save</b><small>Reuses the live report generator, right now</small></div>
+          <div class="settings-control settings-choice-group">
+            <a class="settings-choice" id="reports-export-now-btn" href="/api/analytics/report.pdf">Export report now</a>
+            <button type="button" class="settings-choice" id="reports-save-now-btn">Save report now</button>
+            <button type="button" class="settings-choice" id="reports-test-email-btn">Send test email</button>
+          </div>
+        </div>
+        <div class="settings-kv" id="reports-status-kv"><b>Loading…</b><span></span></div>
+        <div class="settings-row"><div class="settings-row-label"><b>Scheduled reports</b><small>One bounded background worker &mdash; never overlaps, never duplicates after a restart</small></div>
+          <div class="settings-control"><input type="checkbox" id="reports-enabled-toggle"> <label for="reports-enabled-toggle">Enabled</label></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Interval</b><small>How often a new report is generated</small></div>
+          <div class="settings-control"><select class="settings-select" id="reports-interval-select"><option value="hourly">Hourly</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="custom">Custom</option></select>
+          <input type="number" class="settings-select" id="reports-custom-interval-input" min="900" step="60" placeholder="seconds" style="width:110px;display:none"></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Report window</b><small>The analysis period each scheduled report covers</small></div>
+          <div class="settings-control"><select class="settings-select" id="reports-window-select"><option value="1h">Last hour</option><option value="6h">Last 6 hours</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option></select></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Save location</b><small>Relative subfolder under the base directory above (optional)</small></div>
+          <div class="settings-control"><input type="text" class="settings-select" id="reports-save-dir-input" placeholder="(base directory)"></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Filename template</b><small>Placeholders: {range} {date} {time} {timestamp}</small></div>
+          <div class="settings-control"><input type="text" class="settings-select" id="reports-filename-input" placeholder="dns-inspector-{range}-{timestamp}.pdf"></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Retention</b><small>Oldest saved reports are deleted beyond this count</small></div>
+          <div class="settings-control"><input type="number" class="settings-select" id="reports-retention-input" min="1" max="200" style="width:90px"></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Email delivery</b><small>Optional SMTP delivery of each saved report</small></div>
+          <div class="settings-control"><input type="checkbox" id="reports-smtp-enabled-toggle"> <label for="reports-smtp-enabled-toggle">Enabled</label></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>SMTP server</b><small>Host / port / security</small></div>
+          <div class="settings-control">
+            <input type="text" class="settings-select" id="reports-smtp-host-input" placeholder="smtp.example.com" style="width:160px">
+            <input type="number" class="settings-select" id="reports-smtp-port-input" placeholder="587" style="width:80px">
+            <select class="settings-select" id="reports-smtp-security-select"><option value="starttls">STARTTLS</option><option value="tls">TLS</option><option value="none">None</option></select>
+          </div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>SMTP credentials</b><small>Username here; password is read only from the <code>SMTP_PASSWORD</code> environment variable / Docker secret and is never stored in the app database or returned by the API</small></div>
+          <div class="settings-control"><input type="text" class="settings-select" id="reports-smtp-username-input" placeholder="username (optional)"> <span id="reports-smtp-password-state" class="settings-restart-note"></span></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Sender &amp; recipients</b><small>One recipient per line</small></div>
+          <div class="settings-control">
+            <input type="text" class="settings-select" id="reports-smtp-sender-input" placeholder="dns-inspector@example.com" style="width:220px">
+            <textarea class="settings-select" id="reports-smtp-recipients-input" rows="2" placeholder="alerts@example.com" style="width:220px"></textarea>
+          </div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"><b>Subject template</b><small>Placeholder: {range}</small></div>
+          <div class="settings-control"><input type="text" class="settings-select" id="reports-smtp-subject-input" placeholder="DNS Inspector report - {range}"></div>
+        </div>
+        <div class="settings-row"><div class="settings-row-label"></div><div class="settings-control"><button type="button" id="reports-save-schedule-btn">Save schedule</button> <span id="reports-save-schedule-result" class="settings-restart-note"></span></div></div>
+      </section>
       <section class="settings-section" data-settings-panel="diagnostics">
         <h3>Diagnostics</h3>
         <div class="settings-kv" id="diagnostics-kv"><b>Loading…</b><span></span></div>
@@ -1213,6 +1601,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
           <b>Environment</b><span>{% if is_dev_environment %}Development{% else %}Production{% endif %}</span>
           <b>Uptime</b><span id="about-uptime">—</span>
           <b>GeoIP data</b><span>IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0)</span>
+          <b>Known datacenter data</b><span>Optional, operator-supplied curated provider/region ranges &mdash; see docs/GEOIP.md for sourcing and licensing</span>
         </div>
       </section>
     </div>
@@ -1344,7 +1733,7 @@ if (ADMIN_AUTH_ENABLED) refreshAdminAuthStatus();
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
-const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'analytics', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent'};
+const DEFAULT_PREFS = {theme:'bemo-dark', accent:'', density:'comfortable', reducedMotion:false, defaultView:'analytics', refreshSeconds:0, analyticsStyle:'digital', mapMode:'countries', mapMetric:'observations', mapBasemap:'satellite-heat', mapTheme:'bemo-accent', mapRoutes:false};
 function loadPrefs(){ try{ return Object.assign({}, DEFAULT_PREFS, JSON.parse(localStorage.getItem(PREF_KEY)||'{}')); }catch(e){ return Object.assign({}, DEFAULT_PREFS); } }
 function savePrefs(){ try{ localStorage.setItem(PREF_KEY, JSON.stringify(prefs)); }catch(e){} }
 let prefs = loadPrefs();
@@ -1416,7 +1805,8 @@ function metricPointLabel(p){
   try{ if (p.t) when = ' at ' + new Date(p.t).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); }catch(e){}
   return `Spike: ${p.count}${when}`;
 }
-function renderMetricVisual(elId, points, colorVar, unitLabel){
+function renderMetricVisual(elId, points, colorVar, unitLabel, opts){
+  opts = opts || {};
   const el = document.getElementById(elId); if (!el) return;
   const style = prefs.analyticsStyle || 'digital';
   el.classList.add('metric-visual');
@@ -1451,8 +1841,30 @@ function renderMetricVisual(elId, points, colorVar, unitLabel){
   const pulse = (style === 'specter' && lastPt) ? `<circle class="metric-pulse" cx="${lastPt.x.toFixed(1)}" cy="${lastPt.y.toFixed(1)}" r="3.6"/>` : '';
   const sweep = style === 'specter' ? `<line class="metric-sweep" x1="0" x2="0" y1="${pad}" y2="${h-pad}"/>` : '';
   const markers = [...spikes].map(i => xy[i] ? `<circle class="metric-marker-dot" cx="${xy[i].x.toFixed(1)}" cy="${xy[i].y.toFixed(1)}" fill="var(${colorVar})"><title>${esc(metricPointLabel(pts[i]))}</title></circle>` : '').join('');
+  const selIdx = opts.selectedIndex;
+  const selection = (selIdx != null && xy[selIdx]) ? `<line class="metric-crosshair" x1="${xy[selIdx].x.toFixed(1)}" x2="${xy[selIdx].x.toFixed(1)}" y1="${pad}" y2="${h-pad}"/><circle class="metric-selected-dot" cx="${xy[selIdx].x.toFixed(1)}" cy="${xy[selIdx].y.toFixed(1)}" r="5"/>` : '';
   const readout = `<div class="metric-readout"><div class="metric-readout-item">Current<b>${esc(current)}</b></div><div class="metric-readout-item">Average<b>${esc(avg)}</b></div><div class="metric-readout-item">Peak<b>${esc(peak)}</b></div>${spikes.size ? `<div class="metric-readout-item">Spikes<b>${spikes.size}</b></div>` : ''}</div>`;
-  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="history-svg" preserveAspectRatio="none" role="img" aria-label="${esc(unitLabel||'activity over time')}">${grid}${defs}${fill}${bars}<path class="metric-line" d="${esc(linePath)}" fill="none" stroke="var(${colorVar})" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>${sweep}${pulse}${markers}</svg>${readout}<div class="stats-note">${esc(unitLabel||'')}</div>`;
+  const clickable = typeof opts.onPointClick === 'function';
+  el.innerHTML = `<svg viewBox="0 0 ${w} ${h}" class="history-svg${clickable ? ' history-svg-clickable' : ''}" preserveAspectRatio="none" role="img" aria-label="${esc(unitLabel||'activity over time')}" ${clickable ? 'tabindex="0"' : ''}>${grid}${defs}${fill}${bars}<path class="metric-line" d="${esc(linePath)}" fill="none" stroke="var(${colorVar})" stroke-width="${strokeWidth}" stroke-linecap="round" stroke-linejoin="round"/>${sweep}${pulse}${markers}${selection}</svg>${readout}<div class="stats-note">${esc(unitLabel||'')}</div>`;
+  if (clickable){
+    const svgEl = el.querySelector('svg');
+    const pickIndex = (clientX) => {
+      const rect = svgEl.getBoundingClientRect();
+      if (!rect.width) return null;
+      const frac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      return Math.max(0, Math.min(pts.length - 1, Math.round(frac * (pts.length - 1))));
+    };
+    svgEl.addEventListener('click', (evt) => {
+      const idx = pickIndex(evt.clientX);
+      if (idx != null && pts[idx] && pts[idx].count != null) opts.onPointClick(pts[idx], idx);
+    });
+    svgEl.addEventListener('keydown', (evt) => {
+      if (evt.key !== 'Enter' && evt.key !== ' ') return;
+      evt.preventDefault();
+      const idx = selIdx != null ? selIdx : pts.length - 1;
+      if (pts[idx] && pts[idx].count != null) opts.onPointClick(pts[idx], idx);
+    });
+  }
 }
 /* Digital: a radial "capacity" ring -- current sample against the peak
    observed in the current rolling window -- plus the numeric value at its
@@ -1581,21 +1993,26 @@ function renderInstrumentGauges(data){
     <span class="dash-hint" id="dash-hint" hidden>Use the handle to drag, or the arrow/size/hide buttons &mdash; changes save to this browser.</span>
   </div>
   <div class="dash-grid" id="analytics-dash-grid">
-    <div class="dash-widget" data-widget-id="live-overview" data-title="Live activity" data-w="4" data-h="normal">
-      <div class="analytics-hero">
-        <div class="card live-card" id="live-card">
-          <div class="live-title"><span class="live-dot"></span>Live activity</div>
-          <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
-          <div id="live-gauge-slot"></div>
-          <div class="live-sparkline-wrap" id="live-sparkline"></div>
-          <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
+    <div class="dash-widget" data-widget-id="visibility-report" data-title="Visibility report" data-w="4" data-h="normal">
+      <div class="card">
+        <h2>Visibility report <span class="sub">executive overview</span></h2>
+        <div class="stats-note" style="margin-top:0">A factual first-glance summary for the selected period above &mdash; every figure here is derived from the same retained data as the charts below, never invented.</div>
+        <div class="analytics-hero">
+          <div class="card live-card" id="live-card">
+            <div class="live-title"><span class="live-dot"></span>Live activity</div>
+            <div class="live-rate"><span id="live-rate-value">&mdash;</span><small>queries / 60s</small></div>
+            <div id="live-gauge-slot"></div>
+            <div class="live-sparkline-wrap" id="live-sparkline"></div>
+            <div class="stats-note">Rolling in-browser window (up to 100 samples) &middot; a new sample every {{refresh_seconds}}s &middot; nothing extra is written to disk</div>
+          </div>
+          <div class="stat-tiles">
+            <div class="stat-tile ok"><div class="stat-tile-label">Allowed domains</div><div class="stat-tile-value" id="tile-allowed">&mdash;</div></div>
+            <div class="stat-tile blocked"><div class="stat-tile-label">Blocked domains</div><div class="stat-tile-value" id="tile-blocked">&mdash;</div></div>
+            <div class="stat-tile info"><div class="stat-tile-label">Active devices</div><div class="stat-tile-value" id="tile-devices">&mdash;</div></div>
+            <div class="stat-tile warn"><div class="stat-tile-label">New domains (24h)</div><div class="stat-tile-value" id="tile-new-domains">&mdash;</div></div>
+          </div>
         </div>
-        <div class="stat-tiles">
-          <div class="stat-tile ok"><div class="stat-tile-label">Allowed domains</div><div class="stat-tile-value" id="tile-allowed">&mdash;</div></div>
-          <div class="stat-tile blocked"><div class="stat-tile-label">Blocked domains</div><div class="stat-tile-value" id="tile-blocked">&mdash;</div></div>
-          <div class="stat-tile info"><div class="stat-tile-label">Active devices</div><div class="stat-tile-value" id="tile-devices">&mdash;</div></div>
-          <div class="stat-tile warn"><div class="stat-tile-label">New domains (24h)</div><div class="stat-tile-value" id="tile-new-domains">&mdash;</div></div>
-        </div>
+        <div id="visibility-report"><div class="empty-state">Loading…</div></div>
       </div>
     </div>
     <div class="dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" data-w="4" data-h="normal">
@@ -1606,8 +2023,12 @@ function renderInstrumentGauges(data){
           <button type="button" class="range-btn" data-analytics-range="6h">6H</button>
           <button type="button" class="range-btn" data-analytics-range="24h">24H</button>
           <button type="button" class="range-btn" data-analytics-range="7d">7D</button>
+          <button type="button" class="range-btn" data-analytics-range="30d">30D</button>
+          <button type="button" class="range-btn" data-analytics-range="90d">90D</button>
         </div>
         <div id="chart-query-volume"></div>
+        <div class="stats-note" style="margin-top:0">Click or tap a point (or focus it and press Enter) for the exact interval &mdash; query count, status mix, new domains/devices, and top domains/devices for that window.</div>
+        <div id="chart-query-volume-detail" class="interval-detail" hidden></div>
       </div>
     </div>
     <div class="dash-widget" data-widget-id="new-domains" data-title="New domains discovered" data-w="2" data-h="normal">
@@ -1657,6 +2078,7 @@ function renderInstrumentGauges(data){
             <option value="cyan">Cyan</option>
             <option value="bemo-accent">BEMO / Dark Accent</option>
           </select>
+          <label class="map-routes-toggle-label"><input type="checkbox" id="map-routes-toggle" aria-label="Show destination routes (visual path, not the real network route)"> Routes</label>
           <span class="map-zoom-group" role="group" aria-label="Map zoom">
             <button type="button" class="map-zoom-btn" id="map-zoom-out-btn" aria-label="Zoom out">&minus;</button>
             <button type="button" class="map-zoom-btn" id="map-zoom-in-btn" aria-label="Zoom in">+</button>
@@ -1684,6 +2106,10 @@ function renderInstrumentGauges(data){
             <span class="map-legend-title">Particles</span>
             <span class="map-legend-caption">More particles/brighter glow around a real observed location means more traffic there &mdash; they are an intensity visualization, not independent physical servers.</span>
           </div>
+          <div class="map-legend-group" id="map-legend-provenance">
+            <span class="map-legend-title">Destination provenance</span>
+            <span class="map-legend-caption"><span class="provenance-badge provenance-city_geoip">City GeoIP</span> exact-coordinate match &middot; <span class="provenance-badge provenance-known_datacenter">Known datacenter</span> region-derived from a curated provider database, never an exact server location &middot; Country-only/unmapped destinations are never shown as a bubble here.</span>
+          </div>
         </div>
         <div class="destination-map-layout">
           <div>
@@ -1699,7 +2125,7 @@ function renderInstrumentGauges(data){
           </div>
         </div>
         <div class="stats-note" style="margin-top:0" id="destination-map-history"></div>
-        <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0).</div>
+        <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0). Known-datacenter points, when configured, come from an operator-supplied curated provider/region database &mdash; see docs/GEOIP.md.</div>
       </div>
     </div>
     <div class="dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" data-w="2" data-h="normal">
@@ -1954,6 +2380,129 @@ function pushLiveSample(n, windowSeconds){
   if (analyticsLiveSamples.length > ANALYTICS_LIVE_MAX_SAMPLES) analyticsLiveSamples.shift();
   renderLiveHero(windowSeconds);
 }
+/* Interactive click-to-investigate on the "DNS activity over time" chart
+   (Issue #88 #2): the selected bucket stays highlighted across polling
+   refreshes (matched by exact timestamp, not index, since the underlying
+   points array shifts every refresh), and the popover shows only real data
+   returned by /api/analytics/interval -- no invented root cause. */
+let selectedIntervalBucket = null; // {range, t}
+function renderIntervalDetail(detail){
+  const el = document.getElementById('chart-query-volume-detail'); if (!el) return;
+  if (detail === null){ el.hidden = true; el.innerHTML = ''; return; }
+  el.hidden = false;
+  if (detail === 'loading'){ el.innerHTML = '<div class="interval-detail-loading">Loading interval detail&hellip;</div>'; return; }
+  if (!detail || !detail.ok){
+    el.innerHTML = `<div class="interval-detail-error">${esc((detail && detail.error) || 'Unable to load interval detail.')}</div>`;
+    return;
+  }
+  let when = detail.bucket_start;
+  try{ when = new Date(detail.bucket_start).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); }catch(e){}
+  const granularityLabel = detail.granularity === 'exact' ? 'Exact interval' : detail.granularity === 'hourly_aggregate' ? 'Reconstructed from bounded hourly history' : 'No retained data';
+  const ratioText = detail.vs_average_ratio != null ? `${detail.vs_average_ratio}&times; average` : '&mdash;';
+  const newDomainsCount = Array.isArray(detail.new_domains) ? detail.new_domains.length : (detail.new_domains_count || 0);
+  const statusEntries = Object.entries(detail.status || {}).filter(([,v]) => v);
+  const statusRow = statusEntries.length
+    ? statusEntries.map(([k,v]) => `<span class="interval-status-chip interval-status-${esc(k.toLowerCase())}">${esc(k)}: ${esc(v)}</span>`).join('')
+    : '<span class="interval-status-chip">No status breakdown for this interval</span>';
+  const domainItem = (d) => `<li><a href="/search?q=${encodeURIComponent(d.domain)}">${esc(d.domain)}</a><span>${esc(d.count)}</span></li>`;
+  const deviceItem = (d) => `<li><a href="/device?key=${encodeURIComponent(d.device_key)}">${esc(d.label)}</a><span>${esc(d.count)}</span></li>`;
+  const topDomains = (detail.top_domains||[]).length ? detail.top_domains.map(domainItem).join('') : '<li class="empty">No domain-level detail retained for this interval.</li>';
+  const topDevices = (detail.top_devices||[]).length ? detail.top_devices.map(deviceItem).join('') : '<li class="empty">No device-level detail retained for this interval.</li>';
+  el.innerHTML = `
+    <div class="interval-detail-head">
+      <div><strong>${esc(when)}</strong><span class="interval-detail-sub">${esc(granularityLabel)}</span></div>
+      <button type="button" class="interval-detail-close" aria-label="Close interval detail">&times;</button>
+    </div>
+    <div class="interval-detail-stats">
+      <div><b>${esc(detail.query_count ?? 0)}</b><span>Queries</span></div>
+      <div><b>${ratioText}</b><span>vs period avg</span></div>
+      <div><b>${esc(newDomainsCount)}</b><span>New domains</span></div>
+    </div>
+    <div class="interval-status-row">${statusRow}</div>
+    ${detail.note ? `<div class="interval-detail-note">${esc(detail.note)}</div>` : ''}
+    <div class="interval-detail-lists">
+      <div><h4>Top domains</h4><ul>${topDomains}</ul></div>
+      <div><h4>Top devices</h4><ul>${topDevices}</ul></div>
+    </div>`;
+  el.querySelector('.interval-detail-close')?.addEventListener('click', () => {
+    selectedIntervalBucket = null;
+    renderIntervalDetail(null);
+    if (window.__lastAnalyticsPayload) renderQueryVolumeChart(window.__lastAnalyticsPayload);
+  });
+}
+function selectIntervalBucket(point, rangeKey){
+  selectedIntervalBucket = {range: rangeKey, t: point.t};
+  if (window.__lastAnalyticsPayload) renderQueryVolumeChart(window.__lastAnalyticsPayload);
+  renderIntervalDetail('loading');
+  fetch(`/api/analytics/interval?range=${encodeURIComponent(rangeKey)}&bucket_start=${encodeURIComponent(point.t)}`, {cache:'no-store'})
+    .then(r => r.json())
+    .then(detail => { if (selectedIntervalBucket && selectedIntervalBucket.t === point.t) renderIntervalDetail(detail); })
+    .catch(() => renderIntervalDetail({ok:false, error:'Interval request failed.'}));
+}
+function sumSeriesPoints(points){ return (points||[]).reduce((a,p) => a + (Number(p.count)||0), 0); }
+/* Executive-overview "Visibility report" card (Issue #88 #1/#9): every figure
+   here is derived from the exact same analytics payload the charts below
+   render from -- no separate fetch, no invented findings, no risk verdicts. */
+function renderVisibilityReport(data){
+  const el = document.getElementById('visibility-report'); if (!el) return;
+  const qPoints = (data.series?.queries?.points || []).filter(p => p.count != null);
+  const total = sumSeriesPoints(qPoints);
+  const avg = qPoints.length ? total / qPoints.length : 0;
+  let peak = null;
+  qPoints.forEach(p => { if (!peak || p.count > peak.count) peak = p; });
+  const peakRatio = (peak && avg) ? peak.count / avg : 0;
+  const newDomains = sumSeriesPoints(data.series?.new_domains?.points);
+  const newDevices = sumSeriesPoints(data.series?.new_devices?.points);
+  const blocked = Number(data.status_breakdown?.Blocked || 0), allowed = Number(data.status_breakdown?.Allowed || 0);
+  const knownTotal = blocked + allowed;
+  const blockedPct = knownTotal ? Math.round((blocked / knownTotal) * 1000) / 10 : null;
+  const rangeLabel = data.series?.queries?.label || data.range;
+
+  const kpis = [
+    ['Queries', mapCompactNumber(total), rangeLabel],
+    ['Peak interval', peak ? mapCompactNumber(peak.count) : '—', peak ? (peakRatio >= 2 ? `${peakRatio.toFixed(1)}× average` : 'within normal range') : 'no data yet'],
+    ['New domains', mapCompactNumber(newDomains), 'this period'],
+    ['New devices', mapCompactNumber(newDevices), 'this period'],
+    ['Active devices', `${data.active_devices ?? '—'} / ${data.total_devices ?? '—'}`, 'last 5 minutes'],
+    ['Blocked share', blockedPct != null ? blockedPct + '%' : '—', 'current classification'],
+  ];
+  const kpiHtml = kpis.map(([label, value, sub]) => `<div class="report-kpi"><span class="report-kpi-label">${esc(label)}</span><span class="report-kpi-value">${esc(value)}</span><span class="report-kpi-sub">${esc(sub)}</span></div>`).join('');
+
+  const observations = [];
+  if (peak && peakRatio >= 2){
+    let when = peak.t; try{ when = new Date(peak.t).toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}); }catch(e){}
+    observations.push({tone:'warn', title:`Traffic peaked at ${mapCompactNumber(peak.count)} queries`, body:`About ${peakRatio.toFixed(1)}× the period average, in the interval starting ${esc(when)}. Select it for the exact breakdown.`, clickable:true});
+  }
+  if (knownTotal){
+    if (blockedPct >= 20) observations.push({tone:'blocked', title:`${blockedPct}% of classified domains are currently Blocked`, body:'Reflects the current AdGuard classification state, not a period-specific count.'});
+    else observations.push({tone:'ok', title:`${blockedPct}% of classified domains are currently Blocked`, body:'Classification mix is predominantly Allowed/Mixed for the tracked domain set.'});
+  }
+  if (newDomains > 0) observations.push({tone:'info', title:`${newDomains} new domain${newDomains === 1 ? '' : 's'} observed this period`, body:'First-seen domains within the selected time range.'});
+  const obsHtml = observations.length
+    ? observations.map((o, i) => `<div class="report-observation report-observation-${esc(o.tone)}"${o.clickable ? ' role="button" tabindex="0" data-report-obs="' + i + '"' : ''}><b>${esc(o.title)}</b><p>${o.body}</p></div>`).join('')
+    : '<div class="report-observation">No notable observations for this period yet.</div>';
+
+  el.innerHTML = `
+    <div class="report-headline"><div><h3>${esc(rangeLabel)}</h3><span class="stats-note" style="margin:0">Updated ${esc(new Date(data.updated).toLocaleTimeString())}</span></div></div>
+    <div class="report-kpi-row">${kpiHtml}</div>
+    <div class="report-observations">${obsHtml}</div>`;
+  if (peak && peakRatio >= 2){
+    el.querySelector('[data-report-obs]')?.addEventListener('click', () => selectIntervalBucket(peak, data.range));
+    el.querySelector('[data-report-obs]')?.addEventListener('keydown', (evt) => { if (evt.key === 'Enter' || evt.key === ' '){ evt.preventDefault(); selectIntervalBucket(peak, data.range); } });
+  }
+}
+function renderQueryVolumeChart(data){
+  const points = data.series?.queries?.points || [];
+  let selectedIndex = null;
+  if (selectedIntervalBucket && selectedIntervalBucket.range === data.range){
+    const idx = points.findIndex(p => p.t === selectedIntervalBucket.t);
+    if (idx !== -1) selectedIndex = idx;
+  }
+  renderMetricVisual('chart-query-volume', points, '--sem-info', 'DNS queries', {
+    selectedIndex,
+    onPointClick: (point) => selectIntervalBucket(point, data.range),
+  });
+}
 async function fetchAnalyticsFull(){
   const seq = ++analyticsFetchSeq;
   if (analyticsFetchController) analyticsFetchController.abort();
@@ -1967,7 +2516,9 @@ async function fetchAnalyticsFull(){
     const data = await r.json();
     if (seq !== analyticsFetchSeq) return; // superseded while awaiting the response body
     const renderStartedAt = perfNow();
-    renderMetricVisual('chart-query-volume', data.series?.queries?.points, '--sem-info', 'DNS queries');
+    window.__lastAnalyticsPayload = data;
+    renderVisibilityReport(data);
+    renderQueryVolumeChart(data);
     renderMetricVisual('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
     renderMetricVisual('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
     renderStatusBreakdown(data.status_breakdown);
@@ -2401,6 +2952,16 @@ function mapEntityMarkup(opts){
   const anchor = `<circle class="map-bubble${selected}" style="fill:${color};stroke:${color}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${r}"/>`;
   return `<g class="map-entity" ${attr}="${esc(id)}" tabindex="0" role="button" aria-pressed="${ariaSelected}" aria-label="${esc(label)}">${hit}${pulse}${particles}${pin}${anchor}${countLabel || ''}<title>${label}</title></g>`;
 }
+/* Destination coordinate provenance (Issue #88 known-datacenter follow-up):
+   the map/report/PDF must all label *how* a destination point was placed
+   rather than presenting every bubble as equally precise. */
+function provenanceLabel(entity){
+  if (!entity || !entity.provenance) return null;
+  if (entity.provenance === 'city_geoip') return 'City GeoIP';
+  if (entity.provenance === 'known_datacenter') return 'Known datacenter' + (entity.provider ? ` (${entity.provider}${entity.region ? ' · ' + entity.region : ''})` : '');
+  if (entity.provenance === 'mixed') return 'Mixed provenance';
+  return null;
+}
 function renderMapDetail(entity, kind){
   const el = document.getElementById('destination-map-detail'); if (!el) return;
   if (!entity){ el.hidden = true; el.innerHTML = ''; return; }
@@ -2410,8 +2971,10 @@ function renderMapDetail(entity, kind){
     const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
     const ipCount = entity.unique_ip_count || 1;
     const where = entity.city ? `${entity.city}, ${entity.country_name || entity.country_code || 'unknown location'}` : (entity.country_name || entity.country_code || 'Unknown location');
-    el.innerHTML = closeBtn + `<h3>${esc(where)} <span class="sub">${esc(ipCount)} IP${ipCount===1?'':'s'}</span></h3>`
-      + `<div class="stats-note">${esc(entity.observation_count)} observed destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; approximate coordinates from observed DNS destinations, not a verified physical location</div>`
+    const provLabel = provenanceLabel(entity);
+    const provBadge = provLabel ? `<span class="provenance-badge provenance-${esc(entity.provenance)}">${esc(provLabel)}</span>` : '';
+    el.innerHTML = closeBtn + `<h3>${esc(where)} <span class="sub">${esc(ipCount)} IP${ipCount===1?'':'s'}</span> ${provBadge}</h3>`
+      + `<div class="stats-note">${esc(entity.observation_count)} observed destination observation${entity.observation_count===1?'':'s'} &middot; ${esc(entity.domain_count)} domain${entity.domain_count===1?'':'s'} &middot; approximate coordinates from observed DNS destinations, not a verified physical location${entity.provenance === 'known_datacenter' ? ' &middot; region-derived from a curated known-datacenter range, not an exact server location' : ''}</div>`
       + `<div class="map-detail-row"><b>Domains</b><div class="chip-row">${domains}</div></div>`;
   } else {
     const domains = (entity.sample_domains||[]).map(d => `<span class="chip">${esc(d)}</span>`).join('') || '<span class="sub">No sampled domains</span>';
@@ -2467,13 +3030,22 @@ let mapBreakdownSortMode = 'metric';
 function renderMapBreakdownHistory(data){
   const el = document.getElementById('destination-map-history'); if (!el) return;
   const h = data?.history;
-  if (!h || !h.tracked_domains_all_time){ el.textContent = ''; return; }
+  const prov = data?.coverage?.provenance;
+  const provParts = [];
+  if (prov){
+    if (prov.city_geoip) provParts.push(`${esc(prov.city_geoip)} City GeoIP`);
+    if (prov.known_datacenter) provParts.push(`${esc(prov.known_datacenter)} Known datacenter`);
+    if (prov.country_only) provParts.push(`${esc(prov.country_only)} Country only`);
+    if (prov.unmapped) provParts.push(`${esc(prov.unmapped)} Unmapped`);
+  }
+  const provText = provParts.length ? ` Destination observations by provenance: ${provParts.join(' &middot; ')}.` : '';
+  if (!h || !h.tracked_domains_all_time){ el.innerHTML = provText.trim(); return; }
   let since = '';
   if (h.tracking_since){
     const d = new Date(h.tracking_since);
     if (!isNaN(d.getTime())) since = ` since ${d.toLocaleDateString()}`;
   }
-  el.textContent = `Tracking ${esc(h.tracked_domains_all_time)} domain${h.tracked_domains_all_time===1?'':'s'} with observed destinations all-time${since} -- this history is stored in SQLite and persists across restarts.`;
+  el.innerHTML = `Tracking ${esc(h.tracked_domains_all_time)} domain${h.tracked_domains_all_time===1?'':'s'} with observed destinations all-time${since} -- this history is stored in SQLite and persists across restarts.${provText}`;
 }
 function renderMapBreakdown(data){
   const list = document.getElementById('map-breakdown-list'); if (!list) return;
@@ -2525,19 +3097,26 @@ function clusterDestinationPoints(points, zoom){
     bucket.observation_count += (p.observation_count || 0);
     bucket.domain_count += (p.domain_count || 0);
   });
-  return Array.from(cells.values()).map(b => ({
-    key: b.key,
-    x: b.sumX / b.points.length,
-    y: b.sumY / b.points.length,
-    points: b.points,
-    unique_ip_count: b.points.length,
-    observation_count: b.observation_count,
-    domain_count: b.domain_count,
-    country_code: b.points[0].country_code,
-    country_name: b.points[0].country_name,
-    city: b.points.length === 1 ? b.points[0].city : null,
-    sample_domains: Array.from(new Set(b.points.flatMap(p => p.sample_domains || []))).slice(0, 5),
-  }));
+  return Array.from(cells.values()).map(b => {
+    const provenanceSet = new Set(b.points.map(p => p.provenance).filter(Boolean));
+    const singlePoint = b.points.length === 1 ? b.points[0] : null;
+    return {
+      key: b.key,
+      x: b.sumX / b.points.length,
+      y: b.sumY / b.points.length,
+      points: b.points,
+      unique_ip_count: b.points.length,
+      observation_count: b.observation_count,
+      domain_count: b.domain_count,
+      country_code: b.points[0].country_code,
+      country_name: b.points[0].country_name,
+      city: singlePoint ? singlePoint.city : null,
+      provenance: provenanceSet.size === 1 ? Array.from(provenanceSet)[0] : (provenanceSet.size > 1 ? 'mixed' : null),
+      provider: singlePoint ? singlePoint.provider : null,
+      region: singlePoint ? singlePoint.region : null,
+      sample_domains: Array.from(new Set(b.points.flatMap(p => p.sample_domains || []))).slice(0, 5),
+    };
+  });
 }
 function renderCountriesMode(data){
   const el = document.getElementById('destination-map'); if (!el) return;
@@ -2621,11 +3200,11 @@ function renderCountriesMode(data){
 }
 function renderDestinationsMode(data, capabilities){
   const el = document.getElementById('destination-map'); if (!el) return;
-  if (!capabilities.coordinates){
+  if (!capabilities.coordinates && !capabilities.datacenter){
     el.innerHTML = mapBaseSvg(
       'World map; coordinate-level destination data unavailable',
       mapStatusBanner(
-        'Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database to enable Destinations mode, or switch to Countries. See docs/GEOIP.md.',
+        'Coordinate-level destination data is unavailable &mdash; only a country GeoIP database is configured. Configure a city/coordinate-capable GeoIP database, or a curated known-datacenter database, to enable Destinations mode, or switch to Countries. See docs/GEOIP.md.',
         '<button type="button" class="map-zoom-btn" id="map-switch-countries-btn">Switch to Countries</button>'
       )
     );
@@ -2642,7 +3221,7 @@ function renderDestinationsMode(data, capabilities){
   if (!points.length){
     el.innerHTML = mapBaseSvg(
       'World map; no geolocated destination coordinates yet',
-      mapStatusBanner('No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate GeoIP database.')
+      mapStatusBanner('No geolocated destination coordinates yet. This fills in as domains are queried and their actual DNS answers get matched against the configured city/coordinate or known-datacenter GeoIP database.')
     );
     mapFinishRender(el);
     renderMapDetail(null);
@@ -2659,9 +3238,10 @@ function renderDestinationsMode(data, capabilities){
     const color = mapThemeColor(ratio, theme);
     const r = (4 + Math.sqrt(ratio) * 15).toFixed(1);
     const selected = mapSelectedDestinationKey === c.key ? ' map-bubble-selected' : '';
-    const label = c.unique_ip_count > 1
+    const provLabel = provenanceLabel(c);
+    const label = (c.unique_ip_count > 1
       ? `${esc(c.unique_ip_count)} destinations: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`
-      : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`;
+      : `${esc(c.city || c.country_name || c.country_code || 'Unknown')}: ${esc(c.observation_count)} observations, ${esc(c.domain_count)} domains`) + (provLabel ? ` — ${esc(provLabel)}` : '');
     const countLabel = c.unique_ip_count > 1
       ? `<text class="map-cluster-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${c.unique_ip_count > 99 ? '99+' : c.unique_ip_count}</text>`
       : (Number(r) >= 9 ? `<text class="map-bubble-count" x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}">${mapCompactNumber(mapMetricValue(c))}</text>` : '');
@@ -2706,7 +3286,7 @@ function renderDestinationMap(data){
   const mode = prefs.mapMode === 'destinations' ? 'destinations' : 'countries';
   if (subtitleEl){
     subtitleEl.textContent = mode === 'destinations'
-      ? 'Real observed DNS destination IPs plotted by coordinate and clustered when nearby — not verified physical server locations.'
+      ? 'Real observed DNS destination IPs plotted by coordinate and clustered when nearby — City GeoIP points are exact-coordinate matches; Known datacenter points are region-derived from a curated provider database, not a verified physical server location.'
       : 'Country-level aggregate of resolved DNS response IPs — not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.';
   }
   const legendMetricEl = document.getElementById('map-legend-metric-label');
@@ -2725,7 +3305,7 @@ function renderDestinationMap(data){
     renderMapDetail(null);
     return;
   }
-  if (!provider.configured && !capabilities.coordinates){
+  if (!provider.configured && !capabilities.coordinates && !capabilities.datacenter){
     el.innerHTML = mapBaseSvg(
       'World map; GeoIP not configured, destinations unmapped',
       mapStatusBanner('No GeoIP database configured &mdash; destinations are reported as unmapped rather than guessed. See docs/GEOIP.md to enable the map.')
@@ -2885,10 +3465,12 @@ function syncMapControls(){
   const metricSel = document.getElementById('map-metric-select');
   const basemapSel = document.getElementById('map-basemap-select');
   const themeSel = document.getElementById('map-theme-select');
+  const routesToggle = document.getElementById('map-routes-toggle');
   if (modeSel) modeSel.value = prefs.mapMode || 'countries';
   if (metricSel) metricSel.value = prefs.mapMetric || 'observations';
   if (basemapSel) basemapSel.value = mapActiveBasemap();
   if (themeSel) themeSel.value = mapActiveTheme();
+  if (routesToggle) routesToggle.checked = !!prefs.mapRoutes;
   mapSyncLegendGradient();
 }
 syncMapControls();
@@ -2913,6 +3495,11 @@ document.getElementById('map-theme-select')?.addEventListener('change', (e) => {
   prefs.mapTheme = MAP_THEMES.includes(e.target.value) ? e.target.value : 'bemo-accent';
   savePrefs();
   mapSyncLegendGradient();
+  if (mapLastPayload) renderDestinationMap(mapLastPayload);
+});
+document.getElementById('map-routes-toggle')?.addEventListener('change', (e) => {
+  prefs.mapRoutes = !!e.target.checked;
+  savePrefs();
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-zoom-in-btn')?.addEventListener('click', () => {
@@ -2984,6 +3571,7 @@ function stopAnalyticsPolling(){
 document.querySelectorAll('[data-analytics-range]').forEach(b => b.addEventListener('click', () => {
   analyticsRange = b.dataset.analyticsRange;
   document.querySelectorAll('[data-analytics-range]').forEach(x => x.classList.toggle('active', x === b));
+  selectedIntervalBucket = null; renderIntervalDetail(null);
   fetchAnalyticsFull();
 }));
 function analyticsTabChanged(name){
@@ -3063,8 +3651,8 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     base.preset = name;
     const set = (id, patch) => { if (base.widgets[id]) Object.assign(base.widgets[id], patch); };
     if (name === 'monitoring'){
-      base.order = ['live-overview','status-breakdown','query-volume','new-domains','new-devices','activity-domains','activity-devices','top-activity'];
-      set('live-overview', {h:'tall'});
+      base.order = ['visibility-report','status-breakdown','query-volume','new-domains','new-devices','activity-domains','activity-devices','top-activity'];
+      set('visibility-report', {h:'tall'});
       set('activity-domains', {h:'compact'});
       set('activity-devices', {h:'compact'});
       set('top-activity', {hidden:true});
@@ -3072,11 +3660,11 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       WIDGET_IDS.forEach(id => set(id, {h:'compact'}));
       set('top-activity', {hidden:true});
     } else if (name === 'investigation'){
-      base.order = ['query-volume','status-breakdown','top-activity','activity-domains','activity-devices','new-domains','new-devices','live-overview'];
+      base.order = ['query-volume','status-breakdown','top-activity','activity-domains','activity-devices','new-domains','new-devices','visibility-report'];
       set('top-activity', {h:'tall'});
       set('activity-domains', {h:'tall'});
       set('activity-devices', {h:'tall'});
-      set('live-overview', {w:'2', h:'compact'});
+      set('visibility-report', {w:'2', h:'compact'});
     }
     base.order = insertWidgetsAtDefaultPosition(base.order, DEFAULT_LAYOUT.order);
     return base;
@@ -3299,7 +3887,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
 
   async function downloadBoundedArtifact(url){
     try{
-      const r = await adminFetch(url, {cache:'no-store'});
+      const r = await fetch(url, {cache:'no-store'});
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const blob = await r.blob();
       const disposition = r.headers.get('Content-Disposition') || '';
@@ -3321,8 +3909,10 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   function openDialog(){
     if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open','');
     refreshDiagnosticsPanel();
+    refreshDevLogPanel();
     refreshSystemPanel();
     refreshAboutUptime();
+    refreshReportsPanel();
   }
   function closeDialog(){ if (typeof dialog.close === 'function') dialog.close(); else dialog.removeAttribute('open'); }
   openBtn.addEventListener('click', openDialog);
@@ -3333,8 +3923,6 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   dialog.querySelectorAll('.settings-nav-btn').forEach(btn => btn.addEventListener('click', () => {
     dialog.querySelectorAll('.settings-nav-btn').forEach(b => b.classList.toggle('active', b === btn));
     dialog.querySelectorAll('.settings-section').forEach(s => s.classList.toggle('active', s.dataset.settingsPanel === btn.dataset.settingsTab));
-    if (btn.dataset.settingsTab === 'diagnostics') refreshDevLogPanel();
-    if (btn.dataset.settingsTab === 'security') refreshAdminAuthStatus();
   }));
 
   const accentGroup = document.getElementById('accent-choice-group');
@@ -3386,11 +3974,106 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       const d = await r.json();
       const rows = [['Uptime', d.uptime_human || '—'], ['Memory (RSS)', d.ram_mb != null ? d.ram_mb + ' MB' : '—'], ['Process ID', d.pid ?? '—'], ['Threads', d.thread_count ?? '—'], ['Database size', d.db_size_bytes != null ? (Math.round(d.db_size_bytes/1024/1024*10)/10) + ' MB' : '—']];
       const counts = d.db_counts || {};
-      ['domains','devices','processed_queries'].forEach(t => { if (counts[t] != null) rows.push(['Rows: ' + t, counts[t]]); });
+      ['domains','devices','processed_queries','analytics_buckets'].forEach(t => { if (counts[t] != null) rows.push(['Rows: ' + t, counts[t]]); });
+      const sched = d.report_scheduler || {};
+      rows.push(['Report scheduler', sched.enabled ? 'Enabled' : 'Disabled']);
+      if (sched.next_run) rows.push(['Next scheduled report', sched.next_run]);
+      if (sched.last_run) rows.push(['Last report run', `${sched.last_run} (${sched.last_result || 'unknown'})`]);
       el.innerHTML = kvRows(rows);
     }catch(e){ el.innerHTML = '<b>Diagnostics unavailable</b><span>—</span>'; }
     renderClientPerfPanel();
   }
+
+  async function refreshReportsPanel(){
+    const kv = document.getElementById('reports-status-kv');
+    try{
+      const [cfgRes, statusRes] = await Promise.all([
+        fetch('/api/reports/schedule', {cache:'no-store'}),
+        fetch('/api/reports/status', {cache:'no-store'}),
+      ]);
+      const cfgData = await cfgRes.json();
+      const statusData = await statusRes.json();
+      const cfg = cfgData.config || {};
+      const state = statusData.state || {};
+      const baseDirEl = document.getElementById('reports-base-dir'); if (baseDirEl) baseDirEl.textContent = statusData.base_dir || '/data/reports';
+      const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+      const setChecked = (id, val) => { const el = document.getElementById(id); if (el) el.checked = !!val; };
+      setChecked('reports-enabled-toggle', cfg.enabled);
+      setVal('reports-interval-select', cfg.interval || 'daily');
+      setVal('reports-custom-interval-input', cfg.custom_interval_seconds || 86400);
+      const customInput = document.getElementById('reports-custom-interval-input'); if (customInput) customInput.style.display = cfg.interval === 'custom' ? '' : 'none';
+      setVal('reports-window-select', cfg.window || '24h');
+      setVal('reports-save-dir-input', cfg.save_dir || '');
+      setVal('reports-filename-input', cfg.filename_template || '');
+      setVal('reports-retention-input', cfg.retention_count || 14);
+      setChecked('reports-smtp-enabled-toggle', cfg.smtp_enabled);
+      setVal('reports-smtp-host-input', cfg.smtp_host || '');
+      setVal('reports-smtp-port-input', cfg.smtp_port || 587);
+      setVal('reports-smtp-security-select', cfg.smtp_security || 'starttls');
+      setVal('reports-smtp-username-input', cfg.smtp_username || '');
+      const pwEl = document.getElementById('reports-smtp-password-state'); if (pwEl) pwEl.textContent = cfg.smtp_password_set ? 'SMTP_PASSWORD is set' : 'SMTP_PASSWORD is not set (test/live sends will fail if auth is required)';
+      setVal('reports-smtp-sender-input', cfg.smtp_sender || '');
+      setVal('reports-smtp-recipients-input', (cfg.smtp_recipients || []).join('\n'));
+      setVal('reports-smtp-subject-input', cfg.smtp_subject_template || '');
+      if (kv) kv.innerHTML = kvRows([
+        ['Scheduler', state.enabled ? 'Enabled' : 'Disabled'],
+        ['Next run', state.next_run || '—'],
+        ['Last run', state.last_run || 'never'],
+        ['Last result', state.last_result || '—'],
+        ['Last saved file', state.last_saved_file || '—'],
+        ['Last email result', state.last_email_result ? (state.last_email_result.ok ? 'sent' : 'failed: ' + (state.last_email_result.error||'')) : '—'],
+      ]);
+    }catch(e){ if (kv) kv.innerHTML = '<b>Reports status unavailable</b><span>—</span>'; }
+  }
+  document.getElementById('reports-interval-select')?.addEventListener('change', (e) => {
+    const customInput = document.getElementById('reports-custom-interval-input'); if (customInput) customInput.style.display = e.target.value === 'custom' ? '' : 'none';
+  });
+  document.getElementById('reports-save-schedule-btn')?.addEventListener('click', async () => {
+    const resultEl = document.getElementById('reports-save-schedule-result');
+    const recipients = (document.getElementById('reports-smtp-recipients-input')?.value || '').split('\n').map(s => s.trim()).filter(Boolean);
+    const payload = {
+      enabled: !!document.getElementById('reports-enabled-toggle')?.checked,
+      interval: document.getElementById('reports-interval-select')?.value,
+      custom_interval_seconds: Number(document.getElementById('reports-custom-interval-input')?.value) || 86400,
+      window: document.getElementById('reports-window-select')?.value,
+      save_dir: (document.getElementById('reports-save-dir-input')?.value || '').trim(),
+      filename_template: (document.getElementById('reports-filename-input')?.value || '').trim() || 'dns-inspector-{range}-{timestamp}.pdf',
+      retention_count: Number(document.getElementById('reports-retention-input')?.value) || 14,
+      smtp_enabled: !!document.getElementById('reports-smtp-enabled-toggle')?.checked,
+      smtp_host: (document.getElementById('reports-smtp-host-input')?.value || '').trim(),
+      smtp_port: Number(document.getElementById('reports-smtp-port-input')?.value) || 587,
+      smtp_security: document.getElementById('reports-smtp-security-select')?.value,
+      smtp_username: (document.getElementById('reports-smtp-username-input')?.value || '').trim(),
+      smtp_sender: (document.getElementById('reports-smtp-sender-input')?.value || '').trim(),
+      smtp_recipients: recipients,
+      smtp_subject_template: (document.getElementById('reports-smtp-subject-input')?.value || '').trim(),
+    };
+    if (resultEl) resultEl.textContent = 'Saving…';
+    try{
+      const r = await fetch('/api/reports/schedule', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      const d = await r.json();
+      if (resultEl) resultEl.textContent = d.ok ? 'Saved.' : ('Error: ' + (d.error || 'unknown'));
+      refreshReportsPanel();
+    }catch(e){ if (resultEl) resultEl.textContent = 'Save failed.'; }
+  });
+  document.getElementById('reports-save-now-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    try{
+      const r = await fetch('/api/reports/save-now', {method:'POST'});
+      const d = await r.json();
+      alert(d.ok ? `Report saved: ${d.saved_file || ''}` : `Save failed: ${d.error || 'unknown error'}`);
+    }catch(e){ alert('Save failed.'); }
+    finally{ btn.disabled = false; refreshReportsPanel(); }
+  });
+  document.getElementById('reports-test-email-btn')?.addEventListener('click', async (e) => {
+    const btn = e.currentTarget; btn.disabled = true;
+    try{
+      const r = await fetch('/api/reports/test-email', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
+      const d = await r.json();
+      alert(d.ok ? `Test email sent to ${d.recipient_count || 0} recipient(s).` : `Test email failed: ${d.error || 'unknown error'}`);
+    }catch(e){ alert('Test email failed.'); }
+    finally{ btn.disabled = false; }
+  });
 
   /* Issue #61: surfaces the client-side perf trace recorded by
      recordPerf()/fetchAnalyticsFull()/fetchDestinationMap() so an operator
@@ -3607,6 +4290,28 @@ def add_column_if_missing(c, table, column, ddl):
         c.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
 
 
+# --- Generic persisted settings (Issue #88: report scheduling, map origin) --
+def _get_setting_raw(c, key, default=None):
+    row = c.execute("SELECT value FROM app_settings WHERE key=?", (key,)).fetchone()
+    if not row: return default
+    try: return json.loads(row[0])
+    except (TypeError, ValueError): return default
+
+
+def _set_setting_raw(c, key, value):
+    c.execute("INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at", (key, json.dumps(value), utcnow()))
+
+
+def get_setting(key, default=None):
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        return _get_setting_raw(c, key, default)
+
+
+def set_setting(key, value):
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+        _set_setting_raw(c, key, value); c.commit()
+
+
 def init_db():
     with closing(sqlite3.connect(DB_PATH)) as c:
         c.execute("""CREATE TABLE IF NOT EXISTS domains(
@@ -3656,6 +4361,12 @@ def init_db():
         c.execute("""CREATE TABLE IF NOT EXISTS processed_queries(
             fingerprint TEXT PRIMARY KEY, seen_at TEXT NOT NULL, status_counted INTEGER NOT NULL DEFAULT 0)""")
         add_column_if_missing(c, "processed_queries", "status_counted", "INTEGER NOT NULL DEFAULT 0")
+        # Issue #88: enrich the existing bounded processed_queries rows (no new
+        # rows added) with domain/device/status so exact-interval drill-down can
+        # be computed for real from the still-retained rolling window.
+        add_column_if_missing(c, "processed_queries", "domain", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(c, "processed_queries", "device_key", "TEXT NOT NULL DEFAULT ''")
+        add_column_if_missing(c, "processed_queries", "status", "TEXT NOT NULL DEFAULT ''")
         add_column_if_missing(c, "domains", "current_status", "TEXT NOT NULL DEFAULT 'Unknown'")
         add_column_if_missing(c, "domains", "current_reason", "TEXT NOT NULL DEFAULT ''")
         c.execute("""CREATE TABLE IF NOT EXISTS adguard_status_cache(
@@ -3674,6 +4385,22 @@ def init_db():
             attempted_at REAL NOT NULL,
             next_attempt_at REAL NOT NULL)""")
         c.execute("CREATE INDEX IF NOT EXISTS idx_enrichment_attempt_next ON enrichment_attempts(next_attempt_at)")
+        # Issue #88: bounded hourly-aggregated analytics history, independent of
+        # (and much smaller than) the 100k-row processed_queries cap, so charts,
+        # interval drill-down and scheduled reports keep working for long
+        # retained windows without retaining every raw query indefinitely.
+        c.execute("""CREATE TABLE IF NOT EXISTS analytics_buckets(
+            bucket_start TEXT PRIMARY KEY, bucket_seconds INTEGER NOT NULL,
+            query_count INTEGER NOT NULL DEFAULT 0, unique_domains INTEGER NOT NULL DEFAULT 0, unique_devices INTEGER NOT NULL DEFAULT 0,
+            allowed INTEGER NOT NULL DEFAULT 0, blocked INTEGER NOT NULL DEFAULT 0, unknown INTEGER NOT NULL DEFAULT 0,
+            new_domains INTEGER NOT NULL DEFAULT 0, new_devices INTEGER NOT NULL DEFAULT 0,
+            top_domains_json TEXT NOT NULL DEFAULT '[]', top_devices_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL)""")
+        # Small generic key/value store for settings that need to persist and
+        # survive a restart (report scheduling config, map origin, ...) but do
+        # not warrant their own narrow table.
+        c.execute("""CREATE TABLE IF NOT EXISTS app_settings(
+            key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)""")
         c.commit()
 
 
@@ -4308,7 +5035,7 @@ def ingest(force=False):
 
                 ident, cname, source, info, device_key, mac, ips, hostname = client_info_from_entry(e)
                 if not domain:
-                    c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at,status_counted) VALUES(?,?,1)", (fp, now))
+                    c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at,status_counted,domain,device_key,status) VALUES(?,?,1,?,?,?)", (fp, now, "", "", ""))
                     continue
                 qstatus = query_status(e.get("reason"), e.get("answer"))
                 _record_domain_destination_ips(c, domain, observed_destination_ips, now)
@@ -4337,7 +5064,7 @@ def ingest(force=False):
                 device_ips_now = ips or ([ident] if is_ip(ident) else [])
                 upsert_device(c, device_key, cname, hostname, mac, device_ips_now, source, info, now)
                 enrich_device_network_identity(c, device_key, device_ips_now, mac, hostname)
-                c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at,status_counted) VALUES(?,?,1)", (fp, now))
+                c.execute("INSERT OR IGNORE INTO processed_queries(fingerprint,seen_at,status_counted,domain,device_key,status) VALUES(?,?,1,?,?,?)", (fp, now, domain, device_key, qstatus))
                 new_count += 1
             # Keep the dedupe table bounded while retaining enough history for repeated 500-entry query-log snapshots.
             c.execute("DELETE FROM processed_queries WHERE rowid IN (SELECT rowid FROM processed_queries ORDER BY seen_at DESC LIMIT -1 OFFSET 100000)")
@@ -4480,42 +5207,11 @@ def api_ip_ping_status():
         return jsonify({"ok": False, "statuses": {}}), 500
 
 
-MANUAL_PING_MIN_INTERVAL_SECONDS = max(1.0, float(os.getenv("MANUAL_PING_MIN_INTERVAL_SECONDS", "3")))
-MANUAL_PING_MAX_PER_MINUTE = max(1, int(os.getenv("MANUAL_PING_MAX_PER_MINUTE", "20")))
-_manual_ping_lock = threading.Lock()
-_manual_ping_last_by_ip = {}
-_manual_ping_recent = deque()
-
-
-def _check_manual_ping_rate_limit(ip):
-    """Bound user-triggered LAN pings: a per-target cooldown (stop a single
-    button mash from re-spawning `ping` back-to-back for the same host) plus a
-    server-wide per-minute cap (stop a caller from sweeping many LAN
-    addresses quickly, effectively using this endpoint as a network scanner).
-    """
-    now = time.monotonic()
-    with _manual_ping_lock:
-        last = _manual_ping_last_by_ip.get(ip)
-        if last is not None and (now - last) < MANUAL_PING_MIN_INTERVAL_SECONDS:
-            wait = MANUAL_PING_MIN_INTERVAL_SECONDS - (now - last)
-            return False, f"Ping {ip} again in {wait:.1f}s"
-        while _manual_ping_recent and (now - _manual_ping_recent[0]) > 60.0:
-            _manual_ping_recent.popleft()
-        if len(_manual_ping_recent) >= MANUAL_PING_MAX_PER_MINUTE:
-            return False, "Too many manual pings; try again shortly"
-        _manual_ping_last_by_ip[ip] = now
-        _manual_ping_recent.append(now)
-        return True, ""
-
-
 @app.route("/api/ip/ping", methods=["POST"])
 def api_ip_ping():
     try:
         data = request.get_json(silent=True) or {}
         ip = _validate_ping_ip(data.get("ip"))
-        allowed, reason = _check_manual_ping_rate_limit(ip)
-        if not allowed:
-            return jsonify({"ok": False, "error": reason}), 429
         return jsonify({"ok": True, "result": _run_ip_ping(ip)})
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
@@ -5730,10 +6426,15 @@ def clients_html(clients):
 
 
 # --- Analytics: bounded reads from existing persisted history ----------------
-ANALYTICS_RANGE_OPTIONS = ["1h", "6h", "24h", "7d"]
+ANALYTICS_RANGE_OPTIONS = ["1h", "6h", "24h", "7d", "30d", "90d"]
 ANALYTICS_LIVE_WINDOW_SECONDS = 60
 ANALYTICS_ACTIVE_DEVICE_WINDOW_SECONDS = 300
 _ANALYTICS_RANGES = {"1h": (3600, 60, 60, "Last hour"), "6h": (21600, 300, 72, "Last 6 hours"), "24h": (86400, 900, 96, "Last 24 hours"), "7d": (604800, 7200, 84, "Last 7 days")}
+# 30d/90d are backed by the bounded analytics_buckets aggregation table
+# (hourly rows rolled up into coarser display buckets) rather than raw
+# processed_queries, since that table is not guaranteed to retain 30-90 days
+# of history at higher query volumes.
+_ANALYTICS_BUCKET_RANGES = {"30d": (30 * 86400, 21600, 120, "Last 30 days"), "90d": (90 * 86400, 86400, 90, "Last 90 days")}
 
 def _parse_iso(value):
     try: dt = datetime.fromisoformat(value)
@@ -5754,7 +6455,31 @@ def _bucket_timestamps(timestamps, range_seconds, bucket_seconds, bucket_count, 
             if 0 <= idx < bucket_count: buckets[idx] += 1
     return [{"t": (start + timedelta(seconds=i * bucket_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
 
+def _history_bucket_series(value_col, range_key):
+    """Range series for 30d/90d, rolled up from the bounded analytics_buckets
+    aggregation table instead of raw processed_queries/domains/devices."""
+    range_seconds, rollup_seconds, bucket_count, label = _ANALYTICS_BUCKET_RANGES[range_key]
+    now_dt = datetime.now(timezone.utc); start = now_dt - timedelta(seconds=range_seconds)
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        min_bucket_start = c.execute("SELECT MIN(bucket_start) FROM analytics_buckets").fetchone()[0]
+        rows = c.execute(f"SELECT bucket_start,{value_col} FROM analytics_buckets WHERE bucket_start>=? ORDER BY bucket_start ASC", (start.isoformat(),)).fetchall()
+    buckets = [0] * bucket_count
+    for bucket_start, value in rows:
+        dt = _parse_iso(bucket_start)
+        if dt is None: continue
+        offset = (dt - start).total_seconds()
+        if 0 <= offset < range_seconds:
+            idx = int(offset // rollup_seconds)
+            if 0 <= idx < bucket_count: buckets[idx] += int(value or 0)
+    points = [{"t": (start + timedelta(seconds=i * rollup_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
+    min_dt = _parse_iso(min_bucket_start)
+    for point in points:
+        bucket_end = _parse_iso(point["t"]) + timedelta(seconds=rollup_seconds)
+        if min_dt is None or bucket_end <= min_dt: point["count"] = None
+    return {"range": range_key, "label": label, "bucket_seconds": rollup_seconds, "points": points}
+
 def get_query_volume_series(range_key):
+    if range_key in _ANALYTICS_BUCKET_RANGES: return _history_bucket_series("query_count", range_key)
     range_seconds, bucket_seconds, bucket_count, label = _analytics_range(range_key); now_dt = datetime.now(timezone.utc); start = now_dt - timedelta(seconds=range_seconds)
     with closing(sqlite3.connect(DB_PATH)) as c:
         min_seen_at = c.execute("SELECT MIN(seen_at) FROM processed_queries").fetchone()[0]
@@ -5767,6 +6492,7 @@ def get_query_volume_series(range_key):
 
 def _first_seen_series(table, range_key):
     if table not in ("domains", "devices"): raise ValueError("unsupported table for first-seen series")
+    if range_key in _ANALYTICS_BUCKET_RANGES: return _history_bucket_series("new_domains" if table == "domains" else "new_devices", range_key)
     range_seconds, bucket_seconds, bucket_count, label = _analytics_range(range_key); now_dt = datetime.now(timezone.utc); start = now_dt - timedelta(seconds=range_seconds)
     with closing(sqlite3.connect(DB_PATH)) as c: rows = c.execute(f"SELECT first_seen FROM {table} WHERE first_seen>=? AND first_seen<>''", (start.isoformat(),)).fetchall()
     return {"range": range_key, "label": label, "bucket_seconds": bucket_seconds, "points": _bucket_timestamps([r[0] for r in rows], range_seconds, bucket_seconds, bucket_count, now_dt)}
@@ -5804,6 +6530,162 @@ def analytics_payload(range_key="1h"):
     return {"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS,
             "series": {"queries": get_query_volume_series(range_key), "new_domains": get_new_domains_series(range_key), "new_devices": get_new_devices_series(range_key)},
             "status_breakdown": get_status_breakdown(), "recent_domains": activity["domains"], "recent_devices": activity["devices"], "active_devices": _active_devices_count(), "total_devices": _total_devices_count(), "new_domains_24h": new_domains_24h, "live": _analytics_live_snapshot()}
+
+
+# --- Bounded hourly analytics history + exact-interval drill-down (#88) -----
+def _bucket_floor(dt):
+    return dt.replace(minute=0, second=0, microsecond=0)
+
+
+def _aggregate_analytics_bucket(c, bucket_start_dt):
+    """Close out one hourly bucket from the still-retained processed_queries
+    window and upsert its summary into analytics_buckets. Idempotent: safe to
+    re-run for the same bucket_start (e.g. after a restart)."""
+    bucket_end_dt = bucket_start_dt + timedelta(seconds=ANALYTICS_BUCKET_SECONDS)
+    start_iso, end_iso = bucket_start_dt.isoformat(), bucket_end_dt.isoformat()
+    rows = c.execute("SELECT domain,device_key,status FROM processed_queries WHERE seen_at>=? AND seen_at<?", (start_iso, end_iso)).fetchall()
+    domain_counts, device_counts = {}, {}
+    allowed = blocked = unknown = 0
+    for domain, device_key, status in rows:
+        if domain: domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        if device_key: device_counts[device_key] = device_counts.get(device_key, 0) + 1
+        if status == "Blocked": blocked += 1
+        elif status == "Allowed": allowed += 1
+        elif status: unknown += 1
+    new_domains = c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=? AND first_seen<?", (start_iso, end_iso)).fetchone()[0]
+    new_devices = c.execute("SELECT COUNT(*) FROM devices WHERE first_seen>=? AND first_seen<?", (start_iso, end_iso)).fetchone()[0]
+    top_domains = sorted(domain_counts.items(), key=lambda kv: -kv[1])[:8]
+    top_devices = sorted(device_counts.items(), key=lambda kv: -kv[1])[:8]
+    c.execute(
+        """INSERT INTO analytics_buckets(bucket_start,bucket_seconds,query_count,unique_domains,unique_devices,allowed,blocked,unknown,new_domains,new_devices,top_domains_json,top_devices_json,created_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(bucket_start) DO UPDATE SET query_count=excluded.query_count, unique_domains=excluded.unique_domains, unique_devices=excluded.unique_devices,
+             allowed=excluded.allowed, blocked=excluded.blocked, unknown=excluded.unknown, new_domains=excluded.new_domains, new_devices=excluded.new_devices,
+             top_domains_json=excluded.top_domains_json, top_devices_json=excluded.top_devices_json""",
+        (start_iso, ANALYTICS_BUCKET_SECONDS, len(rows), len(domain_counts), len(device_counts), allowed, blocked, unknown,
+         int(new_domains or 0), int(new_devices or 0), json.dumps(top_domains), json.dumps(top_devices), utcnow()),
+    )
+
+
+def analytics_history_tick():
+    """Close out any fully-elapsed hourly buckets since the last tick (bounded
+    catch-up after downtime) and prune retained history beyond the configured
+    retention window. Cheap on the common case: at most one new bucket per
+    real hour boundary."""
+    now_dt = datetime.now(timezone.utc)
+    current_bucket = _bucket_floor(now_dt)
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+        last_closed_raw = _get_setting_raw(c, "analytics_last_closed_bucket")
+        last_closed_dt = _parse_iso(last_closed_raw) if last_closed_raw else None
+        retention_floor = current_bucket - timedelta(hours=ANALYTICS_HISTORY_RETENTION_HOURS)
+        if last_closed_dt is None:
+            earliest_raw = c.execute("SELECT MIN(seen_at) FROM processed_queries").fetchone()[0]
+            earliest_dt = _parse_iso(earliest_raw)
+            # Never fabricate history for time before any data was tracked --
+            # start exactly one bucket before the (hour-aligned) oldest
+            # retained raw row, or the retention floor, whichever is more
+            # recent, so every bucket this loop closes stays hour-aligned.
+            start_from = _bucket_floor(earliest_dt) if earliest_dt else current_bucket
+            last_closed_dt = max(retention_floor, start_from - timedelta(seconds=ANALYTICS_BUCKET_SECONDS))
+        cursor = max(last_closed_dt, retention_floor) + timedelta(seconds=ANALYTICS_BUCKET_SECONDS)
+        closed = 0
+        while cursor < current_bucket and closed < ANALYTICS_HISTORY_MAX_CATCHUP_BUCKETS:
+            _aggregate_analytics_bucket(c, cursor)
+            last_closed_dt = cursor
+            cursor += timedelta(seconds=ANALYTICS_BUCKET_SECONDS)
+            closed += 1
+        if closed:
+            _set_setting_raw(c, "analytics_last_closed_bucket", last_closed_dt.isoformat())
+        c.execute("DELETE FROM analytics_buckets WHERE bucket_start<?", (retention_floor.isoformat(),))
+        c.commit()
+    return closed
+
+
+def analytics_interval_detail(range_key, bucket_dt):
+    """Exact-interval drill-down for a clicked chart bucket. Uses real
+    per-query attribution while the interval is still inside the retained
+    processed_queries window (granularity "exact"), falls back to the bounded
+    hourly analytics_buckets summary once it has rolled off ("hourly_aggregate"),
+    and is explicit -- never fabricated -- when neither has any data ("none")."""
+    if range_key in _ANALYTICS_BUCKET_RANGES:
+        _, bucket_seconds, _, _ = _ANALYTICS_BUCKET_RANGES[range_key]
+    else:
+        _, bucket_seconds, _, _ = _analytics_range(range_key)
+    bucket_end_dt = bucket_dt + timedelta(seconds=bucket_seconds)
+    start_iso, end_iso = bucket_dt.isoformat(), bucket_end_dt.isoformat()
+
+    try:
+        series = get_query_volume_series(range_key)
+        vals = [p["count"] for p in series["points"] if p.get("count") is not None]
+        period_average = round(sum(vals) / len(vals), 1) if vals else None
+    except Exception:
+        period_average = None
+
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        min_seen_at = c.execute("SELECT MIN(seen_at) FROM processed_queries").fetchone()[0]
+        min_seen_dt = _parse_iso(min_seen_at)
+        device_labels = {row[0]: row[1] for row in c.execute("SELECT device_key,COALESCE(NULLIF(hostname,''),NULLIF(name,''),NULLIF(vendor,''),device_key) FROM devices").fetchall()}
+
+        # "Exact" is available whenever any part of the currently retained raw
+        # window could fall inside this bucket -- not just when the bucket
+        # starts at/after the oldest retained row, since row-count-based
+        # eviction never aligns exactly to bucket boundaries.
+        if min_seen_dt is None or bucket_end_dt > min_seen_dt:
+            rows = c.execute("SELECT domain,device_key,status FROM processed_queries WHERE seen_at>=? AND seen_at<?", (start_iso, end_iso)).fetchall()
+            new_domain_rows = c.execute("SELECT domain FROM domains WHERE first_seen>=? AND first_seen<? ORDER BY first_seen ASC LIMIT 25", (start_iso, end_iso)).fetchall()
+            new_device_rows = c.execute("SELECT device_key FROM devices WHERE first_seen>=? AND first_seen<? ORDER BY first_seen ASC LIMIT 25", (start_iso, end_iso)).fetchall()
+            domain_counts, device_counts = {}, {}
+            allowed = blocked = unknown = 0
+            for domain, device_key, status in rows:
+                if domain: domain_counts[domain] = domain_counts.get(domain, 0) + 1
+                if device_key: device_counts[device_key] = device_counts.get(device_key, 0) + 1
+                if status == "Blocked": blocked += 1
+                elif status == "Allowed": allowed += 1
+                elif status: unknown += 1
+            top_domains = sorted(domain_counts.items(), key=lambda kv: -kv[1])[:10]
+            top_devices = sorted(device_counts.items(), key=lambda kv: -kv[1])[:10]
+            query_count = len(rows)
+            return {
+                "ok": True, "range": range_key, "bucket_start": start_iso, "bucket_end": end_iso, "granularity": "exact",
+                "query_count": query_count, "period_average": period_average,
+                "vs_average_ratio": round(query_count / period_average, 2) if period_average else None,
+                "unique_domains": len(domain_counts), "unique_devices": len(device_counts),
+                "status": {"Allowed": allowed, "Blocked": blocked, "Unknown": unknown},
+                "new_domains": [d for (d,) in new_domain_rows], "new_devices": [device_labels.get(k, k) for (k,) in new_device_rows],
+                "top_domains": [{"domain": d, "count": n} for d, n in top_domains],
+                "top_devices": [{"device_key": k, "label": device_labels.get(k, k), "count": n} for k, n in top_devices],
+            }
+
+        agg_rows = c.execute(
+            "SELECT query_count,allowed,blocked,unknown,new_domains,new_devices,top_domains_json,top_devices_json FROM analytics_buckets WHERE bucket_start>=? AND bucket_start<? ORDER BY bucket_start ASC",
+            (start_iso, end_iso),
+        ).fetchall()
+        if not agg_rows:
+            return {
+                "ok": True, "range": range_key, "bucket_start": start_iso, "bucket_end": end_iso, "granularity": "none",
+                "query_count": 0, "period_average": period_average, "status": {}, "top_domains": [], "top_devices": [],
+                "note": "No retained data is available for this interval.",
+            }
+        merged_domains, merged_devices = {}, {}
+        query_count = new_domains_count = new_devices_count = allowed = blocked = unknown = 0
+        for qc, a, b, u, nd, nv, tdj, tvj in agg_rows:
+            query_count += int(qc or 0); allowed += int(a or 0); blocked += int(b or 0); unknown += int(u or 0)
+            new_domains_count += int(nd or 0); new_devices_count += int(nv or 0)
+            for d, n in json.loads(tdj or "[]"): merged_domains[d] = merged_domains.get(d, 0) + n
+            for k, n in json.loads(tvj or "[]"): merged_devices[k] = merged_devices.get(k, 0) + n
+        top_domains = sorted(merged_domains.items(), key=lambda kv: -kv[1])[:10]
+        top_devices = sorted(merged_devices.items(), key=lambda kv: -kv[1])[:10]
+        return {
+            "ok": True, "range": range_key, "bucket_start": start_iso, "bucket_end": end_iso, "granularity": "hourly_aggregate",
+            "query_count": query_count, "period_average": period_average,
+            "vs_average_ratio": round(query_count / period_average, 2) if period_average else None,
+            "unique_domains": None, "unique_devices": None,
+            "status": {"Allowed": allowed, "Blocked": blocked, "Unknown": unknown},
+            "new_domains_count": new_domains_count, "new_devices_count": new_devices_count,
+            "top_domains": [{"domain": d, "count": n} for d, n in top_domains],
+            "top_devices": [{"device_key": k, "label": device_labels.get(k, k), "count": n} for k, n in top_devices],
+            "note": "This interval is outside the retained raw query log; figures are reconstructed from the bounded hourly analytics history, so unique counts and top lists reflect what was recorded when each hour closed, not every individual query.",
+        }
 
 
 def get_stats(limit=10):
@@ -5921,32 +6803,45 @@ def worker():
     while True:
         started = time.time()
         ingest()
+        try:
+            analytics_history_tick()
+        except Exception as exc:
+            print("analytics history tick error:", repr(exc), flush=True)
         elapsed = time.time() - started
         time.sleep(max(1, POLL_SECONDS - elapsed))
+
+
+def generate_analytics_report_pdf(range_key):
+    """Single source of truth for PDF generation -- used by the manual
+    download route, the "Save report now" action, and the scheduler, so
+    scheduled and on-demand reports can never diverge (Issue #88 #15)."""
+    if range_key not in ANALYTICS_RANGE_OPTIONS:
+        range_key = "1h"
+    analytics = analytics_payload(range_key)
+    report_buffer = build_analytics_pdf(
+        analytics=analytics,
+        stats=get_stats(limit=8),
+        breakdown=get_status_breakdown(),
+        map_data=geoip_map_payload(),
+        version=APP_VERSION,
+        environment=RUNTIME_ENV,
+        range_key=range_key,
+    )
+    label = ((analytics.get("series") or {}).get("queries") or {}).get("label", range_key)
+    return report_buffer.getvalue(), {"range_key": range_key, "label": label, "generated_at": utcnow()}
 
 
 @app.route("/api/analytics/report.pdf")
 def api_analytics_report_pdf():
     range_key = request.args.get("range", "1h").strip() or "1h"
-    if range_key not in ANALYTICS_RANGE_OPTIONS:
-        range_key = "1h"
     try:
-        analytics = analytics_payload(range_key)
-        report_buffer = build_analytics_pdf(
-            analytics=analytics,
-            stats=get_stats(limit=8),
-            breakdown=get_status_breakdown(),
-            map_data=geoip_map_payload(),
-            version=APP_VERSION,
-            environment=RUNTIME_ENV,
-            range_key=range_key,
-        )
+        pdf_bytes, meta = generate_analytics_report_pdf(range_key)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         return send_file(
-            report_buffer,
+            io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=f"dns-inspector-analytics-{range_key}-{stamp}.pdf",
+            download_name=f"dns-inspector-analytics-{meta['range_key']}-{stamp}.pdf",
         )
     except Exception as e:
         print("analytics PDF export error:", repr(e), flush=True)
@@ -5961,6 +6856,227 @@ def api_analytics():
         print("analytics error:", repr(e), flush=True)
         empty = {"range": range_key, "label": "", "bucket_seconds": 0, "points": []}
         return jsonify({"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS, "series": {"queries": empty, "new_domains": empty, "new_devices": empty}, "status_breakdown": {}, "recent_domains": [], "recent_devices": [], "active_devices": 0, "total_devices": 0, "new_domains_24h": 0, "live": {"updated": utcnow(), "window_seconds": ANALYTICS_LIVE_WINDOW_SECONDS, "queries_in_window": 0}, "error": str(e)}), 200
+
+
+@app.route("/api/analytics/interval")
+def api_analytics_interval():
+    range_key = request.args.get("range", "1h").strip() or "1h"
+    if range_key not in ANALYTICS_RANGE_OPTIONS:
+        return jsonify({"ok": False, "error": "unsupported range"}), 400
+    bucket_dt = _parse_iso(request.args.get("bucket_start", "").strip())
+    if bucket_dt is None:
+        return jsonify({"ok": False, "error": "bucket_start must be an ISO-8601 timestamp"}), 400
+    try:
+        return jsonify(analytics_interval_detail(range_key, bucket_dt))
+    except Exception as e:
+        print("analytics interval error:", repr(e), flush=True)
+        return jsonify({"ok": False, "error": "Unable to compute interval detail"}), 200
+
+
+# --- Scheduled report generation / storage / email (Issue #88) --------------
+DEFAULT_REPORT_SCHEDULE = {
+    "enabled": False, "interval": "daily", "custom_interval_seconds": 86400,
+    "window": "24h", "save_dir": "", "filename_template": "dns-inspector-{range}-{timestamp}.pdf",
+    "retention_count": REPORTS_DEFAULT_RETENTION,
+    "smtp_enabled": False, "smtp_host": "", "smtp_port": 587, "smtp_security": "starttls",
+    "smtp_username": "", "smtp_sender": "", "smtp_recipients": [], "smtp_subject_template": "DNS Inspector report - {range}",
+    "history": [], "last_run_ts": None, "last_result": None, "last_error": None, "last_saved_file": None, "last_email_result": None,
+}
+EDITABLE_REPORT_SCHEDULE_FIELDS = {
+    "enabled", "interval", "custom_interval_seconds", "window", "save_dir", "filename_template", "retention_count",
+    "smtp_enabled", "smtp_host", "smtp_port", "smtp_security", "smtp_username", "smtp_sender", "smtp_recipients", "smtp_subject_template",
+}
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def get_report_schedule_config():
+    stored = get_setting("report_schedule") or {}
+    config = dict(DEFAULT_REPORT_SCHEDULE); config.update(stored)
+    config["_smtp_password"] = os.environ.get(SMTP_PASSWORD_ENV_VAR, "")
+    return config
+
+
+def public_report_schedule_config(config=None):
+    """API-safe view of the schedule config -- the SMTP password is never
+    stored in this dict in the first place, only ever read from the
+    environment, so there is nothing to accidentally leak here."""
+    config = dict(config if config is not None else get_report_schedule_config())
+    config.pop("_smtp_password", None)
+    config["smtp_password_set"] = bool(os.environ.get(SMTP_PASSWORD_ENV_VAR, ""))
+    return config
+
+
+def _persist_report_schedule(update):
+    with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
+        stored = _get_setting_raw(c, "report_schedule") or {}
+        merged = dict(DEFAULT_REPORT_SCHEDULE); merged.update(stored); merged.update(update)
+        _set_setting_raw(c, "report_schedule", merged); c.commit()
+        return merged
+
+
+def update_report_schedule_config(patch):
+    errors = []
+    filtered = {}
+    for key, value in (patch or {}).items():
+        if key not in EDITABLE_REPORT_SCHEDULE_FIELDS:
+            continue
+        if key == "interval" and value not in ("hourly", "daily", "weekly", "custom"):
+            errors.append("interval must be one of hourly, daily, weekly, custom"); continue
+        if key == "window" and value not in ANALYTICS_RANGE_OPTIONS:
+            errors.append("window must be a supported analytics range"); continue
+        if key == "smtp_security" and value not in ("none", "starttls", "tls"):
+            errors.append("smtp_security must be none, starttls, or tls"); continue
+        if key == "retention_count":
+            try: value = max(1, min(MAX_RETENTION_COUNT, int(value)))
+            except (TypeError, ValueError): errors.append("retention_count must be an integer"); continue
+        if key == "custom_interval_seconds":
+            try: value = max(900, int(value))
+            except (TypeError, ValueError): errors.append("custom_interval_seconds must be an integer"); continue
+        if key == "smtp_port":
+            try: value = int(value)
+            except (TypeError, ValueError): errors.append("smtp_port must be an integer"); continue
+        if key == "smtp_recipients":
+            if not isinstance(value, list):
+                errors.append("smtp_recipients must be a list of email addresses"); continue
+            value = [str(v).strip() for v in value if str(v or "").strip()]
+            bad = [v for v in value if not _EMAIL_RE.match(v)]
+            if bad:
+                errors.append(f"smtp_recipients contains invalid address(es): {', '.join(bad[:3])}"); continue
+        if key in ("save_dir", "filename_template"):
+            value = str(value or "")
+        filtered[key] = value
+    if errors:
+        raise ValueError("; ".join(errors))
+    # Validate the resulting save location is actually safe before persisting
+    # it, so a bad save_dir/filename_template surfaces immediately in the API
+    # response instead of silently failing every scheduled run.
+    probe = dict(DEFAULT_REPORT_SCHEDULE); probe.update(get_report_schedule_config()); probe.update(filtered)
+    try:
+        _report_relative_path(probe, "24h")
+    except ReportPathError as exc:
+        raise ValueError(str(exc))
+    return _persist_report_schedule(filtered)
+
+
+def _report_relative_path(config, range_key):
+    save_dir = (config.get("save_dir") or "").strip().strip("/")
+    filename = render_filename_template(config.get("filename_template"), filename_context(range_key))
+    relative = f"{save_dir}/{filename}" if save_dir else filename
+    resolve_report_path(REPORTS_BASE_DIR, relative)  # raises ReportPathError if unsafe
+    return relative, filename
+
+
+def _scheduler_generate_report(window_key):
+    pdf_bytes, meta = generate_analytics_report_pdf(window_key)
+    return pdf_bytes, meta
+
+
+def _scheduler_save_report(pdf_bytes, config, meta):
+    relative, filename = _report_relative_path(config, meta["range_key"])
+    full_path = resolve_report_path(REPORTS_BASE_DIR, relative)
+    tmp_path = full_path + ".tmp"
+    with open(tmp_path, "wb") as f:
+        f.write(pdf_bytes)
+    os.replace(tmp_path, full_path)
+    stored = get_setting("report_schedule") or {}
+    history = list(stored.get("history") or [])
+    history.append({"path": full_path, "filename": filename, "range_key": meta["range_key"], "generated_at": meta["generated_at"]})
+    history = prune_report_history(REPORTS_BASE_DIR, history, config.get("retention_count") or REPORTS_DEFAULT_RETENTION)
+    meta["filename"] = filename
+    _persist_report_schedule({"history": history})
+    return full_path
+
+
+def _scheduler_log(level, message, **ctx):
+    log_event(level, message, **ctx)
+
+
+MAX_RETENTION_COUNT = 200
+_report_scheduler = ReportScheduler(
+    config_provider=get_report_schedule_config,
+    persist_run=_persist_report_schedule,
+    generate_report=_scheduler_generate_report,
+    save_report=_scheduler_save_report,
+    logger=_scheduler_log,
+)
+
+
+@app.route("/api/reports/schedule", methods=["GET", "POST"])
+def api_reports_schedule():
+    if request.method == "GET":
+        return jsonify({"ok": True, "config": public_report_schedule_config(), "state": _report_scheduler.state()})
+    data = request.get_json(silent=True) or {}
+    try:
+        merged = update_report_schedule_config(data)
+        return jsonify({"ok": True, "config": public_report_schedule_config(merged)})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.route("/api/reports/status")
+def api_reports_status():
+    return jsonify({"ok": True, "state": _report_scheduler.state(), "base_dir": REPORTS_BASE_DIR})
+
+
+@app.route("/api/reports/save-now", methods=["POST"])
+def api_reports_save_now():
+    config = get_report_schedule_config()
+    result = _report_scheduler.run_now(config=config, reason="manual")
+    status = 200 if result.get("ok") else 409
+    return jsonify(result), status
+
+
+@app.route("/api/reports/test-email", methods=["POST"])
+def api_reports_test_email():
+    data = request.get_json(silent=True) or {}
+    config = get_report_schedule_config()
+    recipients = data.get("recipients") if isinstance(data.get("recipients"), list) else config.get("smtp_recipients") or []
+    recipients = [str(r).strip() for r in recipients if str(r or "").strip()]
+    bad = [r for r in recipients if not _EMAIL_RE.match(r)]
+    if bad:
+        return jsonify({"ok": False, "error": f"Invalid recipient address(es): {', '.join(bad[:3])}"}), 400
+    result = send_report_email(
+        host=config.get("smtp_host"), port=config.get("smtp_port"), security=config.get("smtp_security"),
+        username=config.get("smtp_username"), password=config.get("_smtp_password"), sender=config.get("smtp_sender"),
+        recipients=recipients, subject="DNS Inspector - test email",
+        body="This is a test email from the DNS Inspector scheduled report worker. If you received this, SMTP delivery is configured correctly.",
+    )
+    log_event("INFO" if result.get("ok") else "WARNING", "report test email", ok=str(result.get("ok")), recipient_count=str(result.get("recipient_count", 0)))
+    return jsonify(result), (200 if result.get("ok") else 502)
+
+
+@app.route("/api/reports/history")
+def api_reports_history():
+    stored = get_setting("report_schedule") or {}
+    history = list(stored.get("history") or [])
+    return jsonify({"ok": True, "history": [
+        {"filename": h.get("filename"), "range_key": h.get("range_key"), "generated_at": h.get("generated_at")}
+        for h in reversed(history)
+    ]})
+
+
+@app.route("/api/settings/map-origin", methods=["GET", "POST"])
+def api_settings_map_origin():
+    """A visualization-only origin point for destination route arcs. Never
+    derived/guessed -- the operator must explicitly set real coordinates
+    (e.g. their own network's approximate location) or leave it unset, in
+    which case no arcs are drawn (Issue #88 #5/#6)."""
+    if request.method == "GET":
+        return jsonify({"ok": True, "origin": get_setting("map_origin")})
+    data = request.get_json(silent=True) or {}
+    if data.get("clear"):
+        set_setting("map_origin", None)
+        return jsonify({"ok": True, "origin": None})
+    try:
+        lat = float(data.get("lat")); lon = float(data.get("lon"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "lat/lon must be numbers"}), 400
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return jsonify({"ok": False, "error": "lat/lon out of range"}), 400
+    label = str(data.get("label") or "").strip()[:80]
+    origin = {"lat": lat, "lon": lon, "label": label}
+    set_setting("map_origin", origin)
+    return jsonify({"ok": True, "origin": origin})
 
 @app.post("/api/admin/login")
 def api_admin_login():
@@ -6045,12 +7161,12 @@ def _observability_payload():
     counts={}
     try:
         with closing(sqlite3.connect(DB_PATH)) as c:
-            for table in ("domains","devices","processed_queries"):
+            for table in ("domains","devices","processed_queries","analytics_buckets"):
                 try: counts[table]=int(c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
                 except sqlite3.Error: counts[table]=None
     except Exception: pass
     uptime=max(0.0,time.monotonic()-OBSERVABILITY_START_MONOTONIC)
-    return {"version":APP_VERSION,"environment":RUNTIME_ENV,"started_at":OBSERVABILITY_START_AT,"uptime_seconds":round(uptime,1),"uptime_human":_format_duration(uptime),"ram_mb":_observability_rss_mb(),"pid":os.getpid(),"thread_count":threading.active_count(),"db_size_bytes":db_size,"db_counts":counts}
+    return {"version":APP_VERSION,"environment":RUNTIME_ENV,"started_at":OBSERVABILITY_START_AT,"uptime_seconds":round(uptime,1),"uptime_human":_format_duration(uptime),"ram_mb":_observability_rss_mb(),"pid":os.getpid(),"thread_count":threading.active_count(),"db_size_bytes":db_size,"db_counts":counts,"report_scheduler":_report_scheduler.state()}
 @app.route("/api/observability")
 def api_observability():
     try:return jsonify(_observability_payload())
@@ -6174,7 +7290,16 @@ def geoip_map_payload():
     for domain, ip, observations in destination_rows:
         by_domain.setdefault(domain, []).append((ip, int(observations or 0)))
     countries = {}
+    destination_points = {}
+    city_provider_ready = _geoip_city_provider is not None and _geoip_city_provider.available
+    datacenter_provider_ready = _geoip_datacenter_provider is not None and _geoip_datacenter_provider.available
     total_observations = geolocated_observations = 0
+    # Per-provenance observation counts for the coordinate hierarchy (Issue
+    # #88 follow-up): city_geoip and known_datacenter are real map points;
+    # country_only/unmapped never place a Destinations bubble, but are still
+    # counted so the map/report/PDF can say honestly how much coverage each
+    # tier actually has.
+    provenance_counts = {"city_geoip": 0, "known_datacenter": 0, "country_only": 0, "unmapped": 0}
     total_domains = len(domain_rows); geolocated_domains = unknown_domains = unknown_observations = 0
     for domain, clients_json in domain_rows:
         try: clients = json.loads(clients_json or "{}")
@@ -6183,6 +7308,42 @@ def geoip_map_payload():
         for ip, observations in by_domain.get(domain, []):
             total_observations += observations
             result = geoip_lookup(ip); code, name = result["country_code"], result["country_name"]
+            # Destination coordinate hierarchy (Issue #88 #5/#6 + known-
+            # datacenter follow-up): a real city/coordinate GeoIP match wins
+            # first; only when that misses does an explicitly-sourced known
+            # datacenter/provider range fill in a region-derived point;
+            # otherwise the IP is country-only (counted for the Countries
+            # aggregate, never a Destinations bubble) or fully unmapped.
+            # Neither tier is gated on whether the separate country-range
+            # provider also happened to match this IP.
+            point_provenance = None
+            if city_provider_ready:
+                city_result = geoip_city_lookup(ip)
+                if city_result["lat"] is not None and city_result["lon"] is not None:
+                    point_key = ("city", round(city_result["lat"], 3), round(city_result["lon"], 3))
+                    dbucket = destination_points.setdefault(point_key, {
+                        "lat": city_result["lat"], "lon": city_result["lon"],
+                        "country_code": city_result["country_code"] or code, "country_name": city_result["country_name"] or name,
+                        "city": city_result["city"], "provider": None, "region": None, "provenance": "city_geoip",
+                        "observation_count": 0, "domain_keys": set(), "ip_keys": set(),
+                    })
+                    dbucket["observation_count"] += observations; dbucket["domain_keys"].add(domain); dbucket["ip_keys"].add(ip)
+                    point_provenance = "city_geoip"
+            if point_provenance is None and datacenter_provider_ready:
+                dc_result = geoip_datacenter_lookup(ip)
+                if dc_result["lat"] is not None and dc_result["lon"] is not None:
+                    point_key = ("dc", round(dc_result["lat"], 3), round(dc_result["lon"], 3), dc_result["provider"], dc_result["region"])
+                    dbucket = destination_points.setdefault(point_key, {
+                        "lat": dc_result["lat"], "lon": dc_result["lon"],
+                        "country_code": dc_result["country_code"] or code, "country_name": name,
+                        "city": None, "provider": dc_result["provider"], "region": dc_result["region"], "provenance": "known_datacenter",
+                        "observation_count": 0, "domain_keys": set(), "ip_keys": set(),
+                    })
+                    dbucket["observation_count"] += observations; dbucket["domain_keys"].add(domain); dbucket["ip_keys"].add(ip)
+                    point_provenance = "known_datacenter"
+            if point_provenance is None:
+                point_provenance = "country_only" if code else "unmapped"
+            provenance_counts[point_provenance] += observations
             if not code:
                 unmatched += observations
                 continue
@@ -6193,6 +7354,16 @@ def geoip_map_payload():
         if domain_geolocated: geolocated_domains += 1
         else:
             unknown_domains += 1; unknown_observations += unmatched
+    destination_list = [
+        {
+            "lat": b["lat"], "lon": b["lon"], "country_code": b["country_code"], "country_name": b["country_name"], "city": b["city"],
+            "provider": b["provider"], "region": b["region"], "provenance": b["provenance"],
+            "observation_count": b["observation_count"], "domain_count": len(b["domain_keys"]), "unique_ip_count": len(b["ip_keys"]),
+            "sample_domains": list(b["domain_keys"])[:5],
+        }
+        for b in destination_points.values()
+    ]
+    destination_list.sort(key=lambda d: -d["observation_count"])
     country_list = []
     for code, bucket in countries.items():
         top_domains = sorted(bucket["sample_domains"].items(), key=lambda kv: -kv[1])[:5]
@@ -6209,12 +7380,16 @@ def geoip_map_payload():
     payload = {
         "updated": utcnow(),
         "provider": {"configured": bool(_geoip_provider.available), "db_path_basename": os.path.basename(_geoip_provider.path) if _geoip_provider.available and _geoip_provider.path else None, "range_count": _geoip_provider.range_count if _geoip_provider.available else 0},
-        "countries": country_list, "destinations": [],
+        "countries": country_list, "destinations": destination_list,
         "unknown": {"domain_count": unknown_domains, "observation_count": unknown_observations},
-        "coverage": {"total_domains": total_domains, "geolocated_domains": geolocated_domains, "total_observations": total_observations, "geolocated_observations": geolocated_observations, "geolocated_pct": round(100.0 * geolocated_observations / total_observations, 1) if total_observations else 0.0},
-        "capabilities": {"country": bool(_geoip_provider.available), "coordinates": False, "heatmap": False},
+        "coverage": {"total_domains": total_domains, "geolocated_domains": geolocated_domains, "total_observations": total_observations, "geolocated_observations": geolocated_observations, "geolocated_pct": round(100.0 * geolocated_observations / total_observations, 1) if total_observations else 0.0, "provenance": provenance_counts},
+        "capabilities": {"country": bool(_geoip_provider.available), "coordinates": city_provider_ready, "datacenter": datacenter_provider_ready, "heatmap": False},
         "history": {"tracked_domains_all_time": int(history_row[0] or 0), "tracking_since": history_row[1] if history_row and history_row[1] else None},
-        "diagnostics": {"state": diagnostic_state, "message": GEOIP_DIAGNOSTIC_MESSAGES[diagnostic_state], "country": _geoip_diagnostics(), "city": {"provider_type": "Country-only milestone", "configured": False, "db_path_basename": None, "range_count": 0}},
+        "diagnostics": {"state": diagnostic_state, "message": GEOIP_DIAGNOSTIC_MESSAGES[diagnostic_state], "country": _geoip_diagnostics(), "city": _geoip_city_diagnostics(), "datacenter": _geoip_datacenter_diagnostics()},
+        # Visualization-only origin for destination route/arc rendering. Real
+        # coordinates only ever come from an explicit operator setting --
+        # never derived/guessed (Issue #88 #5).
+        "origin": get_setting("map_origin"),
     }
     with _geoip_map_cache_lock:
         _geoip_map_cache["data"] = payload; _geoip_map_cache["at"] = now
@@ -6227,7 +7402,7 @@ def api_analytics_map():
         return jsonify(geoip_map_payload())
     except Exception as exc:
         log_event("ERROR", "Destination map payload failed", error=repr(exc))
-        return jsonify({"updated": utcnow(), "provider": {"configured": False, "range_count": 0}, "countries": [], "destinations": [], "unknown": {"domain_count": 0, "observation_count": 0}, "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0}, "capabilities": {"country": False, "coordinates": False, "heatmap": False}, "history": {"tracked_domains_all_time": 0, "tracking_since": None}, "diagnostics": {"state": "load_failed", "message": "Destination map backend error."}}), 200
+        return jsonify({"updated": utcnow(), "provider": {"configured": False, "range_count": 0}, "countries": [], "destinations": [], "unknown": {"domain_count": 0, "observation_count": 0}, "coverage": {"total_domains": 0, "geolocated_domains": 0, "total_observations": 0, "geolocated_observations": 0, "geolocated_pct": 0.0, "provenance": {"city_geoip": 0, "known_datacenter": 0, "country_only": 0, "unmapped": 0}}, "capabilities": {"country": False, "coordinates": False, "datacenter": False, "heatmap": False}, "history": {"tracked_domains_all_time": 0, "tracking_since": None}, "diagnostics": {"state": "load_failed", "message": "Destination map backend error."}}), 200
 
 
 @app.route("/")
@@ -6281,9 +7456,6 @@ def ip_view():
 
 @app.route("/health")
 def health():
-    # Intentionally minimal: no internal hostnames/IPs (e.g. the configured
-    # AdGuard URL) or runtime configuration, since this endpoint is
-    # unauthenticated by design so container/orchestrator health checks work.
     return jsonify({"ok": True, "version": APP_VERSION, "environment": RUNTIME_ENV})
 
 
@@ -6295,4 +7467,8 @@ if __name__ == "__main__":
     threading.Thread(target=_device_ip_cleanup_worker, daemon=True, name="device-ip-cleanup").start()
     threading.Thread(target=_ip_ping_worker, daemon=True, name="ip-ping").start()
     threading.Thread(target=_geoip_initial_load_worker, daemon=True, name="geoip-loader").start()
+    threading.Thread(target=_geoip_city_initial_load_worker, daemon=True, name="geoip-city-loader").start()
+    threading.Thread(target=_geoip_datacenter_initial_load_worker, daemon=True, name="geoip-datacenter-loader").start()
+    _report_scheduler.start()
+    signal.signal(signal.SIGTERM, lambda *_: (_report_scheduler.shutdown(), sys.exit(0)))
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
