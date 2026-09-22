@@ -16,6 +16,7 @@ import secrets
 import sys
 import sqlite3
 import threading
+import traceback
 import time
 from concurrent.futures import ThreadPoolExecutor
 from collections import deque
@@ -5209,17 +5210,49 @@ def api_ip_ping_status():
         return jsonify({"ok": False, "statuses": {}}), 500
 
 
+MANUAL_PING_MIN_INTERVAL_SECONDS = max(1.0, float(os.getenv("MANUAL_PING_MIN_INTERVAL_SECONDS", "3")))
+MANUAL_PING_MAX_PER_MINUTE = max(1, int(os.getenv("MANUAL_PING_MAX_PER_MINUTE", "20")))
+_manual_ping_lock = threading.Lock()
+_manual_ping_last_by_ip = {}
+_manual_ping_recent = deque()
+
+
+def _check_manual_ping_rate_limit(ip):
+    """Bound user-triggered LAN pings: a per-target cooldown (stop a single
+    button mash from re-spawning `ping` back-to-back for the same host) plus a
+    server-wide per-minute cap (stop a caller from sweeping many LAN
+    addresses quickly, effectively using this endpoint as a network scanner).
+    """
+    now = time.monotonic()
+    with _manual_ping_lock:
+        last = _manual_ping_last_by_ip.get(ip)
+        if last is not None and (now - last) < MANUAL_PING_MIN_INTERVAL_SECONDS:
+            wait = MANUAL_PING_MIN_INTERVAL_SECONDS - (now - last)
+            return False, f"Ping {ip} again in {wait:.1f}s"
+        while _manual_ping_recent and (now - _manual_ping_recent[0]) > 60.0:
+            _manual_ping_recent.popleft()
+        if len(_manual_ping_recent) >= MANUAL_PING_MAX_PER_MINUTE:
+            return False, "Too many manual pings; try again shortly"
+        _manual_ping_last_by_ip[ip] = now
+        _manual_ping_recent.append(now)
+        return True, ""
+
+
 @app.route("/api/ip/ping", methods=["POST"])
 def api_ip_ping():
     try:
         data = request.get_json(silent=True) or {}
         ip = _validate_ping_ip(data.get("ip"))
+        allowed, reason = _check_manual_ping_rate_limit(ip)
+        if not allowed:
+            return jsonify({"ok": False, "error": reason}), 429
         return jsonify({"ok": True, "result": _run_ip_ping(ip)})
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
         print("manual IP ping error:", repr(e), flush=True)
         return jsonify({"ok": False, "error": "Ping failed"}), 500
+
 
 
 def refresh_runtime_clients():
@@ -6847,6 +6880,7 @@ def api_analytics_report_pdf():
         )
     except Exception as e:
         print("analytics PDF export error:", repr(e), flush=True)
+        traceback.print_exc()
         return jsonify({"ok": False, "error": "Analytics PDF generation failed"}), 500
 
 
