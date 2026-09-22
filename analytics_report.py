@@ -416,7 +416,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(INK)
     c.drawString(MARGIN + 12, 244 * mm, "Observed destination countries")
-    max_obs = max([float(x.get("observation_count") or 0) for x in countries[:10]] or [1])
+    max_obs = max([float(x.get("observation_count") or 0) for x in countries[:10]] or [0]) or 1
     row_y = 232 * mm
     for country in countries[:10]:
         name = str(country.get("country_name") or country.get("country_code") or "Unknown")
