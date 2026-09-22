@@ -2,7 +2,7 @@ name: Build and publish Docker image
 
 on:
   push:
-    branches: ["main", "dev"]
+    branches: ["stable", "dev"]
     tags: ["v*.*.*"]
   pull_request:
     branches: ["main", "dev"]
@@ -63,8 +63,8 @@ jobs:
       - name: Select branch image tag
         id: branch_tag
         run: |
-          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
-            echo "tag=main" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF}" = "refs/heads/stable" ]; then
+            echo "tag=stable" >> "$GITHUB_OUTPUT"
           else
             echo "tag=dev" >> "$GITHUB_OUTPUT"
           fi
