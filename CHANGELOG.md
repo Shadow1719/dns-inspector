@@ -1,6 +1,42 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.5 visual Analytics PDF report
+
+- added a report-style PDF export from the currently selected Analytics range
+- PDF uses a visual executive-summary layout with KPI cards, timeline chart, status donut, ranked bars, destination context and concise interpretation cards
+- report distinguishes period activity from the current visibility snapshot instead of presenting all values as period-only statistics
+- export is bounded to the retained Analytics history and does not invoke the old deep debug collectors or create a giant in-memory diagnostic archive
+- added ReportLab 5.0.1 as the PDF generation dependency
+
+## [Unreleased] - 0.8.6-dev.4 dashboard polish + diagnostics
+
+- made Analytics the default landing view while keeping Overview and Devices one click away for deeper investigation
+- added bounded DevLog export and a safe Debug Snapshot download that does not run deep proc/GC/tracemalloc collectors or build an in-memory ZIP
+- restored RAM/Uptime data on the normal /api/state refresh payload so the header and Diagnostics panel use the same lightweight runtime snapshot
+- added pointer-based widget resizing with 4-column width snapping and persisted height snapping
+- constrained the DNS country breakdown to its widget and made the list independently scrollable
+- restored additional interactive basemap choices for the Leaflet map: OpenStreetMap Standard, OpenTopoMap, and Esri World Imagery
+- kept OpenStreetMap attribution visible and preserved the existing bounded destination/country rendering
+
+## [Unreleased] - 0.8.6-dev.3 UI + Analytics + Map
+
+- restored the Inspector BEMO shell, persistent DEV environment banner/badge/title/favicon behavior, Analytics visual system, live/historical analytics views, gauges and dashboard presentation from the 0.8.x product layer onto the clean Milestone 1 foundation
+- restored bounded analytics API reads over the existing `processed_queries`, `domains` and `devices` history without adding a second time-series store
+- restored persistent device labels and the safe observability/restart/stop controls without reintroducing the unsafe debug-bundle implementation
+- added actual observed A/AAAA destination tracking, bounded country GeoIP lookup, DNS Destinations hotspot rendering, coverage diagnostics and the bounded ephemeral DevLog; coordinate-level Destinations mode remains explicit/unavailable until a city GeoIP provider is added
+
+
 All notable DNS Inspector changes are tracked here.
+
+## [Unreleased] - 0.8.6 foundation, Milestone 1 (Issue #81)
+
+- rebuilt `app.py` directly from stable 0.7.14, removing the 16-script build-time patch chain the Dockerfile used to apply at image-build time; the 17 `build_*.py` files (16 wired into the Dockerfile plus one dead file) are deleted
+- every `sqlite3.connect()` call site (33 total) now uses `contextlib.closing()`, including `_open_trackerdb()`'s two call sites and `tracker_lookup()`'s direct TrackerDB connection, which the historical SQLite-close hotfix had left unpatched
+- reimplemented, directly and cleanly rather than via patch: the friendly device-filter label + partial/device/IP search from 0.7.14, the bounded AdGuard-status executor and SQL-pushed-down `get_recent()` filtering, the bounded single-worker enrichment queue with persisted retry cooldown, and bounded device/IP retention with periodic cleanup
+- fixed a real bug found while reimplementing device-IP retention (not present in the shipped 0.7.14 image's behavior as observed, since the historical patch's own cutoff comparison could never match): the retention cutoff is now formatted as ISO-8601 to match the `device_ips.last_seen` column instead of being compared as a raw Unix timestamp
+- added `tests/` (pytest) and `requirements-dev.txt` for the first time on this line; not executed in this hand-off's sandbox, see `docs/tasks/ISSUE-81-MILESTONE-1-FOUNDATION.md`
+- explicitly not ported yet: device-label UI, observability header/`/debug/bundle`, memory diagnostics, and IP reachability ping (feature + UI) -- see the task doc for the full list and reasoning
+- `VERSION` is set to `0.8.6-dev.1` for this test candidate; this is foundation work on an unmerged branch, not a production release
 
 ## [0.7.14]
 
