@@ -10,7 +10,7 @@ DNS Inspector is a self-hosted network-observation application. It handles poten
 - Do not publish `inspector.db`, `trackerdb.sqlite`, credentials or local network exports.
 - Supply AdGuard credentials through environment variables or the secret mechanism provided by the deployment platform.
 - Prefer exposing the UI only to trusted users or through an authenticated reverse proxy.
-- Set `DNS_INSPECTOR_ADMIN_TOKEN` to require HTTP Basic auth (any username, the token as the password) for the restart/stop, device-label and diagnostic-export/devlog endpoints. Unset by default so existing trusted-LAN/reverse-proxy deployments keep working unchanged.
+- Set `DNS_INSPECTOR_ADMIN_TOKEN` to enable browser admin authentication for the restart/stop, device-label and diagnostic-export/devlog endpoints. The UI exchanges the operator-entered token for a short-lived random HttpOnly/SameSite=Strict session cookie; the configured token is never embedded in HTML/JS, localStorage or sessionStorage. Unset by default so existing trusted-LAN/reverse-proxy deployments keep working unchanged.
 - Do not expose AdGuard administrative credentials to client-side JavaScript.
 
 ## Reporting a vulnerability
