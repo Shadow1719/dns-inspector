@@ -199,7 +199,7 @@ class ReportScheduler:
         else:
             interval_seconds = INTERVAL_SECONDS.get(interval_key, INTERVAL_SECONDS["daily"])
         last_run_ts = config.get("last_run_ts")
-        if not last_run_ts:
+        if last_run_ts is None:
             return now  # never run before -- due at the next tick, not retroactively "overdue" forever
         return float(last_run_ts) + interval_seconds
 
