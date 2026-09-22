@@ -62,7 +62,7 @@ Reviewed the actual current `app.py` (not an archived zip) against the eight pri
 
 `POST /api/system/restart`, `POST /api/system/stop`, `POST /api/device/label`, `GET /api/debug/snapshot`, `GET /api/devlog/export` and `GET /api/devlog` had no authorization at all beyond the app's general "reachable = trusted" model. Restart/stop are a real, if self-inflicted, DoS on request; the diagnostic exports bundle more than the dashboard shows (recent internal log lines, thread names, GeoIP cache state).
 
-Fix: `require_admin` (`app.py`, defined next to `app = Flask(__name__)`) gates those six routes with HTTP Basic auth, enabled only when the operator sets `DNS_INSPECTOR_ADMIN_TOKEN`. Rationale for Basic auth over a bespoke token header: the app has no session/login system and the existing dashboard JS calls these endpoints via `fetch()` with no way to attach a header without exposing it in markup; a native Basic-auth challenge lets the browser cache credentials per-origin after the first prompt with zero frontend changes. When the token is unset (default), behavior is unchanged from before this PR — this keeps the existing trusted-LAN/reverse-proxy deployment model in SECURITY.md working without forcing every existing deployment to configure a token. `GET /api/device/label` is gated too (not just the mutating `POST`) since it's the same route function.
+Fix: `require_admin` gates those six routes with a browser-compatible admin session when the operator sets `DNS_INSPECTOR_ADMIN_TOKEN`. The explicit `POST /api/admin/login` flow accepts the token only in the request body, then issues a short-lived random session cookie marked HttpOnly and SameSite=Strict (Secure when the incoming request is HTTPS or the operator explicitly enables the secure-cookie override). The configured token is never rendered into HTML/JS, stored in browser storage, or logged. State-changing protected requests also require the app's custom same-origin fetch marker as CSRF defense. When the token is unset (default), behavior is unchanged from before this PR — the existing trusted-LAN/reverse-proxy model remains intact. `GET /api/device/label` is gated too because it shares the same protected route.
 
 `/api/observability` and the `observability` block embedded in `/api/state` were deliberately **not** gated: `/api/state` already exposes the same uptime/RAM/PID/thread-count telemetry unauthenticated (and the dashboard header renders it live), so gating only the standalone endpoint would be security theater — an unauthenticated caller would just read `/api/state` instead. This data (uptime, RSS, thread count, DB size) is operational telemetry, not a credential or LAN topology disclosure.
 
@@ -113,6 +113,10 @@ Recommendation for a follow-up PR (not implemented here): add a non-root `USER`,
 ### 8. Regression tests — added
 
 `tests/test_security_hardening.py`: admin-gate default-open behavior, admin-gate enforcement/acceptance/rejection with a configured token, `/health` no longer disclosing `AGH_URL`, presence and content of the security headers, and both the per-target and global LAN-ping rate limits. `tests/conftest.py` gained an `admin_app_module` fixture (same as `app_module`, plus `DNS_INSPECTOR_ADMIN_TOKEN` set before import, since `app.py` reads its env-derived constants at import time).
+
+### Browser admin session follow-up — 2026-09-22
+
+The initial Basic-auth implementation was replaced before merge because the dashboard's existing `fetch()` calls could not reliably complete a native Basic-auth challenge. The current implementation uses an explicit token login endpoint, an in-memory bounded session table, an HttpOnly/SameSite=Strict cookie with expiry, login rate limiting, logout invalidation, and a custom-header CSRF check for state-changing admin requests. Regression tests cover the browser session flow, cookie flags, expiry, logout, CSRF rejection and login throttling.
 
 ### Not run in this session
 
