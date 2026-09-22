@@ -2,6 +2,7 @@ import array
 import bisect
 import csv
 import hashlib
+import hmac
 import io
 import ipaddress
 import json
@@ -19,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import deque
 from contextlib import closing
 from datetime import datetime, timezone, timedelta
+from functools import wraps
 from urllib.parse import quote
 
 import requests
@@ -81,10 +83,76 @@ IP_PING_INTERVAL_HOURS = max(1.0, float(os.getenv("IP_PING_INTERVAL_HOURS", "4")
 IP_PING_INITIAL_DELAY_SECONDS = max(10, int(os.getenv("IP_PING_INITIAL_DELAY_SECONDS", "60")))
 IP_PING_TIMEOUT_SECONDS = max(1, int(os.getenv("IP_PING_TIMEOUT_SECONDS", "1")))
 NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/").rstrip("/") + "/"
+ADMIN_TOKEN = os.getenv("DNS_INSPECTOR_ADMIN_TOKEN", "").strip()
 
 app = Flask(__name__)
 db_lock = threading.Lock()
 session = requests.Session()
+
+# Lifecycle control (restart/stop), device labeling and the diagnostic
+# export/search endpoints are the highest-impact surface in the app: they can
+# take the service down, mutate stored data or bundle internal state for
+# download. DNS Inspector has no user accounts, so when an operator sets
+# DNS_INSPECTOR_ADMIN_TOKEN we gate that surface with HTTP Basic auth (browser
+# native, credentials cached per-origin after the first prompt, no frontend
+# changes needed) instead of inventing a bespoke session/login system. With no
+# token configured the app keeps its existing trusted-LAN/reverse-proxy trust
+# model documented in SECURITY.md.
+ADMIN_REALM = "DNS Inspector admin"
+
+
+def _admin_authorized(req):
+    if not ADMIN_TOKEN:
+        return True
+    auth = req.authorization
+    if auth is None or not auth.password:
+        return False
+    return hmac.compare_digest(auth.password, ADMIN_TOKEN)
+
+
+def require_admin(view):
+    @wraps(view)
+    def wrapper(*args, **kwargs):
+        if _admin_authorized(request):
+            return view(*args, **kwargs)
+        resp = jsonify({"ok": False, "error": "Admin authorization required"})
+        resp.status_code = 401
+        resp.headers["WWW-Authenticate"] = f'Basic realm="{ADMIN_REALM}"'
+        return resp
+    return wrapper
+
+
+_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "geolocation=(), microphone=(), camera=(), payment=(), usb=()",
+    # script-src/style-src keep 'unsafe-inline' because the UI is a single
+    # server-rendered template with inline <script>/<style> blocks and no
+    # nonce plumbing; see docs/SECURITY_AUDIT_0.8.6.md for the tracked
+    # follow-up to remove it. Every directive below only allow-lists hosts the
+    # UI actually loads resources from (unpkg for Leaflet, the OSM/OpenTopoMap/
+    # Esri tile hosts the map renderer requests) -- see static/leaflet-map.js.
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "img-src 'self' data: https://tile.openstreetmap.org https://*.tile.opentopomap.org https://server.arcgisonline.com; "
+        "font-src 'self' data:; "
+        "connect-src 'self'; "
+        "object-src 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'; "
+        "frame-ancestors 'none'"
+    ),
+}
+
+
+@app.after_request
+def _apply_security_headers(response):
+    for name, value in _SECURITY_HEADERS.items():
+        response.headers.setdefault(name, value)
+    return response
 
 # Bounded in-memory operational event log for the DEV/Diagnostics UI.
 # It is ephemeral and cannot grow with uptime.
@@ -4192,11 +4260,42 @@ def api_ip_ping_status():
         return jsonify({"ok": False, "statuses": {}}), 500
 
 
+MANUAL_PING_MIN_INTERVAL_SECONDS = max(1.0, float(os.getenv("MANUAL_PING_MIN_INTERVAL_SECONDS", "3")))
+MANUAL_PING_MAX_PER_MINUTE = max(1, int(os.getenv("MANUAL_PING_MAX_PER_MINUTE", "20")))
+_manual_ping_lock = threading.Lock()
+_manual_ping_last_by_ip = {}
+_manual_ping_recent = deque()
+
+
+def _check_manual_ping_rate_limit(ip):
+    """Bound user-triggered LAN pings: a per-target cooldown (stop a single
+    button mash from re-spawning `ping` back-to-back for the same host) plus a
+    server-wide per-minute cap (stop a caller from sweeping many LAN
+    addresses quickly, effectively using this endpoint as a network scanner).
+    """
+    now = time.monotonic()
+    with _manual_ping_lock:
+        last = _manual_ping_last_by_ip.get(ip)
+        if last is not None and (now - last) < MANUAL_PING_MIN_INTERVAL_SECONDS:
+            wait = MANUAL_PING_MIN_INTERVAL_SECONDS - (now - last)
+            return False, f"Ping {ip} again in {wait:.1f}s"
+        while _manual_ping_recent and (now - _manual_ping_recent[0]) > 60.0:
+            _manual_ping_recent.popleft()
+        if len(_manual_ping_recent) >= MANUAL_PING_MAX_PER_MINUTE:
+            return False, "Too many manual pings; try again shortly"
+        _manual_ping_last_by_ip[ip] = now
+        _manual_ping_recent.append(now)
+        return True, ""
+
+
 @app.route("/api/ip/ping", methods=["POST"])
 def api_ip_ping():
     try:
         data = request.get_json(silent=True) or {}
         ip = _validate_ping_ip(data.get("ip"))
+        allowed, reason = _check_manual_ping_rate_limit(ip)
+        if not allowed:
+            return jsonify({"ok": False, "error": reason}), 429
         return jsonify({"ok": True, "result": _run_ip_ping(ip)})
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
@@ -5644,6 +5743,7 @@ def api_analytics():
         return jsonify({"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS, "series": {"queries": empty, "new_domains": empty, "new_devices": empty}, "status_breakdown": {}, "recent_domains": [], "recent_devices": [], "active_devices": 0, "total_devices": 0, "new_domains_24h": 0, "live": {"updated": utcnow(), "window_seconds": ANALYTICS_LIVE_WINDOW_SECONDS, "queries_in_window": 0}, "error": str(e)}), 200
 
 @app.route("/api/device/label", methods=["GET", "POST"])
+@require_admin
 def api_device_label():
     try:
         with db_lock, closing(sqlite3.connect(DB_PATH)) as c:
@@ -5697,6 +5797,7 @@ def _perform_self_restart():
         print(f"Self-restart failed: {e!r}",flush=True)
         with _lifecycle_lock:_restart_in_progress=False
 @app.route("/api/system/restart",methods=["POST"])
+@require_admin
 def api_system_restart():
     global _restart_in_progress; payload=request.get_json(silent=True) or {}
     if payload.get("confirm") is not True:return jsonify({"ok":False,"error":'restart requires {"confirm": true}'}),400
@@ -5712,6 +5813,7 @@ def _perform_self_stop():
         print(f"Self-stop failed: {e!r}",flush=True)
         with _lifecycle_lock:_stop_in_progress=False
 @app.route("/api/system/stop",methods=["POST"])
+@require_admin
 def api_system_stop():
     global _stop_in_progress; payload=request.get_json(silent=True) or {}
     if payload.get("confirm") is not True:return jsonify({"ok":False,"error":'stop requires {"confirm": true}'}),400
@@ -5752,6 +5854,7 @@ def _debug_snapshot_payload():
 
 
 @app.route("/api/devlog/export")
+@require_admin
 def api_devlog_export():
     with _devlog_lock:
         events = list(_devlog)[-500:]
@@ -5765,12 +5868,14 @@ def api_devlog_export():
 
 
 @app.route("/api/debug/snapshot")
+@require_admin
 def api_debug_snapshot():
     payload = json.dumps(_debug_snapshot_payload(), ensure_ascii=False, indent=2, sort_keys=True).encode("utf-8")
     return send_file(io.BytesIO(payload), mimetype="application/json", as_attachment=True, download_name=f"dns-inspector-debug-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json")
 
 
 @app.route("/api/devlog")
+@require_admin
 def api_devlog():
     level_filter = request.args.get("level", "").strip().upper()
     query = request.args.get("q", "").strip().lower()
@@ -5908,7 +6013,10 @@ def ip_view():
 
 @app.route("/health")
 def health():
-    return jsonify({"ok": True, "version": APP_VERSION, "environment": RUNTIME_ENV, "adguard": AGH_URL, "trackerdb": trackerdb_ready(), "poll_seconds": POLL_SECONDS, "ui_refresh_seconds": UI_REFRESH_SECONDS})
+    # Intentionally minimal: no internal hostnames/IPs (e.g. the configured
+    # AdGuard URL) or runtime configuration, since this endpoint is
+    # unauthenticated by design so container/orchestrator health checks work.
+    return jsonify({"ok": True, "version": APP_VERSION, "environment": RUNTIME_ENV})
 
 
 if __name__ == "__main__":
