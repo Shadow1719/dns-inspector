@@ -1,35 +1,29 @@
 """Regression coverage for the 0.8.6 security hardening pass.
 
-Covers: admin-token authorization for lifecycle/mutating/diagnostic-export
-endpoints, /health no longer disclosing internal configuration, LAN ping
-rate limiting, and the security response headers.
+Covers browser-compatible admin authentication, session/CSRF behavior,
+production information disclosure, LAN ping rate limiting, and security
+response headers.
 """
 
-import base64
 
-
-def _basic_auth_header(password, username="admin"):
-    token = base64.b64encode(f"{username}:{password}".encode()).decode()
-    return {"Authorization": f"Basic {token}"}
-
-
-def test_admin_endpoints_are_open_by_default(app_module):
-    # No DNS_INSPECTOR_ADMIN_TOKEN configured: preserves the existing
-    # trusted-LAN/reverse-proxy trust model documented in SECURITY.md.
+def test_admin_auth_is_disabled_and_endpoints_stay_open_by_default(app_module):
     app_module.init_db()
     client = app_module.app.test_client()
+
+    status = client.get("/api/admin/status")
+    assert status.status_code == 200
+    assert status.get_json() == {"ok": True, "enabled": False, "authenticated": False}
+    assert client.post("/api/admin/login", json={"token": "anything"}).status_code == 404
 
     assert client.get("/api/devlog").status_code == 200
     assert client.get("/api/devlog/export").status_code == 200
     assert client.get("/api/debug/snapshot").status_code == 200
     assert client.get("/api/device/label").status_code == 200
-    # No "confirm" in the body: rejected by the endpoint's own validation,
-    # not the (absent) auth gate.
     assert client.post("/api/system/restart", json={}).status_code == 400
     assert client.post("/api/system/stop", json={}).status_code == 400
 
 
-def test_admin_endpoints_require_token_when_configured(admin_app_module):
+def test_admin_endpoints_require_session_when_token_configured(admin_app_module):
     admin_app_module.init_db()
     client = admin_app_module.app.test_client()
 
@@ -44,29 +38,93 @@ def test_admin_endpoints_require_token_when_configured(admin_app_module):
     )
     for label, resp in checks:
         assert resp.status_code == 401, label
-        assert resp.headers.get("WWW-Authenticate", "").startswith("Basic"), label
+        assert resp.get_json()["error"] == "Admin authentication required"
 
 
-def test_admin_endpoints_accept_correct_token(admin_app_module):
+def test_admin_login_issues_secure_http_only_session(admin_app_module):
     admin_app_module.init_db()
     client = admin_app_module.app.test_client()
-    headers = _basic_auth_header("test-admin-token")
 
-    assert client.get("/api/devlog", headers=headers).status_code == 200
-    assert client.get("/api/debug/snapshot", headers=headers).status_code == 200
-    assert client.get("/api/device/label", headers=headers).status_code == 200
-    # Correct auth reaches the endpoint's own validation logic (missing
-    # "confirm"), not the dangerous restart/stop thread.
+    wrong = client.post("/api/admin/login", json={"token": "not-the-token"})
+    assert wrong.status_code == 401
+    assert "Set-Cookie" not in wrong.headers
+
+    login = client.post("/api/admin/login", json={"token": "test-admin-token"})
+    assert login.status_code == 200
+    payload = login.get_json()
+    assert payload["ok"] is True
+    assert payload["authenticated"] is True
+    assert payload["expires_in"] == admin_app_module.ADMIN_SESSION_TTL_SECONDS
+    assert "test-admin-token" not in login.get_data(as_text=True)
+
+    cookie = login.headers["Set-Cookie"]
+    assert "dns_inspector_admin=" in cookie
+    assert "HttpOnly" in cookie
+    assert "SameSite=Strict" in cookie
+    assert "Path=/" in cookie
+    assert "Max-Age=" in cookie
+    assert "test-admin-token" not in cookie
+
+    status = client.get("/api/admin/status")
+    assert status.get_json()["authenticated"] is True
+    assert client.get("/api/devlog").status_code == 200
+
+
+def test_state_changing_admin_endpoints_require_csrf_header(admin_app_module):
+    admin_app_module.init_db()
+    client = admin_app_module.app.test_client()
+    login = client.post("/api/admin/login", json={"token": "test-admin-token"})
+    assert login.status_code == 200
+
+    no_csrf = client.post("/api/device/label", json={"device_key": "x", "label": "y"})
+    assert no_csrf.status_code == 403
+    assert no_csrf.get_json()["error"] == "CSRF validation failed"
+
+    headers = {"X-DNS-Inspector-Requested-With": "fetch"}
+    invalid_payload = client.post("/api/device/label", json={}, headers=headers)
+    assert invalid_payload.status_code == 400
+
+    # Restart/stop are reached only after both the session and CSRF checks.
     assert client.post("/api/system/restart", json={}, headers=headers).status_code == 400
     assert client.post("/api/system/stop", json={}, headers=headers).status_code == 400
 
 
-def test_admin_endpoints_reject_wrong_token(admin_app_module):
+def test_admin_logout_invalidates_session(admin_app_module):
     admin_app_module.init_db()
     client = admin_app_module.app.test_client()
-    headers = _basic_auth_header("not-the-token")
+    assert client.post("/api/admin/login", json={"token": "test-admin-token"}).status_code == 200
 
-    assert client.get("/api/devlog", headers=headers).status_code == 401
+    logout = client.post("/api/admin/logout", headers={"X-DNS-Inspector-Requested-With": "fetch"})
+    assert logout.status_code == 200
+    assert logout.get_json()["authenticated"] is False
+    assert client.get("/api/devlog").status_code == 401
+    assert client.get("/api/admin/status").get_json()["authenticated"] is False
+
+
+def test_expired_admin_session_is_rejected(admin_app_module, monkeypatch):
+    admin_app_module.init_db()
+    client = admin_app_module.app.test_client()
+    assert client.post("/api/admin/login", json={"token": "test-admin-token"}).status_code == 200
+
+    now = admin_app_module.time.time()
+    monkeypatch.setattr(
+        admin_app_module.time,
+        "time",
+        lambda: now + admin_app_module.ADMIN_SESSION_TTL_SECONDS + 1,
+    )
+    assert client.get("/api/devlog").status_code == 401
+
+
+def test_admin_login_is_rate_limited(admin_app_module, monkeypatch):
+    monkeypatch.setattr(admin_app_module, "ADMIN_LOGIN_MAX_ATTEMPTS", 2)
+    admin_app_module.init_db()
+    client = admin_app_module.app.test_client()
+
+    assert client.post("/api/admin/login", json={"token": "bad-1"}).status_code == 401
+    assert client.post("/api/admin/login", json={"token": "bad-2"}).status_code == 401
+    third = client.post("/api/admin/login", json={"token": "bad-3"})
+    assert third.status_code == 429
+    assert third.headers.get("Retry-After")
 
 
 def test_health_does_not_disclose_internal_configuration(monkeypatch, app_module):
@@ -90,8 +148,6 @@ def test_security_headers_present_on_responses(app_module):
     assert "default-src 'self'" in csp
     assert "object-src 'none'" in csp
     assert "frame-ancestors 'none'" in csp
-    # The UI loads Leaflet from unpkg and map tiles from these hosts
-    # (static/leaflet-map.js); the policy must allow exactly those, not '*'.
     assert "https://unpkg.com" in csp
     assert "https://tile.openstreetmap.org" in csp
 
@@ -110,7 +166,6 @@ def test_manual_ping_is_rate_limited_per_target(app_module, monkeypatch):
     assert second.status_code == 429
     assert second.get_json()["ok"] is False
 
-    # A different target is unaffected by the first target's cooldown.
     other = client.post("/api/ip/ping", json={"ip": "192.168.1.112"})
     assert other.status_code == 200
 
