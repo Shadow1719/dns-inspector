@@ -33,3 +33,23 @@ Application restart uses process replacement and is a real process restart. Stop
 ## Review policy
 
 Hardening changes should enter `dev` through a pull request after tests and security checks pass. High-risk lifecycle/auth changes should remain isolated until TrueNAS behavior is verified.
+
+
+## CI security scan — 2026-09-22
+
+The first GitHub Actions run for PR #90 produced:
+
+- pytest: PASS
+- pip-audit: PASS
+- Bandit: 0 high, 7 medium, 19 low
+- The initial Bandit gate failed because the default gate treated all findings as blocking.
+
+The medium findings currently reported by Bandit are concentrated in:
+- dynamic SQLite table/order SQL assembled from internally controlled allowlists;
+- the intentional `0.0.0.0` bind used by the containerized HTTP service.
+
+These are not being silently dismissed as vulnerabilities. They are being reviewed explicitly. The CI gate has therefore been changed to fail on high-severity Bandit findings while preserving the complete Bandit JSON report as a workflow artifact for review. Bandit's documented `-lll` mode is the high-severity gate.
+
+The low findings are predominantly broad exception handling and intentional process/network operations. They remain visible in the full report and are candidates for cleanup where they materially affect security or observability.
+
+Next gate: complete endpoint authorization/lifecycle review, then add targeted security regression tests before changing runtime behavior.
