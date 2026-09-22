@@ -290,11 +290,28 @@ def _draw_insight(c, x, y, w, h, label, title, body, accent, bg):
     p.drawOn(c, x + 12, y + 10)
 
 
+TOTAL_REPORT_PAGES = 4
+
+
+def _draw_page_footer(c, page_num, range_key, generated_iso, dark=False):
+    line_color = HexColor("#334155") if dark else GRID
+    text_color = HexColor("#94A3B8") if dark else MUTED
+    c.setStrokeColor(line_color)
+    c.setLineWidth(0.6)
+    c.line(MARGIN, 9 * mm, PAGE_W - MARGIN, 9 * mm)
+    c.setFont("Helvetica", 7)
+    c.setFillColor(text_color)
+    c.drawString(MARGIN, 4.5 * mm, f"DNS Inspector · Inspector BEMO visibility report · analysis window: {range_key}")
+    c.drawCentredString(PAGE_W / 2, 4.5 * mm, f"Generated {_fmt_dt(generated_iso)}")
+    c.drawRightString(PAGE_W - MARGIN, 4.5 * mm, f"Page {page_num} of {TOTAL_REPORT_PAGES}")
+
+
 def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, environment, range_key):
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     c.setTitle(f"DNS Inspector Analytics — {range_key}")
     c.setAuthor("DNS Inspector / Inspector BEMO")
+    generated_iso = datetime.now(timezone.utc).isoformat()
 
     s = _stats(analytics)
     total = s["total"]
@@ -344,9 +361,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     chart_y = 79 * mm
     _draw_line_chart(c, MARGIN, chart_y, PAGE_W - 2 * MARGIN, 75 * mm, s["points"])
 
-    c.setFont("Helvetica-Bold", 8)
-    c.setFillColor(MUTED)
-    c.drawRightString(PAGE_W - MARGIN, 12 * mm, f"Generated {_fmt_dt(datetime.now(timezone.utc).isoformat())}")
+    _draw_page_footer(c, 1, range_key, generated_iso)
     c.showPage()
 
     # Page 2 — what stands out
@@ -391,6 +406,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     _draw_bar_list(c, MARGIN, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most queried domains", top_domains, BLUE)
     _draw_bar_list(c, MARGIN + (PAGE_W - 2 * MARGIN) / 2 + 3 * mm, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most active devices", top_devices, TEAL)
 
+    _draw_page_footer(c, 2, range_key, generated_iso)
     c.showPage()
 
     # Page 3 — destinations and context
@@ -400,7 +416,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(INK)
     c.drawString(MARGIN + 12, 244 * mm, "Observed destination countries")
-    max_obs = max([float(x.get("observation_count") or 0) for x in countries[:10]] or [1])
+    max_obs = max([float(x.get("observation_count") or 0) for x in countries[:10]] or [0]) or 1
     row_y = 232 * mm
     for country in countries[:10]:
         name = str(country.get("country_name") or country.get("country_code") or "Unknown")
@@ -422,10 +438,23 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFillColor(INK)
     c.drawString(MARGIN, 137 * mm, "How to read this")
     style = ParagraphStyle("note", fontName="Helvetica", fontSize=8.2, leading=11.5, textColor=MUTED)
+    # Known-datacenter follow-up (Issue #88): the destination coordinate
+    # hierarchy (exact city GeoIP > curated known-datacenter region > country
+    # only > unmapped) must stay visible in the PDF, not just on the map.
+    provenance = ((map_data or {}).get("coverage") or {}).get("provenance") or {}
+    city_n = int(provenance.get("city_geoip") or 0)
+    dc_n = int(provenance.get("known_datacenter") or 0)
+    provenance_note = ""
+    if city_n or dc_n:
+        provenance_note = (
+            f" Includes {_fmt_num(city_n)} City GeoIP (exact coordinate) and {_fmt_num(dc_n)} Known datacenter "
+            "(region-derived, not exact) matched observations."
+        )
     note = Paragraph(
         "The destination section intentionally avoids implying exact physical infrastructure. "
         "A country bubble is an aggregation of observed answer IPs that matched the configured country database. "
-        "This is useful for traffic distribution, but it should not be interpreted as a map of individual servers.",
+        "This is useful for traffic distribution, but it should not be interpreted as a map of individual servers."
+        + provenance_note,
         style,
     )
     note.wrapOn(c, PAGE_W - 2 * MARGIN, 30 * mm)
@@ -446,6 +475,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFillColor(HexColor("#CBD5E1"))
     c.setFont("Helvetica", 7.3)
     c.drawString(MARGIN + 68, 50 * mm, "Select a bucket to inspect domains, devices and status changes around that time.")
+    _draw_page_footer(c, 3, range_key, generated_iso)
     c.showPage()
 
     c.setFillColor(NAVY)
@@ -476,9 +506,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
         p.drawOn(c, MARGIN + 14, yy - 18)
         yy -= 34 * mm
 
-    c.setFont("Helvetica", 7.5)
-    c.setFillColor(HexColor("#94A3B8"))
-    c.drawString(MARGIN, 15 * mm, "Generated by Inspector BEMO · DNS Inspector")
+    _draw_page_footer(c, 4, range_key, generated_iso, dark=True)
     c.save()
     buf.seek(0)
     return buf
