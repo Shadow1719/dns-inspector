@@ -20,6 +20,9 @@ def app_module(tmp_path, monkeypatch):
     monkeypatch.setenv("TRACKERDB_PATH", str(tmp_path / "trackerdb.sqlite"))
     monkeypatch.setenv("AGH_URL", "")
     monkeypatch.setenv("NEIGHBORS_PATH", str(tmp_path / "neighbors.txt"))
+    monkeypatch.delenv("DNS_INSPECTOR_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("DNS_INSPECTOR_ADMIN_COOKIE_SECURE", raising=False)
+    monkeypatch.delenv("DNS_INSPECTOR_ADMIN_SESSION_TTL_SECONDS", raising=False)
 
     sys.modules.pop("app", None)
     import app as module
