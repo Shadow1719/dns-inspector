@@ -232,10 +232,23 @@ _SECURITY_HEADERS = {
 }
 
 
+_ADMIN_PROTECTED_PATHS = {
+    "/api/system/restart",
+    "/api/system/stop",
+    "/api/device/label",
+    "/api/debug/snapshot",
+    "/api/devlog/export",
+    "/api/devlog",
+}
+
+
 @app.after_request
 def _apply_security_headers(response):
     for name, value in _SECURITY_HEADERS.items():
         response.headers.setdefault(name, value)
+    if ADMIN_TOKEN and request.path in _ADMIN_PROTECTED_PATHS:
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
     return response
 
 # Bounded in-memory operational event log for the DEV/Diagnostics UI.
