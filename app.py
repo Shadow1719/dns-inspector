@@ -13,6 +13,7 @@ import socket
 import signal
 import subprocess
 import sys
+import secrets
 import sqlite3
 import threading
 import time
@@ -86,39 +87,122 @@ NETIFY_URL = os.getenv("NETIFY_URL", "https://www.netify.ai/resources/hostnames/
 ADMIN_TOKEN = os.getenv("DNS_INSPECTOR_ADMIN_TOKEN", "").strip()
 
 app = Flask(__name__)
+
+
+@app.context_processor
+def _security_template_context():
+    return {"admin_auth_enabled": bool(ADMIN_TOKEN)}
+
+
 db_lock = threading.Lock()
 session = requests.Session()
 
-# Lifecycle control (restart/stop), device labeling and the diagnostic
-# export/search endpoints are the highest-impact surface in the app: they can
-# take the service down, mutate stored data or bundle internal state for
-# download. DNS Inspector has no user accounts, so when an operator sets
-# DNS_INSPECTOR_ADMIN_TOKEN we gate that surface with HTTP Basic auth (browser
-# native, credentials cached per-origin after the first prompt, no frontend
-# changes needed) instead of inventing a bespoke session/login system. With no
-# token configured the app keeps its existing trusted-LAN/reverse-proxy trust
-# model documented in SECURITY.md.
-ADMIN_REALM = "DNS Inspector admin"
+# Administrative lifecycle, mutable-label and diagnostic endpoints can be
+# protected without breaking existing trusted-LAN deployments. When
+# DNS_INSPECTOR_ADMIN_TOKEN is set, the browser performs an explicit token
+# login and receives a short-lived, random HttpOnly/SameSite session cookie.
+# The configured token is never rendered into HTML/JS, logged, or stored in
+# browser storage. When the token is unset, the existing trusted-LAN behavior
+# remains unchanged.
+ADMIN_SESSION_COOKIE = "dns_inspector_admin"
+ADMIN_SESSION_TTL_SECONDS = max(300, int(os.getenv("DNS_INSPECTOR_ADMIN_SESSION_TTL_SECONDS", "28800")))
+ADMIN_SESSION_MAX = max(8, int(os.getenv("DNS_INSPECTOR_ADMIN_SESSION_MAX", "128")))
+ADMIN_LOGIN_WINDOW_SECONDS = max(30, int(os.getenv("DNS_INSPECTOR_ADMIN_LOGIN_WINDOW_SECONDS", "300")))
+ADMIN_LOGIN_MAX_ATTEMPTS = max(1, int(os.getenv("DNS_INSPECTOR_ADMIN_LOGIN_MAX_ATTEMPTS", "5")))
+ADMIN_COOKIE_SECURE_OVERRIDE = os.getenv("DNS_INSPECTOR_ADMIN_COOKIE_SECURE", "").strip().lower() in {"1", "true", "yes", "on"}
+ADMIN_TOKEN_FINGERPRINT = hashlib.sha256(ADMIN_TOKEN.encode("utf-8")).hexdigest() if ADMIN_TOKEN else ""
+_admin_sessions = {}
+_admin_sessions_lock = threading.Lock()
+_admin_login_attempts = deque(maxlen=512)
+_admin_login_lock = threading.Lock()
 
 
-def _admin_authorized(req):
+def _admin_cookie_secure():
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",", 1)[0].strip().lower()
+    return bool(request.is_secure or forwarded_proto == "https" or ADMIN_COOKIE_SECURE_OVERRIDE)
+
+
+def _prune_admin_sessions(now=None):
+    now = time.time() if now is None else now
+    expired = [key for key, record in _admin_sessions.items() if record[1] <= now]
+    for key in expired:
+        _admin_sessions.pop(key, None)
+    if len(_admin_sessions) <= ADMIN_SESSION_MAX:
+        return
+    oldest = sorted(_admin_sessions.items(), key=lambda item: item[1][0])[: len(_admin_sessions) - ADMIN_SESSION_MAX]
+    for key, _ in oldest:
+        _admin_sessions.pop(key, None)
+
+
+def _issue_admin_session():
+    raw = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _admin_sessions_lock:
+        _prune_admin_sessions(now)
+        _admin_sessions[digest] = (now, now + ADMIN_SESSION_TTL_SECONDS, ADMIN_TOKEN_FINGERPRINT)
+    return raw
+
+
+def _admin_session_valid(req):
     if not ADMIN_TOKEN:
         return True
-    auth = req.authorization
-    if auth is None or not auth.password:
+    raw = req.cookies.get(ADMIN_SESSION_COOKIE, "")
+    if not raw:
         return False
-    return hmac.compare_digest(auth.password, ADMIN_TOKEN)
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    now = time.time()
+    with _admin_sessions_lock:
+        record = _admin_sessions.get(digest)
+        if record is None:
+            return False
+        if record[1] <= now or not hmac.compare_digest(record[2], ADMIN_TOKEN_FINGERPRINT):
+            _admin_sessions.pop(digest, None)
+            return False
+        return True
+
+
+def _admin_login_rate_limited(client_id):
+    now = time.monotonic()
+    cutoff = now - ADMIN_LOGIN_WINDOW_SECONDS
+    with _admin_login_lock:
+        while _admin_login_attempts and _admin_login_attempts[0][1] <= cutoff:
+            _admin_login_attempts.popleft()
+        attempts = sum(1 for address, _ in _admin_login_attempts if address == client_id)
+        if attempts >= ADMIN_LOGIN_MAX_ATTEMPTS:
+            retry_after = max(1, int((_admin_login_attempts[0][1] + ADMIN_LOGIN_WINDOW_SECONDS) - now))
+            return True, retry_after
+        _admin_login_attempts.append((client_id, now))
+    return False, 0
+
+
+def _csrf_request_valid(req):
+    if req.method in {"GET", "HEAD", "OPTIONS"}:
+        return True
+    # Same-origin browser fetch() sends this custom header; a cross-site HTML
+    # form cannot set it, and a cross-origin fetch would require CORS before
+    # the browser could send it. This is an additional CSRF defense alongside
+    # the Strict SameSite session cookie.
+    return hmac.compare_digest(req.headers.get("X-DNS-Inspector-Requested-With", ""), "fetch")
+
+
+def _json_no_store(payload, status=200):
+    resp = jsonify(payload)
+    resp.status_code = status
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 def require_admin(view):
     @wraps(view)
     def wrapper(*args, **kwargs):
-        if _admin_authorized(request):
+        if not ADMIN_TOKEN:
             return view(*args, **kwargs)
-        resp = jsonify({"ok": False, "error": "Admin authorization required"})
-        resp.status_code = 401
-        resp.headers["WWW-Authenticate"] = f'Basic realm="{ADMIN_REALM}"'
-        return resp
+        if not _admin_session_valid(request):
+            return _json_no_store({"ok": False, "error": "Admin authentication required"}, 401)
+        if not _csrf_request_valid(request):
+            return _json_no_store({"ok": False, "error": "CSRF validation failed"}, 403)
+        return view(*args, **kwargs)
     return wrapper
 
 
@@ -1013,6 +1097,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
   <div class="settings-head"><h2>Settings</h2><button type="button" class="settings-close" id="settings-close-btn" aria-label="Close settings">✕</button></div>
   <div class="settings-body">
     <nav class="settings-nav" role="tablist" aria-label="Settings sections">
+      {% if admin_auth_enabled %}<button type="button" class="settings-nav-btn" data-settings-tab="security" role="tab">Security</button>{% endif %}
       <button type="button" class="settings-nav-btn active" data-settings-tab="appearance" role="tab">Appearance</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="dashboard" role="tab">Dashboard</button>
       <button type="button" class="settings-nav-btn" data-settings-tab="monitoring" role="tab">Monitoring</button>
@@ -1021,6 +1106,22 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
       <button type="button" class="settings-nav-btn" data-settings-tab="about" role="tab">About</button>
     </nav>
     <div class="settings-panels">
+      {% if admin_auth_enabled %}
+      <section class="settings-section" data-settings-panel="security">
+        <h3>Admin security</h3>
+        <div class="settings-kv">
+          <b>Session</b><span id="admin-auth-status">Checking…</span>
+        </div>
+        <div class="settings-row" style="margin-top:14px">
+          <div class="settings-row-label"><b>Admin token</b><small>Creates a short-lived HttpOnly session cookie. The token is not stored in page source, localStorage or sessionStorage.</small></div>
+          <div class="settings-control">
+            <input class="settings-select" type="password" id="admin-token-input" autocomplete="off" placeholder="Admin token">
+            <button type="button" id="admin-login-btn">Sign in</button>
+            <button type="button" id="admin-logout-btn">Sign out</button>
+          </div>
+        </div>
+      </section>
+      {% endif %}
       <section class="settings-section active" data-settings-panel="appearance">
         <h3>Theme</h3>
         <div class="settings-row"><div class="settings-row-label"><b>Color theme</b><small>Applies across Overview, Devices, DNS views and Analytics</small></div>
@@ -1122,6 +1223,111 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
    to reference names (like `refreshMs`, `renderLiveHero`) that later
    blocks define, as long as nothing here calls them before those blocks
    have executed. */
+const ADMIN_AUTH_ENABLED = {{ 'true' if admin_auth_enabled else 'false' }};
+let adminSessionActive = false;
+let adminLoginPromise = null;
+
+function setAdminAuthStatus(text, ok){
+  const el = document.getElementById('admin-auth-status');
+  if (!el) return;
+  el.textContent = text;
+  el.dataset.state = ok ? 'ok' : 'error';
+}
+
+async function refreshAdminAuthStatus(){
+  if (!ADMIN_AUTH_ENABLED) return false;
+  try{
+    const r = await fetch('/api/admin/status', {cache:'no-store', credentials:'same-origin'});
+    const d = await r.json();
+    adminSessionActive = d.authenticated === true;
+    setAdminAuthStatus(adminSessionActive ? 'Authenticated' : 'Not authenticated', adminSessionActive);
+    return adminSessionActive;
+  }catch(e){
+    adminSessionActive = false;
+    setAdminAuthStatus('Status unavailable', false);
+    return false;
+  }
+}
+
+async function loginAdminToken(token){
+  const value = String(token || '');
+  if (!value) return false;
+  try{
+    const r = await fetch('/api/admin/login', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      credentials:'same-origin',
+      cache:'no-store',
+      body:JSON.stringify({token:value}),
+    });
+    const d = await r.json().catch(()=>({}));
+    if (!r.ok || !d.ok){
+      setAdminAuthStatus(r.status === 429 ? 'Too many attempts — try again later' : 'Authentication failed', false);
+      return false;
+    }
+    adminSessionActive = true;
+    setAdminAuthStatus('Authenticated', true);
+    return true;
+  }catch(e){
+    setAdminAuthStatus('Authentication request failed', false);
+    return false;
+  }
+}
+
+async function ensureAdminAuth(){
+  if (!ADMIN_AUTH_ENABLED || adminSessionActive) return true;
+  if (adminLoginPromise) return adminLoginPromise;
+  adminLoginPromise = (async()=>{
+    const statusOk = await refreshAdminAuthStatus();
+    if (statusOk) return true;
+    const token = window.prompt('DNS Inspector admin token:');
+    if (token === null || token === '') return false;
+    return loginAdminToken(token);
+  })().finally(()=>{ adminLoginPromise = null; });
+  return adminLoginPromise;
+}
+
+async function adminFetch(url, options = {}){
+  if (!ADMIN_AUTH_ENABLED) return fetch(url, options);
+  const method = String(options.method || 'GET').toUpperCase();
+  const headers = new Headers(options.headers || {});
+  if (!['GET','HEAD','OPTIONS'].includes(method)) headers.set('X-DNS-Inspector-Requested-With', 'fetch');
+  const requestOptions = Object.assign({}, options, {credentials:'same-origin', headers});
+  let r = await fetch(url, requestOptions);
+  if (r.status === 401){
+    adminSessionActive = false;
+    const authenticated = await ensureAdminAuth();
+    if (!authenticated) return r;
+    r = await fetch(url, requestOptions);
+  }
+  return r;
+}
+
+document.getElementById('admin-login-btn')?.addEventListener('click', async()=>{
+  const input = document.getElementById('admin-token-input');
+  const token = input?.value || '';
+  if (input) input.value = '';
+  const ok = await loginAdminToken(token);
+  if (ok) input?.blur();
+});
+
+document.getElementById('admin-logout-btn')?.addEventListener('click', async()=>{
+  try{
+    const r = await fetch('/api/admin/logout', {
+      method:'POST',
+      headers:{'X-DNS-Inspector-Requested-With':'fetch'},
+      credentials:'same-origin',
+      cache:'no-store',
+    });
+    adminSessionActive = false;
+    setAdminAuthStatus(r.ok ? 'Signed out' : 'Sign-out failed', false);
+  }catch(e){
+    setAdminAuthStatus('Sign-out failed', false);
+  }
+});
+
+if (ADMIN_AUTH_ENABLED) refreshAdminAuthStatus();
+
 const PREF_KEY = 'dnsInspectorPrefs';
 const ACCENT_PRESETS = {teal:'#2dd4c8', blue:'#58a6ff', violet:'#a371f7', amber:'#e3b341', pink:'#ec4899', slate:'#94a3b8'};
 const REFRESH_OPTIONS = [5, 10, 15, 30, 60];
@@ -1560,8 +1766,8 @@ function bindIpPingButtons(){document.querySelectorAll('[data-ping-button]').for
 function injectIpPingControls(){decorateDeviceIps();loadIpPingStatuses();}
 function placeDeviceLabelsInColumn(){const body=document.getElementById('clients-body');const table=body?.closest('table');if(!body||!table)return;table.classList.add('device-table');const head=table.tHead?.rows?.[0];if(head&&!head.querySelector('.device-label-head')){const th=document.createElement('th');th.className='device-label-head';th.textContent='Label';head.insertBefore(th,head.cells[1]||null)}body.querySelectorAll('tr').forEach(row=>{if(row.querySelector('.device-label-cell'))return;const label=row.querySelector('.device-label-inline');if(!label)return;const td=document.createElement('td');td.className='device-label-cell';td.appendChild(label);row.insertBefore(td,row.cells[1]||null)});}
 
-async function loadDeviceLabels(){try{const r=await fetch('/api/device/label',{cache:'no-store'});if(!r.ok)return;const data=await r.json();window.deviceLabels=data.labels||{};}catch(e){console.debug('device labels load failed',e)}}
-async function editDeviceLabel(button){const key=button?.dataset?.deviceKey||'';if(!key)return;const current=button.dataset.deviceLabel||'';const value=window.prompt('Device label',current);if(value===null)return;const label=value.trim().slice(0,80);try{const r=await fetch('/api/device/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_key:key,label})});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'Save failed');window.deviceLabels[key]=label;renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();}catch(e){alert('Could not save device label: '+e.message)}}
+async function loadDeviceLabels(){try{const r=await adminFetch('/api/device/label',{cache:'no-store'});if(!r.ok)return;const data=await r.json();window.deviceLabels=data.labels||{};}catch(e){console.debug('device labels load failed',e)}}
+async function editDeviceLabel(button){const key=button?.dataset?.deviceKey||'';if(!key)return;const current=button.dataset.deviceLabel||'';const value=window.prompt('Device label',current);if(value===null)return;const label=value.trim().slice(0,80);try{const r=await adminFetch('/api/device/label',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device_key:key,label})});const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||'Save failed');window.deviceLabels[key]=label;renderClients(window.__lastClients||[]);renderRecent(window.__lastRecent||[]);bindDeviceLabelButtons();}catch(e){alert('Could not save device label: '+e.message)}}
 function bindDeviceLabelButtons(){document.querySelectorAll('.device-label-btn').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>editDeviceLabel(b));})}
 function renderClients(rows,force){ window.__lastClients=rows||[]; if(!force&&!document.getElementById('tab-devices')?.classList.contains('active'))return; document.getElementById('clients-body').innerHTML = (rows||[]).map(deviceRow).join(''); bindDeviceLabelButtons(); placeDeviceLabelsInColumn(); injectIpPingControls(); reapplyTableSorts(); }
 let tableSortState = {recent:{key:null,dir:1}, clients:{key:null,dir:1}};
@@ -3066,7 +3272,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   async function refreshDevLogPanel(){
     const el = document.getElementById('devlog-list'); if (!el) return;
     try{
-      const r = await fetch('/api/devlog', {cache:'no-store'});
+      const r = await adminFetch('/api/devlog', {cache:'no-store'});
       const d = await r.json();
       const rows = d.entries || [];
       el.innerHTML = rows.length ? rows.slice(-100).reverse().map(x => {
@@ -3080,7 +3286,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
 
   async function downloadBoundedArtifact(url){
     try{
-      const r = await fetch(url, {cache:'no-store'});
+      const r = await adminFetch(url, {cache:'no-store'});
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const blob = await r.blob();
       const disposition = r.headers.get('Content-Disposition') || '';
@@ -3102,7 +3308,6 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   function openDialog(){
     if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open','');
     refreshDiagnosticsPanel();
-    refreshDevLogPanel();
     refreshSystemPanel();
     refreshAboutUptime();
   }
@@ -3115,6 +3320,8 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   dialog.querySelectorAll('.settings-nav-btn').forEach(btn => btn.addEventListener('click', () => {
     dialog.querySelectorAll('.settings-nav-btn').forEach(b => b.classList.toggle('active', b === btn));
     dialog.querySelectorAll('.settings-section').forEach(s => s.classList.toggle('active', s.dataset.settingsPanel === btn.dataset.settingsTab));
+    if (btn.dataset.settingsTab === 'diagnostics') refreshDevLogPanel();
+    if (btn.dataset.settingsTab === 'security') refreshAdminAuthStatus();
   }));
 
   const accentGroup = document.getElementById('accent-choice-group');
@@ -3251,7 +3458,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       btn.textContent = 'Restarting…';
       if (note) note.textContent = 'Restarting DNS Inspector — this page will reload automatically once it is back.';
       try{
-        const r = await fetch('/api/system/restart', {
+        const r = await adminFetch('/api/system/restart', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({confirm: true}),
@@ -3322,7 +3529,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       btn.textContent = 'Stopping…';
       if (note) note.textContent = 'Stopping DNS Inspector…';
       try{
-        const r = await fetch('/api/system/stop', {
+        const r = await adminFetch('/api/system/stop', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({confirm: true}),
@@ -5741,6 +5948,54 @@ def api_analytics():
         print("analytics error:", repr(e), flush=True)
         empty = {"range": range_key, "label": "", "bucket_seconds": 0, "points": []}
         return jsonify({"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS, "series": {"queries": empty, "new_domains": empty, "new_devices": empty}, "status_breakdown": {}, "recent_domains": [], "recent_devices": [], "active_devices": 0, "total_devices": 0, "new_domains_24h": 0, "live": {"updated": utcnow(), "window_seconds": ANALYTICS_LIVE_WINDOW_SECONDS, "queries_in_window": 0}, "error": str(e)}), 200
+
+@app.post("/api/admin/login")
+def api_admin_login():
+    if not ADMIN_TOKEN:
+        return _json_no_store({"ok": False, "enabled": False, "error": "Admin authentication is not enabled"}, 404)
+
+    limited, retry_after = _admin_login_rate_limited(request.remote_addr or "unknown")
+    if limited:
+        resp = _json_no_store({"ok": False, "error": "Too many login attempts"}, 429)
+        resp.headers["Retry-After"] = str(retry_after)
+        return resp
+
+    data = request.get_json(silent=True) or {}
+    supplied = data.get("token")
+    if not isinstance(supplied, str) or not hmac.compare_digest(supplied, ADMIN_TOKEN):
+        return _json_no_store({"ok": False, "error": "Invalid admin token"}, 401)
+
+    raw = _issue_admin_session()
+    resp = _json_no_store({"ok": True, "authenticated": True, "expires_in": ADMIN_SESSION_TTL_SECONDS})
+    resp.set_cookie(
+        ADMIN_SESSION_COOKIE,
+        raw,
+        max_age=ADMIN_SESSION_TTL_SECONDS,
+        httponly=True,
+        secure=_admin_cookie_secure(),
+        samesite="Strict",
+        path="/",
+    )
+    return resp
+
+
+@app.get("/api/admin/status")
+def api_admin_status():
+    authenticated = _admin_session_valid(request) if ADMIN_TOKEN else False
+    return _json_no_store({"ok": True, "enabled": bool(ADMIN_TOKEN), "authenticated": authenticated})
+
+
+@app.post("/api/admin/logout")
+def api_admin_logout():
+    raw = request.cookies.get(ADMIN_SESSION_COOKIE, "")
+    if raw:
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        with _admin_sessions_lock:
+            _admin_sessions.pop(digest, None)
+    resp = _json_no_store({"ok": True, "authenticated": False})
+    resp.delete_cookie(ADMIN_SESSION_COOKIE, path="/")
+    return resp
+
 
 @app.route("/api/device/label", methods=["GET", "POST"])
 @require_admin
