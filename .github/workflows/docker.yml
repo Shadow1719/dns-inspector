@@ -60,13 +60,22 @@ jobs:
         id: version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
+      - name: Select branch image tag
+        id: branch_tag
+        run: |
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            echo "tag=main" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=dev" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.branch_tag.outputs.tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
           labels: |
@@ -81,12 +90,8 @@ jobs:
       - name: Verify the published image starts and answers /health
         run: |
           set -e
-          docker build -t dns-inspector:ci \
-            --build-arg APP_VERSION=${{ steps.version.outputs.version }} .
-          docker run -d --name dns-inspector-ci -p 8080:8080 \
-            -e DB_PATH=/data/inspector.db \
-            -e TRACKERDB_URL=http://127.0.0.1:9/trackerdb.sql \
-            dns-inspector:ci
+          docker build -t dns-inspector:ci             --build-arg APP_VERSION=${{ steps.version.outputs.version }} .
+          docker run -d --name dns-inspector-ci -p 8080:8080             -e DB_PATH=/data/inspector.db             -e TRACKERDB_URL=http://127.0.0.1:9/trackerdb.sql             dns-inspector:ci
           trap 'docker logs dns-inspector-ci 2>/dev/null || true; docker rm -f dns-inspector-ci 2>/dev/null || true' EXIT
           for i in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:8080/health; then
@@ -105,7 +110,4 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           zip -qr "dns-inspector-${VERSION}.zip" . -x '.git/*' 'dns-inspector-*.zip'
-          gh release create "${GITHUB_REF_NAME}" "dns-inspector-${VERSION}.zip" \
-            --title "DNS Inspector ${VERSION}" \
-            --generate-notes \
-            --latest
+          gh release create "${GITHUB_REF_NAME}" "dns-inspector-${VERSION}.zip"             --title "DNS Inspector ${VERSION}"             --generate-notes             --latest
