@@ -3451,9 +3451,38 @@ function mapSyncLegendGradient(){
   const css = stops.map(s => `hsl(${s.h},${s.s}%,${s.l}%)`).join(',');
   el.style.background = `linear-gradient(90deg,${css})`;
 }
+/* Issue #88: a roving tabindex across map markers. Without this, every
+   marker sits in the natural tab order at once, so a keyboard user has to
+   Tab through dozens of bubbles (one per country/cluster) just to reach the
+   controls below the map. Exactly one marker is tabbable at a time; arrow
+   keys move both focus and which marker is tabbable, matching the standard
+   WAI-ARIA pattern for a set of interactive graphical elements. */
+function mapSetupEntityKeyboardNav(el){
+  const entities = Array.from(el.querySelectorAll('.map-entity'));
+  if (!entities.length) return;
+  const activeIndex = Math.max(0, entities.findIndex(node => node.getAttribute('aria-pressed') === 'true'));
+  entities.forEach((node, i) => node.setAttribute('tabindex', i === activeIndex ? '0' : '-1'));
+  const focusEntity = (i) => {
+    entities.forEach((node, j) => node.setAttribute('tabindex', j === i ? '0' : '-1'));
+    entities[i].focus();
+  };
+  entities.forEach((node, i) => {
+    node.addEventListener('keydown', (e) => {
+      let next = null;
+      if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (i + 1) % entities.length;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (i - 1 + entities.length) % entities.length;
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = entities.length - 1;
+      if (next === null) return;
+      e.preventDefault();
+      focusEntity(next);
+    });
+  });
+}
 function mapFinishRender(el){
   mapAttachInteraction(el);
   mapSyncLegendGradient();
+  mapSetupEntityKeyboardNav(el);
   const wrap = el.querySelector('.destination-map-wrap');
   if (wrap) mapEnsureTileLayer(wrap);
 }
