@@ -20,6 +20,26 @@ def app_module(tmp_path, monkeypatch):
     monkeypatch.setenv("TRACKERDB_PATH", str(tmp_path / "trackerdb.sqlite"))
     monkeypatch.setenv("AGH_URL", "")
     monkeypatch.setenv("NEIGHBORS_PATH", str(tmp_path / "neighbors.txt"))
+    monkeypatch.delenv("DNS_INSPECTOR_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("DNS_INSPECTOR_ADMIN_COOKIE_SECURE", raising=False)
+    monkeypatch.delenv("DNS_INSPECTOR_ADMIN_SESSION_TTL_SECONDS", raising=False)
+
+    sys.modules.pop("app", None)
+    import app as module
+
+    return module
+
+
+@pytest.fixture
+def admin_app_module(tmp_path, monkeypatch):
+    """Same as app_module, but with an admin token configured so the
+    lifecycle/diagnostic-export authorization gate is active.
+    """
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "inspector.db"))
+    monkeypatch.setenv("TRACKERDB_PATH", str(tmp_path / "trackerdb.sqlite"))
+    monkeypatch.setenv("AGH_URL", "")
+    monkeypatch.setenv("NEIGHBORS_PATH", str(tmp_path / "neighbors.txt"))
+    monkeypatch.setenv("DNS_INSPECTOR_ADMIN_TOKEN", "test-admin-token")
 
     sys.modules.pop("app", None)
     import app as module
