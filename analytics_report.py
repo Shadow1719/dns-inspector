@@ -210,15 +210,23 @@ def _draw_donut(c, x, y, w, h, breakdown):
         c.setLineWidth(14)
         c.circle(cx, cy, radius, fill=0, stroke=1)
     else:
-        start = 90
-        for key, color in mapping:
-            val = float(breakdown.get(key) or 0)
-            sweep = 360 * val / total
-            c.setFillColor(color)
-            c.setStrokeColor(WHITE)
-            c.setLineWidth(1)
-            c.wedge(cx - radius, cy - radius, cx + radius, cy + radius, start, sweep, fill=1, stroke=1)
-            start -= sweep
+        segments = [(key, color, float(breakdown.get(key) or 0)) for key, color in mapping if float(breakdown.get(key) or 0) > 0]
+        if len(segments) == 1:
+            # ReportLab's bezierArc divides by sin(halfAngle); a full 360° wedge
+            # therefore fails. Render a single-category donut as a ring instead.
+            _, color, _ = segments[0]
+            c.setStrokeColor(color)
+            c.setLineWidth(14)
+            c.circle(cx, cy, radius, fill=0, stroke=1)
+        else:
+            start = 90
+            for key, color, val in segments:
+                sweep = 360 * val / total
+                c.setFillColor(color)
+                c.setStrokeColor(WHITE)
+                c.setLineWidth(1)
+                c.wedge(cx - radius, cy - radius, cx + radius, cy + radius, start, sweep, fill=1, stroke=1)
+                start -= sweep
     c.setFillColor(WHITE)
     c.circle(cx, cy, 27, fill=1, stroke=0)
     c.setFillColor(INK)
