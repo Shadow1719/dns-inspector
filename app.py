@@ -4169,6 +4169,45 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   // the entire dashboard downward. Responsive renderers below use the
   // current widget/container dimensions and cached data to adapt in-place.
 
+  // Charts and maps react to the widget's own container width, not
+  // merely the browser viewport. ResizeObserver uses the already-fetched
+  // Analytics payload so a drag/resize never creates a new API request.
+  let responsiveRefreshTimer = null;
+  const responsiveWidthCache = new WeakMap();
+
+  function scheduleResponsiveAnalyticsRefresh(){
+    if (responsiveRefreshTimer) cancelAnimationFrame(responsiveRefreshTimer);
+    responsiveRefreshTimer = requestAnimationFrame(() => {
+      responsiveRefreshTimer = null;
+      const payload = window.__lastAnalyticsPayload;
+      if (!payload) return;
+      renderVisibilityReport(payload);
+      renderQueryVolumeChart(payload);
+      renderMetricVisual('chart-new-domains', payload.series?.new_domains?.points, '--sem-ok', 'New domains');
+      renderMetricVisual('chart-new-devices', payload.series?.new_devices?.points, '--sem-ok', 'New devices');
+      renderStatusBreakdown(payload.status_breakdown);
+      renderRecentActivity(payload.recent_domains, payload.recent_devices);
+      renderInstrumentGauges(payload);
+      if (typeof window.dnsInspectorResizeMap === 'function') window.dnsInspectorResizeMap();
+    });
+  }
+
+  if (typeof ResizeObserver !== 'undefined'){
+    const resizeObserver = new ResizeObserver(entries => {
+      let changed = false;
+      entries.forEach(entry => {
+        const width = Math.round(entry.contentRect?.width || 0);
+        const previous = responsiveWidthCache.get(entry.target);
+        if (previous == null || Math.abs(previous - width) >= 2){
+          responsiveWidthCache.set(entry.target, width);
+          changed = true;
+        }
+      });
+      if (changed) scheduleResponsiveAnalyticsRefresh();
+    });
+    gridEl.querySelectorAll('.grid-stack-item').forEach(el => resizeObserver.observe(el));
+  }
+
   // GridStack's own 'change' event is how pointer-driven drag/resize (the
   // one interaction not already funneled through a button handler above)
   // gets captured and persisted; the guard skips this module's own
