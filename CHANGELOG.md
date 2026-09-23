@@ -1,5 +1,42 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.9 GridStack.js-backed Analytics dashboard grid
+
+- replaced the Analytics widget grid's custom drag/resize implementation with [GridStack.js](https://gridstack.github.io/gridstack.js/) (pinned to the 10.x major line via `https://unpkg.com/gridstack@10/...`, matching the existing Leaflet CDN-include pattern): real grid-cell drag/resize with collision handling/reflow (no overlapping widgets), snap-to-cell placement, and a persisted per-browser `x/y/w/h` layout (localStorage key unchanged: `dnsInspectorDashboardLayout`) that restores after a refresh
+- Customize mode, named presets (Default/Monitoring/Compact/Investigation), per-widget hide/show (now a real grid membership change via `removeWidget`/`addWidget`, not just a CSS toggle, so hiding a widget lets others reflow into its place) and a keyboard/touch-accessible Move-earlier/Move-later fallback are all preserved from the previous system, just re-implemented on top of GridStack instead of a hand-rolled CSS-grid + pointer-drag engine
+- a saved pre-0.8.6-dev.9 layout (the old `order` + named width/height system) is not migrated -- it resets to the default layout once, since the underlying grid model changed from an ordered list to real coordinates; nothing else (theme, other prefs, report/scheduler config) is affected
+- no change to any Analytics/reporting data, route, or to the destination map/PDF/scheduler functionality
+- bumped candidate to `0.8.6-dev.9`
+
+## [Unreleased] - 0.8.6-dev.8 custom analytics window, standalone Assessment tab, map/list accessibility (Issue #88 follow-up)
+
+- added a configurable custom From/To analytics window: `parse_custom_analytics_window()` validates and bounds an arbitrary period (clamped to "now" and to the retained analytics-history floor, tiered bucket size, raw `processed_queries` when the span fits the existing 7d raw window and the bounded hourly `analytics_buckets` aggregate otherwise); `/api/analytics`, `/api/analytics/report.pdf` and `/api/analytics/interval` all accept `range=custom&from=&to=`, and the selected window is reflected in the dashboard UI, the PDF cover/footer, the export filename (`...-custom-YYYYMMDD-YYYYMMDD-*.pdf`) and the JSON `custom_window` metadata
+- added a standalone **Assessment** tab: a 10-section Visibility Assessment (executive summary, activity timeline, status/classification, recently active domains/devices, new discoveries, destination geography, coverage/provenance, report delivery/scheduling, methodology & limitations), each a native `<details>`/`<summary>` for progressive disclosure; every section reads the existing `/api/analytics`, `/api/analytics/map` and `/api/reports/status` payloads -- no new or fabricated data source
+- added roving-tabindex Up/Down/Home/End keyboard navigation to the destination map's country breakdown list, `role="status"`/`aria-live="polite"` on the map status banner (both the SVG-fallback and Leaflet renderers), and an `alt` label on destination cluster markers (country markers already had one)
+- bumped candidate to `0.8.6-dev.8`
+
+## [Unreleased] - 0.8.6-dev.7 live widget merge + known-datacenter provenance (Issue #88 follow-up)
+
+- merged the "Live activity" widget (live rate, gauge, sparkline, Allowed/Blocked/Active devices/New domains tiles) into the "Visibility report" widget instead of shipping two adjacent Analytics widgets, so the first widget on the dashboard is always a single, always-populated, useful surface rather than a separate one that could look inert
+- added a second, strictly lower-priority destination coordinate layer for **known datacenter/cloud/hosting provider** ranges (`GEOIP_DATACENTER_DB_PATH`, documented in `docs/GEOIP.md`): only consulted once the real city/coordinate GeoIP database has already missed for an IP, never overrides a real city match, and coordinates are always region-derived (e.g. a cloud region's published location), never presented as an exact server address
+- every observed destination IP now resolves to exactly one provenance tier -- `city_geoip`, `known_datacenter`, `country_only` or `unmapped` -- exposed via `/api/analytics/map`'s `coverage.provenance` counts; `country_only` still contributes to the Countries aggregate but, consistent with the existing rule, is never placed as a Destinations-mode bubble
+- the destination map (marker labels, click-to-investigate detail card, legend), the in-app destination coverage note and the PDF export's destination section all label which provenance tier a given point/count came from, instead of treating every destination as equally precise
+- bumped candidate to `0.8.6-dev.7`
+
+## [Unreleased] - 0.8.6-dev.6 ShadowDNS-style visibility report, interactive charts, scheduling (Issue #88)
+
+- fixed the Docker image not actually containing `analytics_report.py` (only `app.py`/`VERSION`/`static` were `COPY`'d), which would crash the container at import time; also copies the new `report_scheduler.py` and pre-creates `/data/reports`
+- added a bounded, hourly-aggregated `analytics_buckets` history table (independent of the 100k-row `processed_queries` cap, retained up to `ANALYTICS_HISTORY_RETENTION_HOURS` / 90 days by default, pruned every tick) backing new 30d/90d Analytics ranges
+- added real click/tap-to-investigate on the "DNS activity over time" chart: the selected bucket stays highlighted (crosshair + marker) across polling refreshes, and `/api/analytics/interval` returns the exact query count, status mix, new domains/devices and top domains/devices for that interval -- computed from real per-query attribution (processed_queries now also retains `domain`/`device_key`/`status` for its existing bounded rows) while still in the raw retention window, and honestly falls back to the bounded hourly aggregate (clearly labeled) once it has rolled off; domains/devices in the popover link to the existing search/device views
+- added a "Visibility report" executive-overview widget to Analytics: headline KPIs, peak-interval/blocked-share/new-domains observations, all derived from the same payload the charts render (no separate fetch, no invented findings)
+- added an optional, separate coordinate-capable GeoIP CSV (`GEOIP_CITY_DB_PATH`, documented in `docs/GEOIP.md`) so Destinations map mode can show real per-location coordinates; still never falls back to a country centroid, and Destinations mode stays honestly disabled when it isn't configured
+- added destination route/arc visualization: a subtle geodesic (great-circle) line from an explicitly operator-configured origin (`/api/settings/map-origin` -- never derived/guessed) to each destination cluster, toggled independently, labeled as a geographic/visual path rather than the real network route, and automatically disabled without both a real origin and real coordinate data
+- added a "Dark / NOC" Leaflet basemap layer alongside OpenStreetMap/OpenTopoMap/Esri Satellite, with correct attribution
+- added scheduled report generation: one bounded background worker (explicit start/next-due/execute/shutdown, never overlapping, resumes correctly after a restart from a persisted last-run timestamp), configurable hourly/daily/weekly/custom cadence and report window, safe storage (configurable base directory + validated relative filename only, path traversal rejected, bounded retention with oldest-file pruning), optional SMTP delivery (password only from the `SMTP_PASSWORD` env var, never stored/returned by the API; a failed send never blocks the local save), and "Export now" / "Save report now" / "Send test email" controls, all reusing the exact same report generator as the PDF endpoint
+- scheduler/report state (enabled, next/last run, last result, last saved file, last email result) is now visible in Diagnostics
+- PDF export: every page now has a consistent footer (page N of 4, analysis window, generated timestamp)
+- bumped candidate to `0.8.6-dev.6`
+
 ## [Unreleased] - 0.8.6-dev.5 visual Analytics PDF report
 
 - added a report-style PDF export from the currently selected Analytics range

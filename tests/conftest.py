@@ -20,6 +20,8 @@ def app_module(tmp_path, monkeypatch):
     monkeypatch.setenv("TRACKERDB_PATH", str(tmp_path / "trackerdb.sqlite"))
     monkeypatch.setenv("AGH_URL", "")
     monkeypatch.setenv("NEIGHBORS_PATH", str(tmp_path / "neighbors.txt"))
+    # Scheduled reports use a throwaway test directory.
+    monkeypatch.setenv("REPORTS_DIR", str(tmp_path / "reports"))
     monkeypatch.delenv("DNS_INSPECTOR_ADMIN_TOKEN", raising=False)
     monkeypatch.delenv("DNS_INSPECTOR_ADMIN_COOKIE_SECURE", raising=False)
     monkeypatch.delenv("DNS_INSPECTOR_ADMIN_SESSION_TTL_SECONDS", raising=False)
