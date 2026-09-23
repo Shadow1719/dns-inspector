@@ -250,19 +250,22 @@ def test_analytics_dashboard_is_a_real_gridstack_grid(monkeypatch, tmp_path):
 
 
 def test_analytics_dashboard_resize_keeps_neighbors_stable_and_refreshes_content(monkeypatch, tmp_path):
-    """Dashboard resizing should lock neighboring widgets and re-render from
-    the cached Analytics payload without forcing another API request."""
+    """Dashboard resizing should stop collision-driven neighbor reflow and
+    re-render from the cached Analytics payload as the widget changes width."""
     app = _fresh_app(monkeypatch, tmp_path, "development")
     body = app.HTML
-    assert "grid.on('resizestart'" in body
-    assert "locked: true" in body
-    assert "grid.on('resizestop'" in body
+    assert "preventCollision: true" in body
+    assert "grid.on('resizestart'" not in body
+    assert "locked: true" not in body
     assert "scheduleResponsiveAnalyticsRefresh()" in body
     assert "new ResizeObserver" in body
     assert "window.dnsInspectorResizeMap" in body
     assert "const w=Math.max(280, Math.round(el.clientWidth || 600))" in body
-    assert "@container dashboard-widget (max-width: 760px)" in body
-    assert "@container dashboard-widget (max-width: 520px)" in body
+    assert "const LAYOUT_KEY = 'dnsInspectorDashboardLayoutV2';" in body
+    assert "@container dashboard-widget (max-width: 900px)" in body
+    assert "@container dashboard-widget (max-width: 620px)" in body
+    assert 'gs-min-h="5"' in body
+    assert "overflow:visible" in body
 
 
 def test_analytics_dashboard_layout_is_persisted_and_restorable(monkeypatch, tmp_path):
