@@ -181,19 +181,20 @@ def test_analytics_tab_has_custom_range_controls(monkeypatch, tmp_path):
     assert "analyticsRangeQueryString()" in body
 
 
-def test_assessment_tab_exists_with_ten_sections_and_reuses_existing_data(monkeypatch, tmp_path):
-    """Issue #88 item 2: a standalone Assessment tab with 10 progressive-
-    disclosure sections, built only from data the Analytics tab/PDF export
-    already expose -- no new/fabricated data source."""
+def test_assessment_is_reachable_from_analytics_without_a_top_level_tab(monkeypatch, tmp_path):
+    """The Assessment remains a full report panel, but Analytics is its
+    navigation entry point rather than exposing a separate top-level tab."""
     app = _fresh_app(monkeypatch, tmp_path, "development")
     body = app.HTML
-    assert 'data-tab="assessment"' in body
+    assert 'data-tab="assessment"' not in body
     assert 'id="tab-assessment"' in body
+    assert 'Open full assessment' in body
+    assert 'onclick="setActiveTab(\'assessment\')"' in body
+    assert 'Back to Analytics' in body
     assert body.count('class="assessment-section"') == 10
     assessment_start = body.index('id="tab-assessment"')
     assessment_end = body.index("</section>", assessment_start)
     assessment_html = body[assessment_start:assessment_end]
-    # progressive disclosure: native <details>/<summary>, fully keyboard operable without extra JS
     assert assessment_html.count("<details") == 10
     assert assessment_html.count("<summary>") == 10
     for slot in (
@@ -201,7 +202,6 @@ def test_assessment_tab_exists_with_ten_sections_and_reuses_existing_data(monkey
         "assessment-top-devices", "assessment-new", "assessment-geo", "assessment-coverage", "assessment-reports",
     ):
         assert f'id="{slot}"' in assessment_html
-    # No fabricated data source -- only the existing analytics/map/reports endpoints.
     assert "fetch(`/api/analytics?" in body
     assert "fetch('/api/analytics/map'" in body
     assert "fetch('/api/reports/status'" in body
