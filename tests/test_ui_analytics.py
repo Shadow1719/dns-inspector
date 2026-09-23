@@ -105,7 +105,8 @@ def test_dns_activity_chart_is_wired_for_click_to_investigate(monkeypatch, tmp_p
     assert "function selectIntervalBucket(" in body
     assert "function renderIntervalDetail(" in body
     assert "onPointClick: (point) => selectIntervalBucket(point, data.range)" in body
-    assert "/api/analytics/interval?range=" in body
+    assert "/api/analytics/interval?" in body
+    assert "analyticsRangeQueryString()" in body
 
 
 def test_analytics_pdf_export_is_a_real_pdf(monkeypatch, tmp_path):
