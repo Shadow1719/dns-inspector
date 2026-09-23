@@ -107,6 +107,8 @@ def _security_template_context():
 
 db_lock = threading.Lock()
 session = requests.Session()
+_devlog_lock = threading.Lock()
+_devlog = deque(maxlen=500)
 
 # Administrative lifecycle, mutable-label and diagnostic endpoints can be
 # protected without breaking existing trusted-LAN deployments. When
@@ -261,16 +263,6 @@ def _apply_security_headers(response):
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["Pragma"] = "no-cache"
     return response
-
-# Bounded in-memory operational event log for the DEV/Diagnostics UI.
-# It is ephemeral and cannot grow with uptime.
-db_lock = threading.Lock()
-session = requests.Session()
-
-# Bounded in-memory operational event log for the DEV/Diagnostics UI.
-# It is ephemeral and cannot grow with uptime.
-_devlog_lock = threading.Lock()
-_devlog = deque(maxlen=500)
 
 def log_event(level, message, **context):
     entry = {
