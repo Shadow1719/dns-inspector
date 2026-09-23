@@ -103,9 +103,10 @@ def test_map_origin_not_derived_until_explicitly_set(app_module):
 
 def test_leaflet_map_has_dark_noc_basemap_with_attribution():
     js = (Path(__file__).resolve().parents[1] / "static" / "leaflet-map.js").read_text(encoding="utf-8")
-    assert "Dark / NOC" in js
-    assert "carto.com/attributions" in js
-    assert "openstreetmap.org/copyright" in js
+    assert "Dark / NOC (Esri)" in js
+    assert "World_Dark_Gray_Base" in js
+    assert "server.arcgisonline.com" in js
+    assert "openstreetmap.org" in js
 
 
 def test_leaflet_map_route_arcs_are_geodesic_and_labeled_as_visual_only():
