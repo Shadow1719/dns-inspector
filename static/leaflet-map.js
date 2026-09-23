@@ -43,20 +43,16 @@
   // not just a load-time check.
   const legacyRenderDestinationMap = typeof window.renderDestinationMap === "function" ? window.renderDestinationMap : null;
 
+  // Do not use tile.openstreetmap.org directly. The OSM raster service is
+  // community-funded and may block application traffic that does not satisfy
+  // its tile policy. DNS Inspector uses an OSM-derived CARTO basemap instead.
   const BASEMAP_DEFINITIONS = {
-    "OpenStreetMap": {
-      url: "https://tile.openstreetmap.org/{z}/{x}/{y}.png",
+    "Dark / NOC (CARTO)": {
+      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
       options: {
         maxZoom: 19,
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-      },
-    },
-    "OpenTopoMap": {
-      url: "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
-      options: {
-        maxZoom: 17,
-        subdomains: ["a", "b", "c"],
-        attribution: 'Kartendaten: &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a>-Mitwirkende, SRTM | Kartendarstellung: &copy; <a href="https://opentopomap.org/" target="_blank" rel="noopener noreferrer">OpenTopoMap</a> (CC-BY-SA)',
+        subdomains: "abcd",
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
       },
     },
     "Satellite (Esri)": {
@@ -64,14 +60,6 @@
       options: {
         maxZoom: 19,
         attribution: 'Tiles &copy; Esri &mdash; Source: Esri, Maxar, Earthstar Geographics, and the GIS User Community',
-      },
-    },
-    "Dark / NOC": {
-      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
-      options: {
-        maxZoom: 19,
-        subdomains: "abcd",
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
       },
     },
   };
