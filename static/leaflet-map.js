@@ -43,14 +43,13 @@
   // not just a load-time check.
   const legacyRenderDestinationMap = typeof window.renderDestinationMap === "function" ? window.renderDestinationMap : null;
 
-  // DNS Inspector uses an OSM-derived CARTO basemap instead of the direct OSM raster endpoint.
+  // Use public Esri raster basemaps. CARTO now requires an API key for external raster requests.
   const BASEMAP_DEFINITIONS = {
-    "Dark / NOC (CARTO)": {
-      url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+    "Dark / NOC (Esri)": {
+      url: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
       options: {
-        maxZoom: 19,
-        subdomains: "abcd",
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions" target="_blank" rel="noopener noreferrer">CARTO</a>',
+        maxZoom: 16,
+        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, HERE, Garmin, FAO, NOAA, USGS, &copy; OpenStreetMap contributors, and the GIS User Community',
       },
     },
     "Satellite (Esri)": {
@@ -95,7 +94,7 @@
       Object.entries(BASEMAP_DEFINITIONS).forEach(([label, def]) => {
         baseLayers[label] = L.tileLayer(def.url, def.options);
       });
-      baseLayers["Dark / NOC (CARTO)"].addTo(map);
+      baseLayers["Dark / NOC (Esri)"].addTo(map);
       L.control.layers(baseLayers, null, { collapsed: true, position: "topright" }).addTo(map);
       state.baseLayers = baseLayers;
 
