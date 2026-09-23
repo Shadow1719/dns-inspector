@@ -4169,16 +4169,16 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   // the entire dashboard downward. Responsive renderers below use the
   // current widget/container dimensions and cached data to adapt in-place.
 
-  // Charts and maps react to the widget's own container width, not
-  // merely the browser viewport. ResizeObserver uses the already-fetched
-  // Analytics payload so a drag/resize never creates a new API request.
-  let responsiveRefreshTimer = null;
-  const responsiveWidthCache = new WeakMap();
+  // GridStack already reports each live resize step. Use that signal rather
+  // than observing the widget box itself: observing the box with ResizeObserver
+  // can form a layout/render feedback loop and freeze the browser tab.
+  let responsiveRefreshPending = false;
 
   function scheduleResponsiveAnalyticsRefresh(){
-    if (responsiveRefreshTimer) cancelAnimationFrame(responsiveRefreshTimer);
-    responsiveRefreshTimer = requestAnimationFrame(() => {
-      responsiveRefreshTimer = null;
+    if (responsiveRefreshPending) return;
+    responsiveRefreshPending = true;
+    requestAnimationFrame(() => {
+      responsiveRefreshPending = false;
       const payload = window.__lastAnalyticsPayload;
       if (!payload) return;
       renderVisibilityReport(payload);
@@ -4192,29 +4192,13 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     });
   }
 
-  if (typeof ResizeObserver !== 'undefined'){
-    const resizeObserver = new ResizeObserver(entries => {
-      let changed = false;
-      entries.forEach(entry => {
-        const width = Math.round(entry.contentRect?.width || 0);
-        const previous = responsiveWidthCache.get(entry.target);
-        if (previous == null || Math.abs(previous - width) >= 2){
-          responsiveWidthCache.set(entry.target, width);
-          changed = true;
-        }
-      });
-      if (changed) scheduleResponsiveAnalyticsRefresh();
-    });
-    gridEl.querySelectorAll('.grid-stack-item').forEach(el => resizeObserver.observe(el));
-  }
+  grid.on('resize', () => scheduleResponsiveAnalyticsRefresh());
 
-  // GridStack's own 'change' event is how pointer-driven drag/resize (the
-  // one interaction not already funneled through a button handler above)
-  // gets captured and persisted; the guard skips this module's own
-  // programmatic writes so switching a preset doesn't immediately relabel
-  // itself 'custom'.
+  // GridStack's own 'change' event captures final pointer-driven drag/resize
+  // geometry; the guard skips this module's own programmatic writes so
+  // switching a preset doesn't immediately relabel itself 'custom'.
   grid.on('change', () => {
-    if (applyingProgrammatically || suppressLayoutPersistence) return;
+    if (applyingProgrammatically) return;
     layout.preset = 'custom';
     syncLayoutFromGrid();
     saveLayout();
