@@ -2036,7 +2036,7 @@ function renderInstrumentGauges(data){
   </div>
   <div class="dash-hidden-tray" id="dash-hidden-tray"><span class="dash-hidden-tray-label">Hidden widgets:</span><div class="dash-hidden-tray-list" id="dash-hidden-tray-list"></div></div>
   <div class="dash-grid grid-stack" id="analytics-dash-grid">
-    <div class="grid-stack-item dash-widget" data-widget-id="visibility-report" data-title="Visibility report" gs-id="visibility-report" gs-w="4" gs-h="9" gs-min-h="8">
+    <div class="grid-stack-item dash-widget" data-widget-id="visibility-report" data-title="Visibility report" gs-id="visibility-report" gs-w="4" gs-h="8" gs-min-h="8">
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>Visibility report <span class="sub">executive overview</span></h2>
@@ -2060,7 +2060,7 @@ function renderInstrumentGauges(data){
       </div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" gs-id="query-volume" gs-w="4" gs-h="11" gs-min-h="10" gs-min-h="7">
+    <div class="grid-stack-item dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" gs-id="query-volume" gs-w="4" gs-h="7" gs-min-h="7">
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>DNS activity over time</h2>
@@ -2090,7 +2090,7 @@ function renderInstrumentGauges(data){
       <div class="card"><h2>New domains discovered</h2><div id="chart-new-domains"></div></div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="new-devices" data-title="New devices discovered" gs-id="new-devices" gs-w="2" gs-h="4">
+    <div class="grid-stack-item dash-widget" data-widget-id="new-devices" data-title="New devices discovered" gs-id="new-devices" gs-w="2" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
       <div class="card"><h2>New devices discovered</h2><div id="chart-new-devices"></div></div>
       </div>
@@ -2104,7 +2104,7 @@ function renderInstrumentGauges(data){
       </div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="instrument-gauges" data-title="Instrument gauges" gs-id="instrument-gauges" gs-w="4" gs-h="4">
+    <div class="grid-stack-item dash-widget" data-widget-id="instrument-gauges" data-title="Instrument gauges" gs-id="instrument-gauges" gs-w="4" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>Instrument gauges</h2>
@@ -2115,7 +2115,7 @@ function renderInstrumentGauges(data){
       </div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="destination-map" data-title="DNS Destinations (observed)" gs-id="destination-map" gs-w="4" gs-h="8">
+    <div class="grid-stack-item dash-widget" data-widget-id="destination-map" data-title="DNS Destinations (observed)" gs-id="destination-map" gs-w="4" gs-h="10" gs-min-h="10">
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>DNS Destinations <span class="sub">(observed)</span></h2>
@@ -2192,12 +2192,12 @@ function renderInstrumentGauges(data){
       </div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" gs-id="activity-domains" gs-w="2" gs-h="4">
+    <div class="grid-stack-item dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" gs-id="activity-domains" gs-w="2" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
       <div class="card"><h2>Recently active domains</h2><div id="activity-domains" class="dash-scroll"></div></div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" gs-id="activity-devices" gs-w="2" gs-h="4">
+    <div class="grid-stack-item dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" gs-id="activity-devices" gs-w="2" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
       <div class="card"><h2>Recently active devices</h2><div id="activity-devices" class="dash-scroll"></div></div>
       </div>
@@ -3926,7 +3926,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   const gridEl = document.getElementById('analytics-dash-grid');
   if (!gridEl) return;
   const WIDGET_IDS = Array.from(gridEl.querySelectorAll('.dash-widget')).map(w => w.dataset.widgetId);
-  const LAYOUT_KEY = 'dnsInspectorDashboardLayout';
+  const LAYOUT_KEY = 'dnsInspectorDashboardLayoutV2';
   const COLUMNS = 4;
   const clone = (obj) => JSON.parse(JSON.stringify(obj));
   function widgetEl(id){ return gridEl.querySelector(`[data-widget-id="${id}"]`); }
