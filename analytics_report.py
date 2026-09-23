@@ -301,7 +301,7 @@ def _draw_insight(c, x, y, w, h, label, title, body, accent, bg):
 TOTAL_REPORT_PAGES = 4
 
 
-def _draw_page_footer(c, page_num, range_key, generated_iso, dark=False):
+def _draw_page_footer(c, page_num, window_label, generated_iso, dark=False):
     line_color = HexColor("#334155") if dark else GRID
     text_color = HexColor("#94A3B8") if dark else MUTED
     c.setStrokeColor(line_color)
@@ -309,15 +309,16 @@ def _draw_page_footer(c, page_num, range_key, generated_iso, dark=False):
     c.line(MARGIN, 9 * mm, PAGE_W - MARGIN, 9 * mm)
     c.setFont("Helvetica", 7)
     c.setFillColor(text_color)
-    c.drawString(MARGIN, 4.5 * mm, f"DNS Inspector · Inspector BEMO visibility report · analysis window: {range_key}")
+    c.drawString(MARGIN, 4.5 * mm, f"DNS Inspector · Inspector BEMO visibility report · analysis window: {window_label}")
     c.drawCentredString(PAGE_W / 2, 4.5 * mm, f"Generated {_fmt_dt(generated_iso)}")
     c.drawRightString(PAGE_W - MARGIN, 4.5 * mm, f"Page {page_num} of {TOTAL_REPORT_PAGES}")
 
 
-def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, environment, range_key):
+def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, environment, range_key, custom_window=None):
     buf = BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
-    c.setTitle(f"DNS Inspector Analytics — {range_key}")
+    window_label = custom_window["label"] if custom_window else range_key.upper()
+    c.setTitle(f"DNS Inspector Analytics — {window_label}")
     c.setAuthor("DNS Inspector / Inspector BEMO")
     generated_iso = datetime.now(timezone.utc).isoformat()
 
@@ -349,7 +350,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.drawRightString(PAGE_W - MARGIN, PAGE_H - 18 * mm, f"DNS Inspector v{version}")
     c.setFont("Helvetica", 8)
     c.setFillColor(HexColor("#CBD5E1"))
-    c.drawRightString(PAGE_W - MARGIN, PAGE_H - 30 * mm, f"{environment.upper()} · {range_key.upper()}")
+    c.drawRightString(PAGE_W - MARGIN, PAGE_H - 30 * mm, f"{environment.upper()} · {window_label}")
 
     c.setFillColor(INK)
     c.setFont("Helvetica-Bold", 12)
@@ -369,7 +370,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     chart_y = 79 * mm
     _draw_line_chart(c, MARGIN, chart_y, PAGE_W - 2 * MARGIN, 75 * mm, s["points"])
 
-    _draw_page_footer(c, 1, range_key, generated_iso)
+    _draw_page_footer(c, 1, window_label, generated_iso)
     c.showPage()
 
     # Page 2 — what stands out
@@ -414,7 +415,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     _draw_bar_list(c, MARGIN, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most queried domains", top_domains, BLUE)
     _draw_bar_list(c, MARGIN + (PAGE_W - 2 * MARGIN) / 2 + 3 * mm, 16 * mm, (PAGE_W - 2 * MARGIN - 6 * mm) / 2, 37 * mm, "Most active devices", top_devices, TEAL)
 
-    _draw_page_footer(c, 2, range_key, generated_iso)
+    _draw_page_footer(c, 2, window_label, generated_iso)
     c.showPage()
 
     # Page 3 — destinations and context
@@ -483,7 +484,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
     c.setFillColor(HexColor("#CBD5E1"))
     c.setFont("Helvetica", 7.3)
     c.drawString(MARGIN + 68, 50 * mm, "Select a bucket to inspect domains, devices and status changes around that time.")
-    _draw_page_footer(c, 3, range_key, generated_iso)
+    _draw_page_footer(c, 3, window_label, generated_iso)
     c.showPage()
 
     c.setFillColor(NAVY)
@@ -514,7 +515,7 @@ def build_analytics_pdf(*, analytics, stats, breakdown, map_data, version, envir
         p.drawOn(c, MARGIN + 14, yy - 18)
         yy -= 34 * mm
 
-    _draw_page_footer(c, 4, range_key, generated_iso, dark=True)
+    _draw_page_footer(c, 4, window_label, generated_iso, dark=True)
     c.save()
     buf.seek(0)
     return buf

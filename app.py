@@ -6,6 +6,7 @@ import hmac
 import io
 import ipaddress
 import json
+import math
 import os
 import queue
 import re
@@ -922,6 +923,21 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .analytics-range-controls{display:flex;gap:6px;align-items:center;margin:14px 0;flex-wrap:wrap}
 .range-btn{padding:6px 12px;font-size:.8rem;border-radius:999px}
 .range-btn.active{background:#16395c;border-color:#58a6ff;color:#e6edf3}
+.range-custom-controls{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:8px}
+.range-custom-controls[hidden]{display:none}
+.range-custom-controls input[type=date]{padding:5px 8px;font-size:.8rem}
+.range-custom-controls button{padding:5px 12px;font-size:.8rem;border-radius:999px}
+.range-custom-error{color:var(--sem-blocked);font-size:.78rem}
+.assessment-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.assessment-section{margin-top:14px}
+.assessment-section>summary{cursor:pointer;font-weight:700;font-size:1.02rem;padding:2px 0;list-style:revert}
+.assessment-section>summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.assessment-section-body{margin-top:12px}
+.assessment-kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:.86rem}
+.assessment-kv b{color:var(--text-secondary);font-weight:600}
+.assessment-list{list-style:none;margin:0;padding:0;display:grid;gap:6px;font-size:.86rem}
+.assessment-list li{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid var(--border);padding-bottom:4px}
+.assessment-note{color:var(--text-tertiary);font-size:.8rem;margin-top:8px}
 .status-bar{display:flex;height:16px;border-radius:999px;overflow:hidden;border:1px solid #30363d;background:#161b22}
 .status-seg{height:100%;min-width:0}
 .legend-row{display:flex;flex-wrap:wrap;gap:14px;margin-top:10px;font-size:.8rem;color:#c9d1d9}
@@ -1616,6 +1632,7 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
   <button class="tab-btn" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
   <button class="tab-btn" data-tab="devices" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Devices</button>
   <button class="tab-btn active" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
+  <button class="tab-btn" data-tab="assessment" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Assessment</button>
 </nav>
 <script>
 /* ---- Inspector BEMO preferences (0.8.4) ----
@@ -2028,6 +2045,13 @@ function renderInstrumentGauges(data){
           <button type="button" class="range-btn" data-analytics-range="7d">7D</button>
           <button type="button" class="range-btn" data-analytics-range="30d">30D</button>
           <button type="button" class="range-btn" data-analytics-range="90d">90D</button>
+          <button type="button" class="range-btn" id="analytics-range-custom-btn" data-analytics-range="custom" aria-expanded="false" aria-controls="analytics-range-custom-controls">Custom</button>
+        </div>
+        <div class="range-custom-controls" id="analytics-range-custom-controls" hidden>
+          <label for="analytics-custom-from">From <input type="date" id="analytics-custom-from"></label>
+          <label for="analytics-custom-to">To <input type="date" id="analytics-custom-to"></label>
+          <button type="button" id="analytics-custom-apply-btn">Apply</button>
+          <span class="range-custom-error" id="analytics-custom-error" role="alert"></span>
         </div>
         <div id="chart-query-volume"></div>
         <div class="stats-note" style="margin-top:0">Click or tap a point (or focus it and press Enter) for the exact interval &mdash; query count, status mix, new domains/devices, and top domains/devices for that window.</div>
@@ -2148,6 +2172,191 @@ function renderInstrumentGauges(data){
     </div>
   </div>
 </section>
+<section id="tab-assessment" class="tab-panel" data-panel="assessment">
+  <div class="card">
+    <h2>Visibility Assessment <span class="sub">standalone 10-section report</span></h2>
+    <div class="stats-note" style="margin-top:0">Every figure below is read from the same <code>/api/analytics</code>, <code>/api/analytics/map</code>, and <code>/api/reports/status</code> data the rest of the dashboard uses &mdash; nothing here is a separate or fabricated data source. Sections are collapsed by default; expand the ones you need.</div>
+    <div class="assessment-toolbar">
+      <span id="assessment-period-label" class="stats-note" style="margin:0">Analysis period: &mdash;</span>
+      <button type="button" id="assessment-refresh-btn">Refresh assessment</button>
+    </div>
+    <div id="assessment-root">
+      <details class="assessment-section" open>
+        <summary>1. Executive summary</summary>
+        <div class="assessment-section-body" id="assessment-summary" data-assessment-slot><div class="empty-state">Open this tab to load the assessment.</div></div>
+      </details>
+      <details class="assessment-section">
+        <summary>2. Activity timeline</summary>
+        <div class="assessment-section-body" id="assessment-timeline" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>3. Status &amp; classification</summary>
+        <div class="assessment-section-body" id="assessment-status" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>4. Recently active domains</summary>
+        <div class="assessment-section-body" id="assessment-top-domains" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>5. Recently active devices</summary>
+        <div class="assessment-section-body" id="assessment-top-devices" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>6. New discoveries this period</summary>
+        <div class="assessment-section-body" id="assessment-new" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>7. Destination geography</summary>
+        <div class="assessment-section-body" id="assessment-geo" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>8. Destination coverage &amp; provenance</summary>
+        <div class="assessment-section-body" id="assessment-coverage" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>9. Report delivery &amp; scheduling</summary>
+        <div class="assessment-section-body" id="assessment-reports" data-assessment-slot></div>
+      </details>
+      <details class="assessment-section">
+        <summary>10. Methodology &amp; limitations</summary>
+        <div class="assessment-section-body">
+          <ul class="assessment-list">
+            <li><span>Data source</span><span>Every section reads the live DNS Inspector API (<code>/api/analytics</code>, <code>/api/analytics/map</code>, <code>/api/reports/status</code>) &mdash; the same endpoints the Analytics tab and PDF export use.</span></li>
+            <li><span>Retention</span><span>Figures are bounded by the retained analytics history window; periods outside that window are not fabricated, they are reported as unavailable.</span></li>
+            <li><span>Geolocation</span><span>Destination geography describes where DNS answers resolve to, aggregated at country/coordinate level from an optional GeoIP database. It is not a verified map of physical servers.</span></li>
+            <li><span>Classification</span><span>Allowed/Blocked/Mixed/Unknown reflect the current AdGuard filtering outcome for each domain, not a security verdict produced by this application.</span></li>
+            <li><span>No risk scoring</span><span>This assessment intentionally avoids inventing a risk score, threat rating, or root-cause explanation beyond what the underlying data supports.</span></li>
+          </ul>
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+<script>
+/* Standalone Visibility Assessment tab (Issue #88): a progressive-disclosure
+   10-section view built entirely from data the Analytics tab and PDF export
+   already fetch -- no new/fabricated data source. Loaded once per tab
+   activation (or on demand via the Refresh button), not on a poll timer,
+   since it's a point-in-time assessment rather than a live dashboard. */
+function assessmentPeriodLabel(){
+  if (analyticsRange === 'custom' && analyticsCustomWindow) return `Custom (${(analyticsCustomWindow.from||'').slice(0,10)} to ${(analyticsCustomWindow.to||'').slice(0,10)})`;
+  const active = document.querySelector(`[data-analytics-range="${CSS.escape(analyticsRange || '1h')}"]`);
+  return active ? active.textContent : (analyticsRange || '1h');
+}
+function assessmentEmpty(text){ return `<div class="empty-state">${esc(text)}</div>`; }
+function renderAssessmentSummary(a){
+  const qPoints = (a.series?.queries?.points || []).filter(p => p.count != null);
+  const total = sumSeriesPoints(qPoints);
+  const newDomains = sumSeriesPoints(a.series?.new_domains?.points);
+  const newDevices = sumSeriesPoints(a.series?.new_devices?.points);
+  const b = a.status_breakdown || {};
+  const known = (Number(b.Allowed)||0) + (Number(b.Blocked)||0);
+  const blockedPct = known ? Math.round((Number(b.Blocked||0) / known) * 1000) / 10 : null;
+  return `<div class="assessment-kv">`
+    + `<b>Period</b><span>${esc(a.series?.queries?.label || a.range)}</span>`
+    + `<b>Total queries</b><span>${esc(total)}</span>`
+    + `<b>New domains</b><span>${esc(newDomains)}</span>`
+    + `<b>New devices</b><span>${esc(newDevices)}</span>`
+    + `<b>Active devices</b><span>${esc(a.active_devices ?? '—')} of ${esc(a.total_devices ?? '—')} known</span>`
+    + `<b>Blocked share</b><span>${blockedPct != null ? blockedPct + '%' : 'no classified domains yet'}</span>`
+    + `</div>`;
+}
+function renderAssessmentTimeline(a){
+  const points = a.series?.queries?.points || [];
+  const known = points.filter(p => p.count != null);
+  if (!known.length) return assessmentEmpty('No retained query timeline is available for this period.');
+  return `<div class="assessment-kv">`
+    + `<b>Buckets</b><span>${esc(points.length)} (${esc(a.series?.queries?.bucket_seconds || 0)}s each)</span>`
+    + `<b>Buckets with data</b><span>${esc(known.length)}</span>`
+    + `<b>Total queries</b><span>${esc(sumSeriesPoints(points))}</span>`
+    + `</div><p class="assessment-note">See the "DNS activity over time" chart on the Analytics tab for the interactive, click-to-drill-down version of this timeline.</p>`;
+}
+function renderAssessmentStatus(a){
+  const b = a.status_breakdown || {};
+  const total = Number(b.All) || 0;
+  if (!total) return assessmentEmpty('No classified domains yet.');
+  const rows = ['Allowed','Blocked','Mixed','Unknown'].map(k => {
+    const v = Number(b[k]) || 0; const pct = total ? Math.round((v/total)*1000)/10 : 0;
+    return `<li><span>${esc(k)}</span><span>${esc(v)} (${pct}%)</span></li>`;
+  }).join('');
+  return `<ul class="assessment-list">${rows}</ul>`;
+}
+function assessmentDomainList(rows){
+  if (!rows || !rows.length) return assessmentEmpty('No recent domain activity recorded for this period.');
+  return `<ul class="assessment-list">${rows.slice(0, 12).map(r => `<li><span>${esc(r.domain)}</span><span>${esc(r.status || 'Unknown')} &middot; ${esc(r.requests)} requests</span></li>`).join('')}</ul>`;
+}
+function assessmentDeviceList(rows){
+  if (!rows || !rows.length) return assessmentEmpty('No recent device activity recorded for this period.');
+  return `<ul class="assessment-list">${rows.slice(0, 12).map(d => `<li><span>${esc(d.label || d.device_key)}</span><span>${esc(d.requests)} requests</span></li>`).join('')}</ul>`;
+}
+function renderAssessmentNew(a){
+  const newDomains = sumSeriesPoints(a.series?.new_domains?.points);
+  const newDevices = sumSeriesPoints(a.series?.new_devices?.points);
+  if (!newDomains && !newDevices) return assessmentEmpty('No new domains or devices were first seen in this period.');
+  return `<div class="assessment-kv"><b>New domains</b><span>${esc(newDomains)}</span><b>New devices</b><span>${esc(newDevices)}</span></div>`
+    + `<p class="assessment-note">Select a bucket on the Analytics tab's timeline chart for the exact list of new domains/devices in that interval.</p>`;
+}
+function renderAssessmentGeo(m){
+  const countries = (m?.countries || []).slice().sort((x, y) => (y.observation_count||0) - (x.observation_count||0));
+  const unknown = m?.unknown || {};
+  if (!countries.length) return assessmentEmpty('No geolocated destination countries yet.');
+  const rows = countries.slice(0, 12).map(c => `<li><span>${esc(c.country_name || c.country_code)}</span><span>${esc(c.observation_count)} observations &middot; ${esc(c.domain_count)} domains</span></li>`).join('');
+  const unknownNote = unknown.observation_count ? `<p class="assessment-note">${esc(unknown.observation_count)} observation(s) across ${esc(unknown.domain_count||0)} domain(s) could not be geolocated.</p>` : '';
+  return `<ul class="assessment-list">${rows}</ul>${unknownNote}`;
+}
+function renderAssessmentCoverage(m){
+  const cov = m?.coverage || {};
+  const prov = cov.provenance || {};
+  return `<div class="assessment-kv">`
+    + `<b>Domains tracked</b><span>${esc(cov.total_domains ?? 0)}</span>`
+    + `<b>Geolocated domains</b><span>${esc(cov.geolocated_domains ?? 0)} (${esc(cov.geolocated_pct ?? 0)}%)</span>`
+    + `<b>City GeoIP (exact)</b><span>${esc(prov.city_geoip ?? 0)}</span>`
+    + `<b>Known datacenter (region)</b><span>${esc(prov.known_datacenter ?? 0)}</span>`
+    + `<b>Country only</b><span>${esc(prov.country_only ?? 0)}</span>`
+    + `<b>Unmapped</b><span>${esc(prov.unmapped ?? 0)}</span>`
+    + `</div>`;
+}
+function renderAssessmentReports(statusData){
+  const state = statusData?.state || {};
+  return `<div class="assessment-kv">`
+    + `<b>Scheduler</b><span>${state.enabled ? 'Enabled' : 'Disabled'}</span>`
+    + `<b>Next run</b><span>${esc(state.next_run || '—')}</span>`
+    + `<b>Last run</b><span>${esc(state.last_run || 'never')}</span>`
+    + `<b>Last result</b><span>${esc(state.last_result || '—')}</span>`
+    + `<b>Last saved file</b><span>${esc(state.last_saved_file || '—')}</span>`
+    + `<b>Last email result</b><span>${state.last_email_result ? (state.last_email_result.ok ? 'sent' : 'failed: ' + esc(state.last_email_result.error||'')) : '—'}</span>`
+    + `</div><p class="assessment-note">Configure scheduling, retention and SMTP delivery from Settings &rsaquo; Reports.</p>`;
+}
+async function loadAssessment(){
+  const label = document.getElementById('assessment-period-label');
+  if (label) label.textContent = `Analysis period: ${assessmentPeriodLabel()}`;
+  document.querySelectorAll('#assessment-root [data-assessment-slot]').forEach(el => { el.innerHTML = assessmentEmpty('Loading…'); });
+  try{
+    const [aRes, mRes, sRes] = await Promise.all([
+      fetch(`/api/analytics?${analyticsRangeQueryString()}`, {cache: 'no-store'}),
+      fetch('/api/analytics/map', {cache: 'no-store'}),
+      fetch('/api/reports/status', {cache: 'no-store'}),
+    ]);
+    const a = await aRes.json();
+    const m = await mRes.json();
+    const s = await sRes.json();
+    document.getElementById('assessment-summary').innerHTML = renderAssessmentSummary(a);
+    document.getElementById('assessment-timeline').innerHTML = renderAssessmentTimeline(a);
+    document.getElementById('assessment-status').innerHTML = renderAssessmentStatus(a);
+    document.getElementById('assessment-top-domains').innerHTML = assessmentDomainList(a.recent_domains);
+    document.getElementById('assessment-top-devices').innerHTML = assessmentDeviceList(a.recent_devices);
+    document.getElementById('assessment-new').innerHTML = renderAssessmentNew(a);
+    document.getElementById('assessment-geo').innerHTML = renderAssessmentGeo(m);
+    document.getElementById('assessment-coverage').innerHTML = renderAssessmentCoverage(m);
+    document.getElementById('assessment-reports').innerHTML = renderAssessmentReports(s);
+  }catch(e){
+    document.querySelectorAll('#assessment-root [data-assessment-slot]').forEach(el => { el.innerHTML = assessmentEmpty('Unable to load this section right now.'); });
+  }
+}
+document.getElementById('assessment-refresh-btn')?.addEventListener('click', loadAssessment);
+function assessmentTabChanged(name){ if (name === 'assessment') loadAssessment(); }
+window.onAssessmentTabChange = assessmentTabChanged;
+</script>
 <script>
 let refreshMs = effectiveRefreshMs();
 const currentQuery = {{ q|tojson }};
@@ -2187,8 +2396,7 @@ function isNewRow(r){const t=new Date(r.first_seen||'').getTime();return Number.
 function renderRecent(rows,force){window.__lastRecent=rows||[];if(!force&&!document.getElementById('tab-overview')?.classList.contains('active'))return;document.getElementById('recent-body').innerHTML=(rows||[]).map(r=>{const devices=(r.devices||[]).map(d=>{const label=deviceLabelFor(d);return `<a class="device-chip link-device" href="${deviceHref(d)}" title="Open device details">${d.vendor_logo?`<img class="vendor-logo" src="${esc(d.vendor_logo)}" alt="" loading="lazy">`:deviceTypeSvg(d.type,d.icon,false)}${esc(label||d.name)}</a>`;}).join('');const n=isNewRow(r);const badge=n?`<span class="new-badge" title="First seen ${esc(r.first_seen||'')}"><span class="new-badge-dot"></span>NEW · ${esc(ageText(r.first_seen))}</span>`:'';return `<tr class="${n?'row-new':''}" data-sort-domain="${esc(r.domain)}" data-sort-activity="${Number(r.requests)||0}" data-sort-devices="${Number(r.clients)||0}" data-sort-status="${esc(r.status)}" data-sort-severity="${esc(r.severity)}" data-sort-classification="${esc(r.classification)}"><td><a class="glance-domain" href="/search?q=${encodeURIComponent(r.domain)}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a>${badge}<div class="glance-meta"><span>${esc(r.requests)} requests</span><span>·</span><span>${esc(r.clients)} device${r.clients===1?'':'s'}</span></div></td><td><b>${esc(r.requests)}</b> requests</td><td class="glance-devices"><div class="device-list">${devices||'<span class="sub">No identified devices</span>'}</div></td><td><span class="status-pill status-${esc(r.status_class)}">${esc(r.status)}</span></td><td><span class="severity-${esc(r.severity_text_class)}">${esc(r.severity)}</span></td><td><span class="dot dot-${esc(r.severity_class)}"></span><span class="tag ${esc(r.badge_class)}">${esc(r.classification)}</span></td></tr>`}).join('');reapplyTableSorts()}
 function setSelectOptions(id,values,selected){const e=document.getElementById(id);if(!e)return;e.innerHTML='<option value="">All</option>'+(values||[]).map(v=>{const value=typeof v==='string'?v:v.value;const label=typeof v==='string'?v:v.label;return `<option value="${esc(value)}">${esc(label)}</option>`}).join('');e.value=selected||''}
 function renderRecentControls(meta,opts){recentMeta=meta||recentMeta;const c=recentMeta.status_counts||{};[['count-all','All'],['count-allowed','Allowed'],['count-blocked','Blocked'],['count-mixed','Mixed'],['count-unknown','Unknown']].forEach(([i,k])=>{const e=document.getElementById(i);if(e)e.textContent=c[k]!=null?` ${c[k]}`:''});const n=document.getElementById('count-new');if(n)n.textContent=recentMeta.new_count!=null?` ${recentMeta.new_count}`:'';document.getElementById('analytics-export-pdf-btn')?.addEventListener('click', () => {
-  const range = (typeof analyticsRange === 'string' && analyticsRange) ? analyticsRange : '1h';
-  window.location.href = '/api/analytics/report.pdf?range=' + encodeURIComponent(range);
+  window.location.href = '/api/analytics/report.pdf?' + analyticsRangeQueryString();
 });
 document.querySelectorAll('[data-status-filter]').forEach(b=>b.classList.toggle('active',(b.dataset.statusFilter||'')===recentFilters.status));document.getElementById('new-filter')?.classList.toggle('active',recentFilters.newOnly);const sum=document.getElementById('results-summary');if(sum)sum.innerHTML=`<b>${recentMeta.total||0}</b> matching domain${(recentMeta.total||0)===1?'':'s'} · <b>${recentMeta.new_count||0}</b> new in the last 24h`;setSelectOptions('classification-filter',opts?.classifications,recentFilters.classification);setSelectOptions('severity-filter',opts?.severities,recentFilters.severity);setSelectOptions('device-filter',opts?.devices,recentFilters.device);setSelectOptions('vendor-filter',opts?.vendors,recentFilters.vendor);const ps=document.getElementById('page-size');if(ps)ps.value=String(recentFilters.page_size);const label=document.getElementById('page-label');if(label){const a=recentMeta.total?((recentMeta.page-1)*recentMeta.page_size)+1:0;const b=recentMeta.total?Math.min(recentMeta.page*recentMeta.page_size,recentMeta.total):0;label.textContent=`Showing ${a}–${b} of ${recentMeta.total||0}`}const prev=document.getElementById('page-prev'),next=document.getElementById('page-next');if(prev)prev.disabled=recentMeta.page<=1;if(next)next.disabled=recentMeta.page>=recentMeta.pages}
 function showNewBanner(entries){const b=document.getElementById('new-banner'),t=document.getElementById('new-banner-text');if(!b||!t||!entries.length)return;const items=entries.slice(0,3).map(r=>{const status=r.status||'Unknown';const statusClass=r.status_class||'unknown';const href=`/search?q=${encodeURIComponent(r.domain)}`;return `<span class="new-domain-item"><a class="new-domain-link" href="${href}" title="Inspect domain in DNS Inspector">${esc(r.domain)}</a><span class="status-pill status-${esc(statusClass)}">${esc(status)}</span></span>`}).join('');t.innerHTML=`<b>${entries.length}</b> new domain${entries.length===1?'':'s'} detected · <span class="new-domain-items">${items}</span>`;b.classList.add('show')}
@@ -2227,6 +2435,7 @@ function setActiveTab(name){
   if (name === 'overview' && Array.isArray(window.__lastRecent)) renderRecent(window.__lastRecent, true);
   if (name === 'devices' && Array.isArray(window.__lastClients)) renderClients(window.__lastClients, true);
   if (typeof window.onAnalyticsTabChange === 'function') window.onAnalyticsTabChange(name);
+  if (typeof window.onAssessmentTabChange === 'function') window.onAssessmentTabChange(name);
 }
 function chartBars(elId, items){
   const el=document.getElementById(elId); if(!el) return;
@@ -2295,6 +2504,13 @@ function renderObservability(d){if(!d)return;const u=document.getElementById('ob
 const ANALYTICS_LIVE_MAX_SAMPLES = 100;
 let analyticsLiveSamples = [];
 let analyticsRange = '1h';
+let analyticsCustomWindow = null; // {from, to} ISO dates -- only set while analyticsRange === 'custom'
+function analyticsRangeQueryString(){
+  if (analyticsRange === 'custom' && analyticsCustomWindow && analyticsCustomWindow.from && analyticsCustomWindow.to){
+    return `range=custom&from=${encodeURIComponent(analyticsCustomWindow.from)}&to=${encodeURIComponent(analyticsCustomWindow.to)}`;
+  }
+  return `range=${encodeURIComponent(analyticsRange || '1h')}`;
+}
 let analyticsFullTimer = null;
 /* Issue #61: performance/render-storm fixes. `/api/analytics/map` runs
    heavier server-side GeoIP aggregation than `/api/analytics`, so it gets
@@ -2437,7 +2653,7 @@ function selectIntervalBucket(point, rangeKey){
   selectedIntervalBucket = {range: rangeKey, t: point.t};
   if (window.__lastAnalyticsPayload) renderQueryVolumeChart(window.__lastAnalyticsPayload);
   renderIntervalDetail('loading');
-  fetch(`/api/analytics/interval?range=${encodeURIComponent(rangeKey)}&bucket_start=${encodeURIComponent(point.t)}`, {cache:'no-store'})
+  fetch(`/api/analytics/interval?${analyticsRangeQueryString()}&bucket_start=${encodeURIComponent(point.t)}`, {cache:'no-store'})
     .then(r => r.json())
     .then(detail => { if (selectedIntervalBucket && selectedIntervalBucket.t === point.t) renderIntervalDetail(detail); })
     .catch(() => renderIntervalDetail({ok:false, error:'Interval request failed.'}));
@@ -2513,9 +2729,15 @@ async function fetchAnalyticsFull(){
   analyticsFetchController = controller;
   const fetchStartedAt = perfNow();
   try{
-    const r = await fetch(`/api/analytics?range=${encodeURIComponent(analyticsRange)}`, {cache:'no-store', signal: controller.signal});
+    const r = await fetch(`/api/analytics?${analyticsRangeQueryString()}`, {cache:'no-store', signal: controller.signal});
     if (seq !== analyticsFetchSeq) return; // superseded by a newer request while this one was in flight
-    if (!r.ok) return;
+    if (!r.ok){
+      if (analyticsRange === 'custom'){
+        const errEl = document.getElementById('analytics-custom-error');
+        try{ const body = await r.json(); if (errEl) errEl.textContent = body.error || 'Unable to load that custom range.'; }catch(e){ if (errEl) errEl.textContent = 'Unable to load that custom range.'; }
+      }
+      return;
+    }
     const data = await r.json();
     if (seq !== analyticsFetchSeq) return; // superseded while awaiting the response body
     const renderStartedAt = perfNow();
@@ -2790,7 +3012,7 @@ function mapLandmassSvg(entities){
 function mapBaseLayers(entities){ return `${mapLandmassSvg(entities)}${mapGraticule()}`; }
 function mapStatusBanner(text, actionHtml){
   if (!text) return '';
-  return `<div class="map-status-banner">${text}${actionHtml ? `<div class="map-status-action">${actionHtml}</div>` : ''}</div>`;
+  return `<div class="map-status-banner" role="status" aria-live="polite">${text}${actionHtml ? `<div class="map-status-action">${actionHtml}</div>` : ''}</div>`;
 }
 function mapViewBoxAttr(){
   const vw = MAP_W / mapZoom, vh = MAP_H / mapZoom;
@@ -3073,6 +3295,32 @@ function renderMapBreakdown(data){
   }).join('');
   list.querySelectorAll('[data-breakdown-country]').forEach(btn => {
     btn.addEventListener('click', () => mapSelectCountry(btn.getAttribute('data-breakdown-country'), { toggle: false, centerZoom: true }));
+  });
+  bindMapBreakdownKeyboardNav(list);
+}
+/* Roving-tabindex arrow-key navigation (Issue #88 accessibility pass): the
+   country list is a real button-per-row list already reachable via Tab, but
+   without this every row was a separate Tab stop. Up/Down/Home/End now move
+   focus one row at a time -- Enter/Space activation is native <button>
+   behavior and needs no extra code. */
+function bindMapBreakdownKeyboardNav(list){
+  const items = Array.from(list.querySelectorAll('[data-breakdown-country]'));
+  items.forEach((btn, i) => { btn.tabIndex = i === 0 ? 0 : -1; });
+  if (list.dataset.keynavBound) return;
+  list.dataset.keynavBound = '1';
+  list.addEventListener('keydown', (e) => {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+    const currentItems = Array.from(list.querySelectorAll('[data-breakdown-country]'));
+    const idx = currentItems.indexOf(document.activeElement);
+    if (idx === -1) return;
+    let nextIdx = idx;
+    if (e.key === 'ArrowDown') nextIdx = Math.min(idx + 1, currentItems.length - 1);
+    else if (e.key === 'ArrowUp') nextIdx = Math.max(idx - 1, 0);
+    else if (e.key === 'Home') nextIdx = 0;
+    else if (e.key === 'End') nextIdx = currentItems.length - 1;
+    e.preventDefault();
+    currentItems.forEach((el, i) => { el.tabIndex = i === nextIdx ? 0 : -1; });
+    currentItems[nextIdx].focus();
   });
 }
 document.getElementById('map-breakdown-sort-btn')?.addEventListener('click', () => {
@@ -3571,12 +3819,43 @@ function stopAnalyticsPolling(){
   if (analyticsFetchController){ analyticsFetchController.abort(); analyticsFetchController = null; }
   if (mapFetchController){ mapFetchController.abort(); mapFetchController = null; }
 }
+function hideCustomRangeControls(){
+  const panel = document.getElementById('analytics-range-custom-controls');
+  if (panel) panel.hidden = true;
+  document.getElementById('analytics-range-custom-btn')?.setAttribute('aria-expanded', 'false');
+}
 document.querySelectorAll('[data-analytics-range]').forEach(b => b.addEventListener('click', () => {
-  analyticsRange = b.dataset.analyticsRange;
+  const key = b.dataset.analyticsRange;
+  if (key === 'custom'){
+    const panel = document.getElementById('analytics-range-custom-controls');
+    const wasOpen = !!(panel && !panel.hidden);
+    if (panel) panel.hidden = wasOpen;
+    b.setAttribute('aria-expanded', String(!wasOpen));
+    if (!wasOpen) document.getElementById('analytics-custom-from')?.focus();
+    return;
+  }
+  analyticsRange = key;
+  analyticsCustomWindow = null;
+  hideCustomRangeControls();
   document.querySelectorAll('[data-analytics-range]').forEach(x => x.classList.toggle('active', x === b));
   selectedIntervalBucket = null; renderIntervalDetail(null);
   fetchAnalyticsFull();
 }));
+document.getElementById('analytics-custom-apply-btn')?.addEventListener('click', () => {
+  const errEl = document.getElementById('analytics-custom-error');
+  if (errEl) errEl.textContent = '';
+  const fromVal = document.getElementById('analytics-custom-from')?.value;
+  const toVal = document.getElementById('analytics-custom-to')?.value;
+  if (!fromVal || !toVal){ if (errEl) errEl.textContent = 'Choose both a from and to date.'; return; }
+  const fromIso = new Date(fromVal + 'T00:00:00Z').toISOString();
+  const toIso = new Date(toVal + 'T23:59:59Z').toISOString();
+  if (new Date(toIso) <= new Date(fromIso)){ if (errEl) errEl.textContent = 'The "to" date must be after the "from" date.'; return; }
+  analyticsRange = 'custom';
+  analyticsCustomWindow = {from: fromIso, to: toIso};
+  document.querySelectorAll('[data-analytics-range]').forEach(x => x.classList.toggle('active', x.dataset.analyticsRange === 'custom'));
+  selectedIntervalBucket = null; renderIntervalDetail(null);
+  fetchAnalyticsFull();
+});
 function analyticsTabChanged(name){
   if (name === 'analytics') startAnalyticsPolling(); else stopAnalyticsPolling();
 }
@@ -6479,38 +6758,48 @@ def _parse_iso(value):
 
 def _analytics_range(range_key): return _ANALYTICS_RANGES.get(range_key, _ANALYTICS_RANGES["1h"])
 
-def _bucket_timestamps(timestamps, range_seconds, bucket_seconds, bucket_count, now_dt):
-    buckets = [0] * bucket_count; start = now_dt - timedelta(seconds=range_seconds)
+def _bucket_timestamps_window(timestamps, start, bucket_seconds, bucket_count):
+    buckets = [0] * bucket_count; window_seconds = bucket_seconds * bucket_count
     for raw in timestamps:
         dt = _parse_iso(raw)
         if dt is None: continue
         offset = (dt - start).total_seconds()
-        if 0 <= offset < range_seconds:
+        if 0 <= offset < window_seconds:
             idx = int(offset // bucket_seconds)
             if 0 <= idx < bucket_count: buckets[idx] += 1
     return [{"t": (start + timedelta(seconds=i * bucket_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
+
+def _bucket_timestamps(timestamps, range_seconds, bucket_seconds, bucket_count, now_dt):
+    start = now_dt - timedelta(seconds=range_seconds)
+    return _bucket_timestamps_window(timestamps, start, bucket_seconds, bucket_count)
+
+def _history_bucket_series_window(value_col, start, bucket_seconds, bucket_count):
+    """Bucketed rollup from the bounded analytics_buckets aggregation table
+    for an arbitrary [start, start + bucket_seconds*bucket_count) window."""
+    with closing(sqlite3.connect(DB_PATH)) as c:
+        min_bucket_start = c.execute("SELECT MIN(bucket_start) FROM analytics_buckets").fetchone()[0]
+        rows = c.execute(f"SELECT bucket_start,{value_col} FROM analytics_buckets WHERE bucket_start>=? ORDER BY bucket_start ASC", (start.isoformat(),)).fetchall()
+    buckets = [0] * bucket_count; window_seconds = bucket_seconds * bucket_count
+    for bucket_start, value in rows:
+        dt = _parse_iso(bucket_start)
+        if dt is None: continue
+        offset = (dt - start).total_seconds()
+        if 0 <= offset < window_seconds:
+            idx = int(offset // bucket_seconds)
+            if 0 <= idx < bucket_count: buckets[idx] += int(value or 0)
+    points = [{"t": (start + timedelta(seconds=i * bucket_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
+    min_dt = _parse_iso(min_bucket_start)
+    for point in points:
+        bucket_end = _parse_iso(point["t"]) + timedelta(seconds=bucket_seconds)
+        if min_dt is None or bucket_end <= min_dt: point["count"] = None
+    return points
 
 def _history_bucket_series(value_col, range_key):
     """Range series for 30d/90d, rolled up from the bounded analytics_buckets
     aggregation table instead of raw processed_queries/domains/devices."""
     range_seconds, rollup_seconds, bucket_count, label = _ANALYTICS_BUCKET_RANGES[range_key]
     now_dt = datetime.now(timezone.utc); start = now_dt - timedelta(seconds=range_seconds)
-    with closing(sqlite3.connect(DB_PATH)) as c:
-        min_bucket_start = c.execute("SELECT MIN(bucket_start) FROM analytics_buckets").fetchone()[0]
-        rows = c.execute(f"SELECT bucket_start,{value_col} FROM analytics_buckets WHERE bucket_start>=? ORDER BY bucket_start ASC", (start.isoformat(),)).fetchall()
-    buckets = [0] * bucket_count
-    for bucket_start, value in rows:
-        dt = _parse_iso(bucket_start)
-        if dt is None: continue
-        offset = (dt - start).total_seconds()
-        if 0 <= offset < range_seconds:
-            idx = int(offset // rollup_seconds)
-            if 0 <= idx < bucket_count: buckets[idx] += int(value or 0)
-    points = [{"t": (start + timedelta(seconds=i * rollup_seconds)).isoformat(), "count": buckets[i]} for i in range(bucket_count)]
-    min_dt = _parse_iso(min_bucket_start)
-    for point in points:
-        bucket_end = _parse_iso(point["t"]) + timedelta(seconds=rollup_seconds)
-        if min_dt is None or bucket_end <= min_dt: point["count"] = None
+    points = _history_bucket_series_window(value_col, start, rollup_seconds, bucket_count)
     return {"range": range_key, "label": label, "bucket_seconds": rollup_seconds, "points": points}
 
 def get_query_volume_series(range_key):
@@ -6535,6 +6824,91 @@ def _first_seen_series(table, range_key):
 def get_new_domains_series(range_key): return _first_seen_series("domains", range_key)
 def get_new_devices_series(range_key): return _first_seen_series("devices", range_key)
 
+
+# --- Custom From/To analytics window (Issue #88) -----------------------------
+# A user-chosen [from, to) window rather than one of the fixed presets above.
+# Bounded the same way the presets are: clamped to "now" and to the retained
+# analytics-history floor, and tiered into a bucket size so the point count
+# stays reasonable regardless of how wide a span is requested. Spans that fit
+# within the same window the "7d" preset uses read the still-retained raw
+# processed_queries/domains/devices tables (exact); wider spans fall back to
+# the bounded hourly analytics_buckets aggregation, exactly like 30d/90d.
+CUSTOM_ANALYTICS_RAW_SPAN_SECONDS = 7 * 86400
+CUSTOM_ANALYTICS_MAX_SPAN_SECONDS = 90 * 86400
+CUSTOM_ANALYTICS_MAX_BUCKETS = 180
+_CUSTOM_ANALYTICS_BUCKET_TIERS = (
+    (2 * 3600, 60), (24 * 3600, 900), (7 * 86400, 7200), (30 * 86400, 21600), (90 * 86400, 86400),
+)
+
+
+def _custom_analytics_bucket_seconds(span_seconds):
+    for max_span, bucket_seconds in _CUSTOM_ANALYTICS_BUCKET_TIERS:
+        if span_seconds <= max_span:
+            return bucket_seconds
+    return _CUSTOM_ANALYTICS_BUCKET_TIERS[-1][1]
+
+
+def parse_custom_analytics_window(from_raw, to_raw):
+    """Validate and bound a custom analytics window. Returns (window, error) --
+    window is a dict of {start, end, bucket_seconds, bucket_count, use_raw,
+    label}, error is a user-facing string on failure. Never fabricates a
+    window outside what's actually requested/retained."""
+    start = _parse_iso((from_raw or "").strip())
+    end = _parse_iso((to_raw or "").strip())
+    if start is None or end is None:
+        return None, "from and to must be ISO-8601 timestamps"
+    if end <= start:
+        return None, "to must be after from"
+    now_dt = datetime.now(timezone.utc)
+    retention_floor = now_dt - timedelta(hours=ANALYTICS_HISTORY_RETENTION_HOURS)
+    if end > now_dt: end = now_dt
+    if start < retention_floor: start = retention_floor
+    if end <= start:
+        return None, "requested window is outside the retained analytics history"
+    if (end - start).total_seconds() > CUSTOM_ANALYTICS_MAX_SPAN_SECONDS:
+        start = end - timedelta(seconds=CUSTOM_ANALYTICS_MAX_SPAN_SECONDS)
+    span_seconds = (end - start).total_seconds()
+    bucket_seconds = _custom_analytics_bucket_seconds(span_seconds)
+    bucket_count = max(1, min(CUSTOM_ANALYTICS_MAX_BUCKETS, math.ceil(span_seconds / bucket_seconds)))
+    label = f"Custom ({start.date().isoformat()} to {end.date().isoformat()})"
+    return {
+        "start": start, "end": end, "bucket_seconds": bucket_seconds, "bucket_count": bucket_count,
+        "use_raw": span_seconds <= CUSTOM_ANALYTICS_RAW_SPAN_SECONDS, "label": label,
+    }, None
+
+
+def get_custom_query_volume_series(window):
+    start, end, bucket_seconds, bucket_count = window["start"], window["end"], window["bucket_seconds"], window["bucket_count"]
+    if window["use_raw"]:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            min_seen_at = c.execute("SELECT MIN(seen_at) FROM processed_queries").fetchone()[0]
+            rows = c.execute("SELECT seen_at FROM processed_queries WHERE seen_at>=? AND seen_at<?", (start.isoformat(), end.isoformat())).fetchall()
+        points = _bucket_timestamps_window([r[0] for r in rows], start, bucket_seconds, bucket_count)
+        min_dt = _parse_iso(min_seen_at)
+        for point in points:
+            bucket_end = _parse_iso(point["t"]) + timedelta(seconds=bucket_seconds)
+            if min_dt is None or bucket_end <= min_dt: point["count"] = None
+    else:
+        points = _history_bucket_series_window("query_count", start, bucket_seconds, bucket_count)
+    return {"range": "custom", "label": window["label"], "bucket_seconds": bucket_seconds, "points": points, "window": {"from": start.isoformat(), "to": end.isoformat()}}
+
+
+def _custom_first_seen_series(table, window):
+    if table not in ("domains", "devices"): raise ValueError("unsupported table for first-seen series")
+    start, end, bucket_seconds, bucket_count = window["start"], window["end"], window["bucket_seconds"], window["bucket_count"]
+    if window["use_raw"]:
+        with closing(sqlite3.connect(DB_PATH)) as c:
+            rows = c.execute(f"SELECT first_seen FROM {table} WHERE first_seen>=? AND first_seen<? AND first_seen<>''", (start.isoformat(), end.isoformat())).fetchall()
+        points = _bucket_timestamps_window([r[0] for r in rows], start, bucket_seconds, bucket_count)
+    else:
+        value_col = "new_domains" if table == "domains" else "new_devices"
+        points = _history_bucket_series_window(value_col, start, bucket_seconds, bucket_count)
+    return {"range": "custom", "label": window["label"], "bucket_seconds": bucket_seconds, "points": points, "window": {"from": start.isoformat(), "to": end.isoformat()}}
+
+
+def get_custom_new_domains_series(window): return _custom_first_seen_series("domains", window)
+def get_custom_new_devices_series(window): return _custom_first_seen_series("devices", window)
+
 def get_status_breakdown():
     with closing(sqlite3.connect(DB_PATH)) as c:
         row = c.execute("SELECT SUM(CASE WHEN blocked_requests=0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests=0 AND allowed_requests>0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests=0 THEN 1 ELSE 0 END), SUM(CASE WHEN blocked_requests>0 AND allowed_requests>0 THEN 1 ELSE 0 END), COUNT(*) FROM domains").fetchone()
@@ -6557,14 +6931,21 @@ def _analytics_live_snapshot(window_seconds=ANALYTICS_LIVE_WINDOW_SECONDS):
     with closing(sqlite3.connect(DB_PATH)) as c: count = int(c.execute("SELECT COUNT(*) FROM processed_queries WHERE seen_at>=?", (cutoff,)).fetchone()[0] or 0)
     return {"updated": utcnow(), "window_seconds": window_seconds, "queries_in_window": count}
 
-def analytics_payload(range_key="1h"):
-    if range_key not in ANALYTICS_RANGE_OPTIONS: range_key = "1h"
+def analytics_payload(range_key="1h", custom_window=None):
+    if range_key == "custom" and custom_window:
+        series = {"queries": get_custom_query_volume_series(custom_window), "new_domains": get_custom_new_domains_series(custom_window), "new_devices": get_custom_new_devices_series(custom_window)}
+    else:
+        if range_key not in ANALYTICS_RANGE_OPTIONS: range_key = "1h"
+        series = {"queries": get_query_volume_series(range_key), "new_domains": get_new_domains_series(range_key), "new_devices": get_new_devices_series(range_key)}
     cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     with closing(sqlite3.connect(DB_PATH)) as c: new_domains_24h = int(c.execute("SELECT COUNT(*) FROM domains WHERE first_seen>=?", (cutoff_24h,)).fetchone()[0] or 0)
     activity = get_recent_activity()
-    return {"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS,
-            "series": {"queries": get_query_volume_series(range_key), "new_domains": get_new_domains_series(range_key), "new_devices": get_new_devices_series(range_key)},
+    payload = {"updated": utcnow(), "range": range_key, "range_options": ANALYTICS_RANGE_OPTIONS,
+            "series": series,
             "status_breakdown": get_status_breakdown(), "recent_domains": activity["domains"], "recent_devices": activity["devices"], "active_devices": _active_devices_count(), "total_devices": _total_devices_count(), "new_domains_24h": new_domains_24h, "live": _analytics_live_snapshot()}
+    if range_key == "custom" and custom_window:
+        payload["custom_window"] = {"from": custom_window["start"].isoformat(), "to": custom_window["end"].isoformat(), "label": custom_window["label"]}
+    return payload
 
 
 # --- Bounded hourly analytics history + exact-interval drill-down (#88) -----
@@ -6636,25 +7017,14 @@ def analytics_history_tick():
     return closed
 
 
-def analytics_interval_detail(range_key, bucket_dt):
+def _interval_detail_core(range_key, bucket_dt, bucket_seconds, period_average):
     """Exact-interval drill-down for a clicked chart bucket. Uses real
     per-query attribution while the interval is still inside the retained
     processed_queries window (granularity "exact"), falls back to the bounded
     hourly analytics_buckets summary once it has rolled off ("hourly_aggregate"),
     and is explicit -- never fabricated -- when neither has any data ("none")."""
-    if range_key in _ANALYTICS_BUCKET_RANGES:
-        _, bucket_seconds, _, _ = _ANALYTICS_BUCKET_RANGES[range_key]
-    else:
-        _, bucket_seconds, _, _ = _analytics_range(range_key)
     bucket_end_dt = bucket_dt + timedelta(seconds=bucket_seconds)
     start_iso, end_iso = bucket_dt.isoformat(), bucket_end_dt.isoformat()
-
-    try:
-        series = get_query_volume_series(range_key)
-        vals = [p["count"] for p in series["points"] if p.get("count") is not None]
-        period_average = round(sum(vals) / len(vals), 1) if vals else None
-    except Exception:
-        period_average = None
 
     with closing(sqlite3.connect(DB_PATH)) as c:
         min_seen_at = c.execute("SELECT MIN(seen_at) FROM processed_queries").fetchone()[0]
@@ -6721,6 +7091,31 @@ def analytics_interval_detail(range_key, bucket_dt):
             "top_devices": [{"device_key": k, "label": device_labels.get(k, k), "count": n} for k, n in top_devices],
             "note": "This interval is outside the retained raw query log; figures are reconstructed from the bounded hourly analytics history, so unique counts and top lists reflect what was recorded when each hour closed, not every individual query.",
         }
+
+
+def analytics_interval_detail(range_key, bucket_dt):
+    if range_key in _ANALYTICS_BUCKET_RANGES:
+        _, bucket_seconds, _, _ = _ANALYTICS_BUCKET_RANGES[range_key]
+    else:
+        _, bucket_seconds, _, _ = _analytics_range(range_key)
+    try:
+        series = get_query_volume_series(range_key)
+        vals = [p["count"] for p in series["points"] if p.get("count") is not None]
+        period_average = round(sum(vals) / len(vals), 1) if vals else None
+    except Exception:
+        period_average = None
+    return _interval_detail_core(range_key, bucket_dt, bucket_seconds, period_average)
+
+
+def analytics_interval_detail_custom(window, bucket_dt):
+    bucket_seconds = window["bucket_seconds"]
+    try:
+        series = get_custom_query_volume_series(window)
+        vals = [p["count"] for p in series["points"] if p.get("count") is not None]
+        period_average = round(sum(vals) / len(vals), 1) if vals else None
+    except Exception:
+        period_average = None
+    return _interval_detail_core("custom", bucket_dt, bucket_seconds, period_average)
 
 
 def get_stats(limit=10):
@@ -6846,13 +7241,16 @@ def worker():
         time.sleep(max(1, POLL_SECONDS - elapsed))
 
 
-def generate_analytics_report_pdf(range_key):
+def generate_analytics_report_pdf(range_key, custom_window=None):
     """Single source of truth for PDF generation -- used by the manual
     download route, the "Save report now" action, and the scheduler, so
     scheduled and on-demand reports can never diverge (Issue #88 #15)."""
-    if range_key not in ANALYTICS_RANGE_OPTIONS:
-        range_key = "1h"
-    analytics = analytics_payload(range_key)
+    if range_key == "custom" and custom_window:
+        analytics = analytics_payload("custom", custom_window)
+    else:
+        if range_key not in ANALYTICS_RANGE_OPTIONS:
+            range_key = "1h"
+        analytics = analytics_payload(range_key)
     report_buffer = build_analytics_pdf(
         analytics=analytics,
         stats=get_stats(limit=8),
@@ -6861,22 +7259,35 @@ def generate_analytics_report_pdf(range_key):
         version=APP_VERSION,
         environment=RUNTIME_ENV,
         range_key=range_key,
+        custom_window=custom_window,
     )
     label = ((analytics.get("series") or {}).get("queries") or {}).get("label", range_key)
-    return report_buffer.getvalue(), {"range_key": range_key, "label": label, "generated_at": utcnow()}
+    meta = {"range_key": range_key, "label": label, "generated_at": utcnow()}
+    if custom_window:
+        meta["custom_from"] = custom_window["start"].isoformat()
+        meta["custom_to"] = custom_window["end"].isoformat()
+        meta["filename_range"] = f"custom-{custom_window['start'].strftime('%Y%m%d')}-{custom_window['end'].strftime('%Y%m%d')}"
+    else:
+        meta["filename_range"] = range_key
+    return report_buffer.getvalue(), meta
 
 
 @app.route("/api/analytics/report.pdf")
 def api_analytics_report_pdf():
     range_key = request.args.get("range", "1h").strip() or "1h"
+    custom_window = None
+    if range_key == "custom":
+        custom_window, err = parse_custom_analytics_window(request.args.get("from", ""), request.args.get("to", ""))
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
     try:
-        pdf_bytes, meta = generate_analytics_report_pdf(range_key)
+        pdf_bytes, meta = generate_analytics_report_pdf(range_key, custom_window)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=f"dns-inspector-analytics-{meta['range_key']}-{stamp}.pdf",
+            download_name=f"dns-inspector-analytics-{meta['filename_range']}-{stamp}.pdf",
         )
     except Exception as e:
         print("analytics PDF export error:", repr(e), flush=True)
@@ -6887,6 +7298,15 @@ def api_analytics_report_pdf():
 @app.route("/api/analytics")
 def api_analytics():
     range_key = request.args.get("range", "1h").strip() or "1h"
+    if range_key == "custom":
+        custom_window, err = parse_custom_analytics_window(request.args.get("from", ""), request.args.get("to", ""))
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        try: return jsonify(analytics_payload("custom", custom_window))
+        except Exception as e:
+            print("analytics error:", repr(e), flush=True)
+            empty = {"range": "custom", "label": "", "bucket_seconds": 0, "points": []}
+            return jsonify({"updated": utcnow(), "range": "custom", "range_options": ANALYTICS_RANGE_OPTIONS, "series": {"queries": empty, "new_domains": empty, "new_devices": empty}, "status_breakdown": {}, "recent_domains": [], "recent_devices": [], "active_devices": 0, "total_devices": 0, "new_domains_24h": 0, "live": {"updated": utcnow(), "window_seconds": ANALYTICS_LIVE_WINDOW_SECONDS, "queries_in_window": 0}, "error": str(e)}), 200
     try: return jsonify(analytics_payload(range_key))
     except Exception as e:
         print("analytics error:", repr(e), flush=True)
@@ -6897,11 +7317,20 @@ def api_analytics():
 @app.route("/api/analytics/interval")
 def api_analytics_interval():
     range_key = request.args.get("range", "1h").strip() or "1h"
-    if range_key not in ANALYTICS_RANGE_OPTIONS:
-        return jsonify({"ok": False, "error": "unsupported range"}), 400
     bucket_dt = _parse_iso(request.args.get("bucket_start", "").strip())
     if bucket_dt is None:
         return jsonify({"ok": False, "error": "bucket_start must be an ISO-8601 timestamp"}), 400
+    if range_key == "custom":
+        custom_window, err = parse_custom_analytics_window(request.args.get("from", ""), request.args.get("to", ""))
+        if err:
+            return jsonify({"ok": False, "error": err}), 400
+        try:
+            return jsonify(analytics_interval_detail_custom(custom_window, bucket_dt))
+        except Exception as e:
+            print("analytics interval error:", repr(e), flush=True)
+            return jsonify({"ok": False, "error": "Unable to compute interval detail"}), 200
+    if range_key not in ANALYTICS_RANGE_OPTIONS:
+        return jsonify({"ok": False, "error": "unsupported range"}), 400
     try:
         return jsonify(analytics_interval_detail(range_key, bucket_dt))
     except Exception as e:

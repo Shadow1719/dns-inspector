@@ -161,3 +161,56 @@ def test_analytics_pdf_export_handles_known_datacenter_provenance(monkeypatch, t
     assert response.status_code == 200
     assert response.data.startswith(b"%PDF-")
     assert len(response.data) > 2000
+
+
+def test_analytics_tab_has_custom_range_controls(monkeypatch, tmp_path):
+    """Issue #88 item 1: a custom From/To period control must exist in the
+    UI, not just the backend -- and it must be wired to the same
+    /api/analytics(.pdf)/interval endpoints as the preset range buttons."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+    assert 'data-analytics-range="custom"' in body
+    assert 'id="analytics-custom-from"' in body
+    assert 'id="analytics-custom-to"' in body
+    assert 'id="analytics-custom-apply-btn"' in body
+    assert "function analyticsRangeQueryString(" in body
+    assert "range=custom" in body
+    # The export button and interval drill-down must use the same custom
+    # from/to, not silently fall back to a preset when a custom window is active.
+    assert "analyticsRangeQueryString()" in body
+
+
+def test_assessment_tab_exists_with_ten_sections_and_reuses_existing_data(monkeypatch, tmp_path):
+    """Issue #88 item 2: a standalone Assessment tab with 10 progressive-
+    disclosure sections, built only from data the Analytics tab/PDF export
+    already expose -- no new/fabricated data source."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+    assert 'data-tab="assessment"' in body
+    assert 'id="tab-assessment"' in body
+    assert body.count('class="assessment-section"') == 10
+    assessment_start = body.index('id="tab-assessment"')
+    assessment_end = body.index("</section>", assessment_start)
+    assessment_html = body[assessment_start:assessment_end]
+    # progressive disclosure: native <details>/<summary>, fully keyboard operable without extra JS
+    assert assessment_html.count("<details") == 10
+    assert assessment_html.count("<summary>") == 10
+    for slot in (
+        "assessment-summary", "assessment-timeline", "assessment-status", "assessment-top-domains",
+        "assessment-top-devices", "assessment-new", "assessment-geo", "assessment-coverage", "assessment-reports",
+    ):
+        assert f'id="{slot}"' in assessment_html
+    # No fabricated data source -- only the existing analytics/map/reports endpoints.
+    assert "fetch(`/api/analytics?" in body
+    assert "fetch('/api/analytics/map'" in body
+    assert "fetch('/api/reports/status'" in body
+
+
+def test_country_breakdown_list_has_roving_keyboard_navigation(monkeypatch, tmp_path):
+    """Issue #88 item 3: the country breakdown list must support arrow-key
+    roving-tabindex navigation, not just sequential Tab-through-buttons."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+    assert "function bindMapBreakdownKeyboardNav(" in body
+    assert "ArrowDown" in body and "ArrowUp" in body
+    assert "'Home'" in body and "'End'" in body

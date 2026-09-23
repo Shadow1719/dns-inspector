@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.8 custom analytics window, standalone Assessment tab, map/list accessibility (Issue #88 follow-up)
+
+- added a configurable custom From/To analytics window: `parse_custom_analytics_window()` validates and bounds an arbitrary period (clamped to "now" and to the retained analytics-history floor, tiered bucket size, raw `processed_queries` when the span fits the existing 7d raw window and the bounded hourly `analytics_buckets` aggregate otherwise); `/api/analytics`, `/api/analytics/report.pdf` and `/api/analytics/interval` all accept `range=custom&from=&to=`, and the selected window is reflected in the dashboard UI, the PDF cover/footer, the export filename (`...-custom-YYYYMMDD-YYYYMMDD-*.pdf`) and the JSON `custom_window` metadata
+- added a standalone **Assessment** tab: a 10-section Visibility Assessment (executive summary, activity timeline, status/classification, recently active domains/devices, new discoveries, destination geography, coverage/provenance, report delivery/scheduling, methodology & limitations), each a native `<details>`/`<summary>` for progressive disclosure; every section reads the existing `/api/analytics`, `/api/analytics/map` and `/api/reports/status` payloads -- no new or fabricated data source
+- added roving-tabindex Up/Down/Home/End keyboard navigation to the destination map's country breakdown list, `role="status"`/`aria-live="polite"` on the map status banner (both the SVG-fallback and Leaflet renderers), and an `alt` label on destination cluster markers (country markers already had one)
+- bumped candidate to `0.8.6-dev.8`
+
 ## [Unreleased] - 0.8.6-dev.7 live widget merge + known-datacenter provenance (Issue #88 follow-up)
 
 - merged the "Live activity" widget (live rate, gauge, sparkline, Allowed/Blocked/Active devices/New domains tiles) into the "Visibility report" widget instead of shipping two adjacent Analytics widgets, so the first widget on the dashboard is always a single, always-populated, useful surface rather than a separate one that could look inert

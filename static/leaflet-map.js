@@ -156,6 +156,8 @@
     if (!el) {
       el = document.createElement("div");
       el.className = "map-status-banner leaflet-status-banner";
+      el.setAttribute("role", "status");
+      el.setAttribute("aria-live", "polite");
       host.appendChild(el);
     }
     el.innerHTML = text + (actionHtml ? `<div class="map-status-action">${actionHtml}</div>` : "");
@@ -369,6 +371,7 @@
       const marker = L.marker([c.lat, c.lon], {
         icon: bubbleIcon(size, color, selected),
         title: label,
+        alt: label,
         keyboard: true,
       });
       marker.on("click", () => activateCluster(c, data, capabilities));

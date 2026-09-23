@@ -165,3 +165,156 @@ def test_analytics_range_options_include_30d_and_90d(app_module):
         data = resp.get_json()
         assert data["range"] == range_key
         assert "points" in data["series"]["queries"]
+
+
+# --- Custom From/To analytics window (Issue #88) -----------------------------
+
+def test_parse_custom_analytics_window_validates_input(app_module):
+    window, err = app_module.parse_custom_analytics_window("not-a-date", "also-not-a-date")
+    assert window is None
+    assert "ISO-8601" in err
+
+    now = datetime.now(timezone.utc)
+    window, err = app_module.parse_custom_analytics_window(now.isoformat(), (now - timedelta(hours=1)).isoformat())
+    assert window is None
+    assert "after" in err
+
+    start = now - timedelta(hours=2)
+    window, err = app_module.parse_custom_analytics_window(start.isoformat(), now.isoformat())
+    assert err is None
+    assert window["start"] <= start
+    assert window["end"] <= now
+    assert window["bucket_count"] > 0
+    assert window["use_raw"] is True
+    assert "Custom" in window["label"]
+
+
+def test_parse_custom_analytics_window_clamps_to_retention_floor_and_now(app_module):
+    now = datetime.now(timezone.utc)
+    far_future = now + timedelta(days=30)
+    ancient = now - timedelta(hours=app_module.ANALYTICS_HISTORY_RETENTION_HOURS + 1000)
+
+    window, err = app_module.parse_custom_analytics_window(ancient.isoformat(), far_future.isoformat())
+    assert err is None
+    retention_floor = now - timedelta(hours=app_module.ANALYTICS_HISTORY_RETENTION_HOURS)
+    assert window["start"] >= retention_floor - timedelta(seconds=5)
+    assert window["end"] <= now + timedelta(seconds=5)
+
+
+def test_parse_custom_analytics_window_bucket_tiering(app_module):
+    now = datetime.now(timezone.utc)
+
+    short_window, _ = app_module.parse_custom_analytics_window((now - timedelta(hours=1)).isoformat(), now.isoformat())
+    assert short_window["bucket_seconds"] == 60
+    assert short_window["use_raw"] is True
+
+    wide_window, _ = app_module.parse_custom_analytics_window((now - timedelta(days=10)).isoformat(), now.isoformat())
+    assert wide_window["bucket_seconds"] == 21600
+    assert wide_window["use_raw"] is False
+
+
+def test_get_custom_query_volume_series_uses_raw_for_short_span(app_module):
+    app_module.init_db()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    start = now - timedelta(hours=1)
+    _insert_query(app_module, "fp-custom-a", (start + timedelta(minutes=5)).isoformat(), domain="example.com", device_key="mac:aa", status="Allowed")
+    _insert_query(app_module, "fp-custom-b", (start + timedelta(minutes=6)).isoformat(), domain="tracker.example", device_key="mac:bb", status="Blocked")
+
+    window, err = app_module.parse_custom_analytics_window(start.isoformat(), now.isoformat())
+    assert err is None
+    series = app_module.get_custom_query_volume_series(window)
+    assert series["range"] == "custom"
+    assert sum(p["count"] or 0 for p in series["points"]) == 2
+
+
+def test_get_custom_query_volume_series_uses_aggregate_for_long_span(app_module):
+    app_module.init_db()
+    now = datetime.now(timezone.utc)
+    bucket_start = app_module._bucket_floor(now) - timedelta(days=10)
+    with app_module.db_lock, closing(app_module.sqlite3.connect(app_module.DB_PATH)) as c:
+        c.execute(
+            "INSERT INTO analytics_buckets(bucket_start,bucket_seconds,query_count,unique_domains,unique_devices,allowed,blocked,unknown,new_domains,new_devices,top_domains_json,top_devices_json,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (bucket_start.isoformat(), 3600, 7, 2, 1, 5, 2, 0, 0, 0, "[]", "[]", app_module.utcnow()),
+        )
+        c.commit()
+
+    window, err = app_module.parse_custom_analytics_window((bucket_start - timedelta(hours=1)).isoformat(), now.isoformat())
+    assert err is None
+    assert window["use_raw"] is False
+    series = app_module.get_custom_query_volume_series(window)
+    assert sum(p["count"] or 0 for p in series["points"]) >= 7
+
+
+def test_analytics_payload_custom_window_includes_metadata(app_module):
+    app_module.init_db()
+    now = datetime.now(timezone.utc)
+    window, err = app_module.parse_custom_analytics_window((now - timedelta(hours=3)).isoformat(), now.isoformat())
+    assert err is None
+    payload = app_module.analytics_payload("custom", window)
+    assert payload["range"] == "custom"
+    assert "custom_window" in payload
+    assert payload["custom_window"]["from"] and payload["custom_window"]["to"]
+
+
+def test_analytics_api_custom_range_end_to_end(app_module):
+    # A raw "+00:00" UTC offset in a query string is ambiguous with a space
+    # under application/x-www-form-urlencoded decoding, so these go through
+    # query_string=, which the test client encodes correctly, rather than
+    # hand-built f-string URLs.
+    app_module.init_db()
+    client = app_module.app.test_client()
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=5)
+
+    resp = client.get("/api/analytics", query_string={"range": "custom", "from": start.isoformat(), "to": now.isoformat()})
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["range"] == "custom"
+    assert "custom_window" in data
+
+    bad = client.get("/api/analytics", query_string={"range": "custom", "from": "not-a-date", "to": "also-bad"})
+    assert bad.status_code == 400
+
+    backwards = client.get("/api/analytics", query_string={"range": "custom", "from": now.isoformat(), "to": start.isoformat()})
+    assert backwards.status_code == 400
+
+
+def test_analytics_report_pdf_custom_range(app_module):
+    app_module.init_db()
+    client = app_module.app.test_client()
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(hours=4)
+
+    resp = client.get("/api/analytics/report.pdf", query_string={"range": "custom", "from": start.isoformat(), "to": now.isoformat()})
+    assert resp.status_code == 200
+    assert resp.data.startswith(b"%PDF-")
+    assert "custom-" in resp.headers.get("Content-Disposition", "")
+
+    bad = client.get("/api/analytics/report.pdf", query_string={"range": "custom", "from": "nope", "to": "nope"})
+    assert bad.status_code == 400
+
+
+def test_analytics_interval_custom_range_reflects_real_data(app_module):
+    app_module.init_db()
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    bucket_start = now - timedelta(minutes=30)
+    _insert_query(app_module, "fp-interval-custom", (bucket_start + timedelta(seconds=5)).isoformat(), domain="example.com", device_key="mac:aa", status="Allowed")
+
+    client = app_module.app.test_client()
+    window_start = now - timedelta(hours=2)
+    resp = client.get(
+        "/api/analytics/interval",
+        query_string={"range": "custom", "from": window_start.isoformat(), "to": now.isoformat(), "bucket_start": bucket_start.isoformat()},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["ok"] is True
+    assert data["range"] == "custom"
+    assert data["query_count"] >= 1
+
+    bad = client.get(
+        "/api/analytics/interval",
+        query_string={"range": "custom", "from": "nope", "to": "nope", "bucket_start": bucket_start.isoformat()},
+    )
+    assert bad.status_code == 400
