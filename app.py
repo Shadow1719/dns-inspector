@@ -1405,27 +1405,40 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 .dash-customize-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
 .dash-hint{color:var(--text-tertiary);font-size:.78rem}
 .dash-grid.grid-stack{background:transparent}
-.dash-grid .grid-stack-item-content{overflow:auto;box-sizing:border-box}
-.dash-widget{container-type:inline-size;container-name:dashboard-widget}
-.dash-widget .card{min-height:120px;min-width:0}
+.dash-grid .grid-stack-item-content{overflow:visible;box-sizing:border-box}
+.dash-widget{container-type:inline-size;container-name:dashboard-widget;min-width:0}
+.dash-widget .grid-stack-item-content{min-width:0}
+.dash-widget .card{min-height:120px;min-width:0;overflow:visible}
 .dash-widget .analytics-hero{min-width:0}
 .dash-widget .stat-tiles{min-width:0}
-@container dashboard-widget (max-width: 760px){
+@container dashboard-widget (max-width: 900px){
   .dash-widget .analytics-hero{grid-template-columns:1fr}
   .dash-widget .stat-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
   .dash-widget .analytics-range-controls{gap:5px}
   .dash-widget .range-btn{padding-left:9px;padding-right:9px}
+  .dash-widget .chart-grid{grid-template-columns:1fr}
+  .dash-widget .gauge-cluster{gap:10px}
+  .dash-widget .gauge-face{min-width:145px;flex:1 1 145px}
 }
-@container dashboard-widget (max-width: 520px){
-  .dash-widget .stat-tiles{grid-template-columns:1fr}
+@container dashboard-widget (max-width: 620px){
+  .dash-widget .stat-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dash-widget .chart-grid{grid-template-columns:1fr}
+  .dash-widget .chart-card{min-height:220px}
+  .dash-widget .bar-row{grid-template-columns:minmax(0,1fr) auto;gap:7px}
+  .dash-widget .bar-track{grid-column:1 / -1;order:3}
+  .dash-widget .bar-value{min-width:56px}
   .dash-widget .analytics-range-controls{align-items:stretch}
   .dash-widget .range-btn{flex:1 1 auto}
   .dash-widget .range-custom-controls{align-items:stretch}
   .dash-widget .range-custom-controls label{flex:1 1 100%}
 }
-@container dashboard-widget (max-width: 420px){
+@container dashboard-widget (max-width: 460px){
+  .dash-widget .stat-tiles{grid-template-columns:1fr}
   .dash-widget h2{font-size:.96rem}
   .dash-widget .stats-note{font-size:.74rem}
+  .dash-widget .activity-row{align-items:flex-start;flex-wrap:wrap}
+  .dash-widget .activity-row .sub{width:100%;white-space:normal}
+  .dash-widget .report-kpi-row{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 .dash-grid.dash-customizing .grid-stack-item-content{outline:1px dashed var(--border-strong);outline-offset:-1px;border-radius:var(--radius-lg)}
 .dash-grid .grid-stack-item.ui-draggable-dragging .grid-stack-item-content,.dash-grid .grid-stack-item.ui-resizable-resizing .grid-stack-item-content{opacity:.75}
@@ -2023,7 +2036,7 @@ function renderInstrumentGauges(data){
   </div>
   <div class="dash-hidden-tray" id="dash-hidden-tray"><span class="dash-hidden-tray-label">Hidden widgets:</span><div class="dash-hidden-tray-list" id="dash-hidden-tray-list"></div></div>
   <div class="dash-grid grid-stack" id="analytics-dash-grid">
-    <div class="grid-stack-item dash-widget" data-widget-id="visibility-report" data-title="Visibility report" gs-id="visibility-report" gs-w="4" gs-h="7">
+    <div class="grid-stack-item dash-widget" data-widget-id="visibility-report" data-title="Visibility report" gs-id="visibility-report" gs-w="4" gs-h="9" gs-min-h="8">
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>Visibility report <span class="sub">executive overview</span></h2>
@@ -2047,7 +2060,7 @@ function renderInstrumentGauges(data){
       </div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" gs-id="query-volume" gs-w="4" gs-h="6">
+    <div class="grid-stack-item dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" gs-id="query-volume" gs-w="4" gs-h="11" gs-min-h="10" gs-min-h="7">
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>DNS activity over time</h2>
@@ -2072,7 +2085,7 @@ function renderInstrumentGauges(data){
       </div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="new-domains" data-title="New domains discovered" gs-id="new-domains" gs-w="2" gs-h="4">
+    <div class="grid-stack-item dash-widget" data-widget-id="new-domains" data-title="New domains discovered" gs-id="new-domains" gs-w="2" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
       <div class="card"><h2>New domains discovered</h2><div id="chart-new-domains"></div></div>
       </div>
@@ -2082,7 +2095,7 @@ function renderInstrumentGauges(data){
       <div class="card"><h2>New devices discovered</h2><div id="chart-new-devices"></div></div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="status-breakdown" data-title="Status breakdown" gs-id="status-breakdown" gs-w="4" gs-h="4">
+    <div class="grid-stack-item dash-widget" data-widget-id="status-breakdown" data-title="Status breakdown" gs-id="status-breakdown" gs-w="4" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>Status breakdown</h2>
@@ -2189,7 +2202,7 @@ function renderInstrumentGauges(data){
       <div class="card"><h2>Recently active devices</h2><div id="activity-devices" class="dash-scroll"></div></div>
       </div>
     </div>
-    <div class="grid-stack-item dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" gs-id="top-activity" gs-w="4" gs-h="6">
+    <div class="grid-stack-item dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" gs-id="top-activity" gs-w="4" gs-h="8" gs-min-h="7">
       <div class="grid-stack-item-content">
       <div class="card"><h2>Top activity (all time)</h2><div class="stats-note" style="margin-top:0">Cumulative totals since the database was created.</div></div>
       <div class="chart-grid">
@@ -3930,14 +3943,15 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   // gs-w/gs-h come from the server-rendered markup; gs-x/gs-y are
   // intentionally absent so GridStack auto-packs the shipped DOM order on
   // init, in reading order, the same way the old CSS `grid-auto-flow:dense`
-  // did -- that auto-packed result becomes DEFAULT_LAYOUT below. During
-  // interactive resize, neighboring widgets are locked so they do not jump.
+  // did -- that auto-packed result becomes DEFAULT_LAYOUT below. Interactive
+  // resize uses preventCollision so neighboring widgets stay put.
   const grid = GridStack.init({
     column: COLUMNS,
     cellHeight: 60,
     margin: 10,
     float: true,
     animate: false,
+    preventCollision: true,
     staticGrid: true,
     handle: '.dash-drag-handle',
     resizable: { handles: 'e, se, s' },
@@ -4150,72 +4164,10 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     unhideWidget(btn.dataset.dashShow);
   });
 
-  // During a resize, keep every other widget locked in place. GridStack's
-  // normal collision engine pushes neighbors when the active widget grows;
-  // locking peers makes the resize consume only genuinely free space instead
-  // of silently changing the dashboard geometry around it.
-  let resizeLockState = null;
-  let suppressLayoutPersistence = false;
-  grid.on('resizestart', (event, el) => {
-    if (!el?.gridstackNode) return;
-    resizeLockState = new Map();
-    suppressLayoutPersistence = true;
-    grid.getGridItems().forEach(peer => {
-      if (peer === el || !peer.gridstackNode) return;
-      resizeLockState.set(peer, Boolean(peer.gridstackNode.locked));
-      grid.update(peer, {locked: true});
-    });
-  });
-  grid.on('resizestop', () => {
-    if (!resizeLockState) return;
-    resizeLockState.forEach((wasLocked, peer) => {
-      if (peer?.gridstackNode) grid.update(peer, {locked: wasLocked});
-    });
-    resizeLockState = null;
-    suppressLayoutPersistence = false;
-    syncLayoutFromGrid();
-    layout.preset = 'custom';
-    saveLayout();
-    refreshChrome();
-    scheduleResponsiveAnalyticsRefresh();
-  });
-
-  // Chart/map renderers are container-aware too. Re-render from the already
-  // fetched analytics payload after a widget changes width; no extra API
-  // calls are made just because a user resized a widget.
-  let responsiveRefreshTimer = null;
-  const responsiveWidthCache = new WeakMap();
-  function scheduleResponsiveAnalyticsRefresh(){
-    if (responsiveRefreshTimer) cancelAnimationFrame(responsiveRefreshTimer);
-    responsiveRefreshTimer = requestAnimationFrame(() => {
-      responsiveRefreshTimer = null;
-      const payload = window.__lastAnalyticsPayload;
-      if (!payload) return;
-      renderVisibilityReport(payload);
-      renderQueryVolumeChart(payload);
-      renderMetricVisual('chart-new-domains', payload.series?.new_domains?.points, '--sem-ok', 'New domains');
-      renderMetricVisual('chart-new-devices', payload.series?.new_devices?.points, '--sem-ok', 'New devices');
-      renderStatusBreakdown(payload.status_breakdown);
-      renderRecentActivity(payload.recent_domains, payload.recent_devices);
-      renderInstrumentGauges(payload);
-      if (typeof window.dnsInspectorResizeMap === 'function') window.dnsInspectorResizeMap();
-    });
-  }
-  if (typeof ResizeObserver !== 'undefined'){
-    const resizeObserver = new ResizeObserver(entries => {
-      let changed = false;
-      entries.forEach(entry => {
-        const width = Math.round(entry.contentRect?.width || 0);
-        const prev = responsiveWidthCache.get(entry.target);
-        if (prev == null || Math.abs(prev - width) >= 2){
-          responsiveWidthCache.set(entry.target, width);
-          changed = true;
-        }
-      });
-      if (changed) scheduleResponsiveAnalyticsRefresh();
-    });
-    gridEl.querySelectorAll('.grid-stack-item').forEach(el => resizeObserver.observe(el));
-  }
+  // A resize is collision-safe: preventCollision keeps neighboring
+  // widgets in their existing cells instead of allowing GridStack to push
+  // the entire dashboard downward. Responsive renderers below use the
+  // current widget/container dimensions and cached data to adapt in-place.
 
   // GridStack's own 'change' event is how pointer-driven drag/resize (the
   // one interaction not already funneled through a button handler above)
