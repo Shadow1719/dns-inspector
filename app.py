@@ -234,7 +234,7 @@ _SECURITY_HEADERS = {
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline' https://unpkg.com; "
         "style-src 'self' 'unsafe-inline' https://unpkg.com; "
-        "img-src 'self' data: https://tile.openstreetmap.org https://*.tile.opentopomap.org https://server.arcgisonline.com; "
+        "img-src 'self' data: https://*.basemaps.cartocdn.com https://server.arcgisonline.com; "
         "font-src 'self' data:; "
         "connect-src 'self'; "
         "object-src 'none'; "
