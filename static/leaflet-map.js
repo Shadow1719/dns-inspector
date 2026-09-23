@@ -43,9 +43,7 @@
   // not just a load-time check.
   const legacyRenderDestinationMap = typeof window.renderDestinationMap === "function" ? window.renderDestinationMap : null;
 
-  // Do not use tile.openstreetmap.org directly. The OSM raster service is
-  // community-funded and may block application traffic that does not satisfy
-  // its tile policy. DNS Inspector uses an OSM-derived CARTO basemap instead.
+  // DNS Inspector uses an OSM-derived CARTO basemap instead of the direct OSM raster endpoint.
   const BASEMAP_DEFINITIONS = {
     "Dark / NOC (CARTO)": {
       url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
@@ -97,7 +95,7 @@
       Object.entries(BASEMAP_DEFINITIONS).forEach(([label, def]) => {
         baseLayers[label] = L.tileLayer(def.url, def.options);
       });
-      baseLayers["OpenStreetMap"].addTo(map);
+      baseLayers["Dark / NOC (CARTO)"].addTo(map);
       L.control.layers(baseLayers, null, { collapsed: true, position: "topright" }).addTo(map);
       state.baseLayers = baseLayers;
 
