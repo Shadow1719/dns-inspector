@@ -1406,7 +1406,27 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 .dash-hint{color:var(--text-tertiary);font-size:.78rem}
 .dash-grid.grid-stack{background:transparent}
 .dash-grid .grid-stack-item-content{overflow:auto;box-sizing:border-box}
-.dash-widget .card{min-height:120px}
+.dash-widget{container-type:inline-size;container-name:dashboard-widget}
+.dash-widget .card{min-height:120px;min-width:0}
+.dash-widget .analytics-hero{min-width:0}
+.dash-widget .stat-tiles{min-width:0}
+@container dashboard-widget (max-width: 760px){
+  .dash-widget .analytics-hero{grid-template-columns:1fr}
+  .dash-widget .stat-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dash-widget .analytics-range-controls{gap:5px}
+  .dash-widget .range-btn{padding-left:9px;padding-right:9px}
+}
+@container dashboard-widget (max-width: 520px){
+  .dash-widget .stat-tiles{grid-template-columns:1fr}
+  .dash-widget .analytics-range-controls{align-items:stretch}
+  .dash-widget .range-btn{flex:1 1 auto}
+  .dash-widget .range-custom-controls{align-items:stretch}
+  .dash-widget .range-custom-controls label{flex:1 1 100%}
+}
+@container dashboard-widget (max-width: 420px){
+  .dash-widget h2{font-size:.96rem}
+  .dash-widget .stats-note{font-size:.74rem}
+}
 .dash-grid.dash-customizing .grid-stack-item-content{outline:1px dashed var(--border-strong);outline-offset:-1px;border-radius:var(--radius-lg)}
 .dash-grid .grid-stack-item.ui-draggable-dragging .grid-stack-item-content,.dash-grid .grid-stack-item.ui-resizable-resizing .grid-stack-item-content{opacity:.75}
 .dash-widget-head{display:none;align-items:center;gap:6px;margin:0 0 12px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm)}
@@ -1819,7 +1839,7 @@ function renderMetricVisual(elId, points, colorVar, unitLabel, opts){
   el.classList.add('visual-'+style);
   const pts = points || [];
   if (!pts.some(p => p.count != null)){ el.innerHTML = '<div class="empty-state">No data yet.</div>'; return; }
-  const w=600, h=120, pad=4;
+  const w=Math.max(280, Math.round(el.clientWidth || 600)), h=120, pad=4;
   const xy = metricXY(pts, w, h, pad);
   const vals = pts.map(p=>p.count).filter(v=>v!=null);
   const peak = vals.length ? Math.max(...vals) : 0;
@@ -3910,13 +3930,14 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   // gs-w/gs-h come from the server-rendered markup; gs-x/gs-y are
   // intentionally absent so GridStack auto-packs the shipped DOM order on
   // init, in reading order, the same way the old CSS `grid-auto-flow:dense`
-  // did -- that auto-packed result becomes DEFAULT_LAYOUT below.
+  // did -- that auto-packed result becomes DEFAULT_LAYOUT below. During
+  // interactive resize, neighboring widgets are locked so they do not jump.
   const grid = GridStack.init({
     column: COLUMNS,
     cellHeight: 60,
     margin: 10,
     float: true,
-    animate: true,
+    animate: false,
     staticGrid: true,
     handle: '.dash-drag-handle',
     resizable: { handles: 'e, se, s' },
@@ -4129,13 +4150,80 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     unhideWidget(btn.dataset.dashShow);
   });
 
+  // During a resize, keep every other widget locked in place. GridStack's
+  // normal collision engine pushes neighbors when the active widget grows;
+  // locking peers makes the resize consume only genuinely free space instead
+  // of silently changing the dashboard geometry around it.
+  let resizeLockState = null;
+  let suppressLayoutPersistence = false;
+  grid.on('resizestart', (event, el) => {
+    if (!el?.gridstackNode) return;
+    resizeLockState = new Map();
+    suppressLayoutPersistence = true;
+    grid.getGridItems().forEach(peer => {
+      if (peer === el || !peer.gridstackNode) return;
+      resizeLockState.set(peer, Boolean(peer.gridstackNode.locked));
+      grid.update(peer, {locked: true});
+    });
+  });
+  grid.on('resizestop', () => {
+    if (!resizeLockState) return;
+    resizeLockState.forEach((wasLocked, peer) => {
+      if (peer?.gridstackNode) grid.update(peer, {locked: wasLocked});
+    });
+    resizeLockState = null;
+    suppressLayoutPersistence = false;
+    syncLayoutFromGrid();
+    layout.preset = 'custom';
+    saveLayout();
+    refreshChrome();
+    scheduleResponsiveAnalyticsRefresh();
+  });
+
+  // Chart/map renderers are container-aware too. Re-render from the already
+  // fetched analytics payload after a widget changes width; no extra API
+  // calls are made just because a user resized a widget.
+  let responsiveRefreshTimer = null;
+  const responsiveWidthCache = new WeakMap();
+  function scheduleResponsiveAnalyticsRefresh(){
+    if (responsiveRefreshTimer) cancelAnimationFrame(responsiveRefreshTimer);
+    responsiveRefreshTimer = requestAnimationFrame(() => {
+      responsiveRefreshTimer = null;
+      const payload = window.__lastAnalyticsPayload;
+      if (!payload) return;
+      renderVisibilityReport(payload);
+      renderQueryVolumeChart(payload);
+      renderMetricVisual('chart-new-domains', payload.series?.new_domains?.points, '--sem-ok', 'New domains');
+      renderMetricVisual('chart-new-devices', payload.series?.new_devices?.points, '--sem-ok', 'New devices');
+      renderStatusBreakdown(payload.status_breakdown);
+      renderRecentActivity(payload.recent_domains, payload.recent_devices);
+      renderInstrumentGauges(payload);
+      if (typeof window.dnsInspectorResizeMap === 'function') window.dnsInspectorResizeMap();
+    });
+  }
+  if (typeof ResizeObserver !== 'undefined'){
+    const resizeObserver = new ResizeObserver(entries => {
+      let changed = false;
+      entries.forEach(entry => {
+        const width = Math.round(entry.contentRect?.width || 0);
+        const prev = responsiveWidthCache.get(entry.target);
+        if (prev == null || Math.abs(prev - width) >= 2){
+          responsiveWidthCache.set(entry.target, width);
+          changed = true;
+        }
+      });
+      if (changed) scheduleResponsiveAnalyticsRefresh();
+    });
+    gridEl.querySelectorAll('.grid-stack-item').forEach(el => resizeObserver.observe(el));
+  }
+
   // GridStack's own 'change' event is how pointer-driven drag/resize (the
   // one interaction not already funneled through a button handler above)
   // gets captured and persisted; the guard skips this module's own
   // programmatic writes so switching a preset doesn't immediately relabel
   // itself 'custom'.
   grid.on('change', () => {
-    if (applyingProgrammatically) return;
+    if (applyingProgrammatically || suppressLayoutPersistence) return;
     layout.preset = 'custom';
     syncLayoutFromGrid();
     saveLayout();
