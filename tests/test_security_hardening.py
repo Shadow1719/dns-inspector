@@ -151,7 +151,8 @@ def test_security_headers_present_on_responses(app_module):
     assert "object-src 'none'" in csp
     assert "frame-ancestors 'none'" in csp
     assert "https://unpkg.com" in csp
-    assert "https://tile.openstreetmap.org" in csp
+    assert "https://*.basemaps.cartocdn.com" in csp
+    assert "https://server.arcgisonline.com" in csp
 
 
 def test_manual_ping_is_rate_limited_per_target(app_module, monkeypatch):
