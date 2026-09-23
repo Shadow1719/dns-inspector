@@ -143,6 +143,25 @@ def test_leaflet_renderer_uses_public_esri_basemaps():
     assert "L.control.layers" in js
 
 
+def test_leaflet_map_resize_hook_reflows_real_tiles_not_a_screenshot():
+    """Issue #94: the destination-map widget must genuinely reflow its
+    Leaflet viewport when the Analytics dashboard grid item is resized,
+    instead of behaving like a fixed screenshot until the next full data
+    refresh. window.dnsInspectorResizeMap is the hook the dashboard resize
+    handler calls (app.py) after every GridStack 'resize' step; it must call
+    Leaflet's own invalidateSize() so tiles/markers re-fit the new container
+    size, and must not throw (or otherwise break the resize handler) when no
+    map has been initialized yet."""
+    js = (Path(__file__).resolve().parents[1] / "static" / "leaflet-map.js").read_text(encoding="utf-8")
+    assert "window.dnsInspectorResizeMap = function" in js
+    hook_start = js.index("window.dnsInspectorResizeMap = function")
+    hook_end = js.index("\n  };", hook_start)
+    hook_body = js[hook_start:hook_end]
+    assert "if (!state.map) return;" in hook_body
+    assert "invalidateSize(" in hook_body
+    assert "requestAnimationFrame(" in hook_body
+
+
 def test_dashboard_landing_and_diagnostic_controls_are_present(monkeypatch, app_module):
     monkeypatch.setenv("DNS_INSPECTOR_ENV", "development")
     app_module.init_db()
