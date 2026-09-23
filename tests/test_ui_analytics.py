@@ -249,6 +249,22 @@ def test_analytics_dashboard_is_a_real_gridstack_grid(monkeypatch, tmp_path):
         assert legacy_marker not in body
 
 
+def test_analytics_dashboard_resize_keeps_neighbors_stable_and_refreshes_content(monkeypatch, tmp_path):
+    """Dashboard resizing should lock neighboring widgets and re-render from
+    the cached Analytics payload without forcing another API request."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+    assert "grid.on('resizestart'" in body
+    assert "locked: true" in body
+    assert "grid.on('resizestop'" in body
+    assert "scheduleResponsiveAnalyticsRefresh()" in body
+    assert "new ResizeObserver" in body
+    assert "window.dnsInspectorResizeMap" in body
+    assert "const w=Math.max(280, Math.round(el.clientWidth || 600))" in body
+    assert "@container dashboard-widget (max-width: 760px)" in body
+    assert "@container dashboard-widget (max-width: 520px)" in body
+
+
 def test_analytics_dashboard_layout_is_persisted_and_restorable(monkeypatch, tmp_path):
     """Issue #88 follow-up (GridStack): drag/resize/hide changes must persist
     per-browser (x/y/w/h, not just an order list) and be restored after a
