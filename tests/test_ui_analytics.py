@@ -249,16 +249,17 @@ def test_analytics_dashboard_is_a_real_gridstack_grid(monkeypatch, tmp_path):
         assert legacy_marker not in body
 
 
-def test_analytics_dashboard_resize_keeps_neighbors_stable_and_refreshes_content(monkeypatch, tmp_path):
-    """Dashboard resizing should stop collision-driven neighbor reflow and
-    re-render from the cached Analytics payload as the widget changes width."""
+def test_analytics_dashboard_resize_uses_gridstack_resize_event_without_observer_loop(monkeypatch, tmp_path):
+    """Responsive dashboard rendering should follow GridStack's live resize
+    event. The previous ResizeObserver-on-grid-item approach could create a
+    render/layout feedback loop and freeze the browser tab."""
     app = _fresh_app(monkeypatch, tmp_path, "development")
     body = app.HTML
-    assert "preventCollision: true" in body
-    assert "grid.on('resizestart'" not in body
-    assert "locked: true" not in body
+    assert "grid.on('resize', () => scheduleResponsiveAnalyticsRefresh())" in body
+    assert "new ResizeObserver" not in body
+    assert "responsiveWidthCache" not in body
     assert "scheduleResponsiveAnalyticsRefresh()" in body
-    assert "new ResizeObserver" in body
+    assert "preventCollision: true" in body
     assert "window.dnsInspectorResizeMap" in body
     assert "const w=Math.max(280, Math.round(el.clientWidth || 600))" in body
     assert "const LAYOUT_KEY = 'dnsInspectorDashboardLayoutV2';" in body
@@ -266,6 +267,7 @@ def test_analytics_dashboard_resize_keeps_neighbors_stable_and_refreshes_content
     assert "@container dashboard-widget (max-width: 620px)" in body
     assert 'gs-min-h="5"' in body
     assert "overflow:visible" in body
+
 
 
 def test_analytics_dashboard_layout_is_persisted_and_restorable(monkeypatch, tmp_path):
