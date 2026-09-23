@@ -442,6 +442,16 @@
 
   window.renderDestinationMap = update;
 
+  // Expose a tiny layout hook so the Analytics Dashboard Builder can tell
+  // Leaflet that its container width changed after a widget resize. Without
+  // invalidateSize(), tiles/markers can retain the old viewport dimensions.
+  window.dnsInspectorResizeMap = function () {
+    if (!state.map) return;
+    requestAnimationFrame(() => {
+      try { state.map.invalidateSize({ animate: false, pan: false }); } catch (err) {}
+    });
+  };
+
   document.getElementById("map-zoom-in-btn")?.addEventListener("click", () => state.map?.zoomIn());
   document.getElementById("map-zoom-out-btn")?.addEventListener("click", () => state.map?.zoomOut());
   document.getElementById("map-fit-btn")?.addEventListener("click", () => {
