@@ -2099,7 +2099,7 @@ function renderInstrumentGauges(data){
       <div class="grid-stack-item-content">
       <div class="card">
         <h2>Status breakdown</h2>
-        <div id="status-breakdown" class="dash-scroll"></div>
+        <div id="status-breakdown"></div>
         <div class="stats-note">All known domains, grouped by their current AdGuard filtering outcome.</div>
       </div>
       </div>
@@ -2194,12 +2194,12 @@ function renderInstrumentGauges(data){
     </div>
     <div class="grid-stack-item dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" gs-id="activity-domains" gs-w="2" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
-      <div class="card"><h2>Recently active domains</h2><div id="activity-domains" class="dash-scroll"></div></div>
+      <div class="card"><h2>Recently active domains</h2><div id="activity-domains"></div></div>
       </div>
     </div>
     <div class="grid-stack-item dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" gs-id="activity-devices" gs-w="2" gs-h="5" gs-min-h="5">
       <div class="grid-stack-item-content">
-      <div class="card"><h2>Recently active devices</h2><div id="activity-devices" class="dash-scroll"></div></div>
+      <div class="card"><h2>Recently active devices</h2><div id="activity-devices"></div></div>
       </div>
     </div>
     <div class="grid-stack-item dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" gs-id="top-activity" gs-w="4" gs-h="8" gs-min-h="7">
