@@ -132,14 +132,14 @@ def test_state_payload_exposes_observability_for_header(app_module):
     assert data["observability"]["ram_mb"] is None or data["observability"]["ram_mb"] >= 0
 
 
-def test_leaflet_renderer_uses_carto_and_satellite_layers():
+def test_leaflet_renderer_uses_public_esri_basemaps():
     js = (Path(__file__).resolve().parents[1] / "static" / "leaflet-map.js").read_text(encoding="utf-8")
-    assert "Dark / NOC (CARTO)" in js
-    assert "basemaps.cartocdn.com" in js
+    assert "Dark / NOC (Esri)" in js
+    assert "World_Dark_Gray_Base" in js
     assert "Satellite (Esri)" in js
+    assert "server.arcgisonline.com" in js
+    assert "basemaps.cartocdn.com" not in js
     assert "tile.openstreetmap.org" not in js
-
-    assert "Satellite (Esri)" in js
     assert "L.control.layers" in js
 
 
