@@ -214,3 +214,62 @@ def test_country_breakdown_list_has_roving_keyboard_navigation(monkeypatch, tmp_
     assert "function bindMapBreakdownKeyboardNav(" in body
     assert "ArrowDown" in body and "ArrowUp" in body
     assert "'Home'" in body and "'End'" in body
+
+
+_DASH_WIDGET_IDS = (
+    "visibility-report", "query-volume", "new-domains", "new-devices",
+    "status-breakdown", "instrument-gauges", "destination-map",
+    "activity-domains", "activity-devices", "top-activity",
+)
+
+
+def test_analytics_dashboard_is_a_real_gridstack_grid(monkeypatch, tmp_path):
+    """The Analytics widget grid must be backed by GridStack.js (draggable,
+    resizable, collision-aware, snap-to-cell), not the old CSS-grid
+    order/width/height-name system it replaces."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+    assert "unpkg.com/gridstack" in body
+    assert "gridstack.min.css" in body
+    assert "gridstack-all.js" in body
+    assert 'class="dash-grid grid-stack" id="analytics-dash-grid"' in body
+    for widget_id in _DASH_WIDGET_IDS:
+        assert f'data-widget-id="{widget_id}"' in body
+        assert f'gs-id="{widget_id}"' in body
+        assert body.count(f'data-widget-id="{widget_id}"') == 1
+    # Every grid-stack-item must declare an explicit column/row span for
+    # GridStack to auto-pack on init -- a missing gs-w/gs-h is a silent 1x1.
+    assert body.count('class="grid-stack-item dash-widget"') == len(_DASH_WIDGET_IDS)
+    assert body.count("gs-w=") == len(_DASH_WIDGET_IDS)
+    assert body.count("gs-h=") == len(_DASH_WIDGET_IDS)
+    # The old per-widget order/width/height-name CSS-grid system must be
+    # fully retired, not left dangling alongside the new one.
+    for legacy_marker in ("dash-resize-handle", "WIDTH_STEPS", "normalizeWidth", "--dash-widget-height"):
+        assert legacy_marker not in body
+
+
+def test_analytics_dashboard_layout_is_persisted_and_restorable(monkeypatch, tmp_path):
+    """Issue #88 follow-up (GridStack): drag/resize/hide changes must persist
+    per-browser (x/y/w/h, not just an order list) and be restored after a
+    refresh, including a real reflow/collision path and a keyboard-operable
+    fallback for users who cannot drag with a pointer."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+    assert "GridStack.init(" in body
+    assert "dnsInspectorDashboardLayout" in body
+    assert "function applyGeometry(" in body
+    assert "function packLayout(" in body
+    assert "function presetLayout(" in body
+    assert "grid.on('change'" in body
+    assert "grid.setStatic(" in body
+    assert "localStorage.setItem(LAYOUT_KEY" in body
+    assert "localStorage.getItem(LAYOUT_KEY" in body
+    # Hide/show must be real grid membership changes (removeWidget/addWidget),
+    # not a display:none-only trick that would leave a gap behind.
+    assert "grid.removeWidget(" in body
+    assert "grid.addWidget(" in body
+    assert 'id="dash-hidden-tray"' in body
+    # Keyboard/touch-accessible reordering must survive alongside pointer drag.
+    assert "function moveWidget(" in body
+    assert 'data-dash-action="move-up"' in body
+    assert 'data-dash-action="move-down"' in body

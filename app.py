@@ -773,6 +773,13 @@ HTML = """
      SVG renderer further below in this template remains the automatic
      fallback whenever this library/tiles can't load -- see
      static/leaflet-map.js. -->
+<link rel="stylesheet" href="https://unpkg.com/gridstack@10/dist/gridstack.min.css">
+<script src="https://unpkg.com/gridstack@10/dist/gridstack-all.js"></script>
+<!-- Analytics dashboard grid (0.8.6): GridStack.js drives real drag/resize/
+     collision-reflow for the widget grid below (see the Dashboard Builder
+     script near the end of this template). Pinned to the 10.x major line
+     rather than an exact patch since GridStack follows semver and only
+     bumps major on breaking API changes -- see #dash-customize-btn wiring. -->
 <script>
 /* Applied before first paint so a saved theme/density/accent never flashes
    the default look first. Kept intentionally tiny and self-contained (the
@@ -1357,16 +1364,6 @@ html[data-motion="reduced"] .map-bubble-pulse-ring{display:none}
 .map-breakdown{display:flex;flex-direction:column;min-width:0;height:clamp(320px,40cqw,520px);max-height:520px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden}
 .diagnostics-actions{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
 .diagnostics-actions button{padding:7px 10px;font-size:.78rem;border-radius:var(--radius-sm)}
-.dash-resize-handle{display:none;position:absolute;z-index:20;touch-action:none}
-.dash-resize-handle.edge{top:18%;right:-4px;width:8px;height:64%;cursor:ew-resize}
-.dash-resize-handle.corner{right:-5px;bottom:-5px;width:14px;height:14px;cursor:nwse-resize}
-.dash-grid.dash-customizing .dash-widget{position:relative}
-.dash-grid.dash-customizing .dash-resize-handle{display:block}
-.dash-grid.dash-customizing .dash-resize-handle.edge::after,.dash-grid.dash-customizing .dash-resize-handle.corner::after{content:'';position:absolute;background:var(--accent);opacity:.8;border-radius:4px}
-.dash-grid.dash-customizing .dash-resize-handle.edge::after{left:3px;top:0;width:2px;height:100%}
-.dash-grid.dash-customizing .dash-resize-handle.corner::after{right:0;bottom:0;width:10px;height:10px;border-right:2px solid var(--accent);border-bottom:2px solid var(--accent);background:transparent}
-.dash-widget[data-fixed-height="1"]{height:var(--dash-widget-height)}
-.dash-widget[data-fixed-height="1"]>.card{height:100%;box-sizing:border-box;overflow:auto}
 .map-breakdown-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);flex:0 0 auto}
 .map-breakdown-title{font-size:.78rem;font-weight:600;color:var(--text-primary)}
 .map-breakdown-sort-btn{padding:3px 8px;font-size:.72rem;border-radius:var(--radius-sm);background:var(--surface-3);border:1px solid var(--border);color:var(--text-secondary);cursor:pointer}
@@ -1402,43 +1399,39 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 .map-tiles-active .map-world-dots{display:none}
 .map-tile-attribution{position:absolute;right:4px;bottom:2px;font-size:.62rem;padding:1px 5px;background:rgba(0,0,0,.55);color:#e7ecf3;border-radius:3px;pointer-events:none;z-index:2}
 
-/* ---- Dashboard Builder (0.8.5): customizable Analytics widget grid ---- */
+/* ---- Dashboard Builder (0.8.6): GridStack.js-backed Analytics widget grid.
+   GridStack (see the <script> includes near the top of <head>) owns the
+   real x/y/w/h grid math, drag, resize, collision/reflow and persistence
+   plumbing; this block only themes its generic DOM (.grid-stack /
+   .grid-stack-item / .grid-stack-item-content) and the widget chrome
+   (drag handle + hide/move buttons) layered on top of it. See the
+   Dashboard Builder script further down this template. ---- */
 .dash-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:14px 0}
 .dash-toolbar .settings-select{padding:7px 10px;font-size:.8rem}
 .dash-customize-btn{border-radius:var(--radius-pill)}
 .dash-customize-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
 .dash-hint{color:var(--text-tertiary);font-size:.78rem}
-.dash-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start;grid-auto-flow:dense}
-.dash-widget{grid-column:span 4;min-width:0;min-height:0}
+.dash-grid.grid-stack{background:transparent}
+.dash-grid .grid-stack-item-content{overflow:auto;box-sizing:border-box}
 .dash-widget .card{min-height:120px}
-.dash-widget[data-w="1"]{grid-column:span 1}
-.dash-widget[data-w="2"]{grid-column:span 2}
-.dash-widget[data-w="3"]{grid-column:span 3}
-.dash-widget[data-w="4"]{grid-column:span 4}
-.dash-widget[data-hidden="1"]{display:none}
-.dash-grid.dash-customizing .dash-widget[data-hidden="1"]{display:block;opacity:.5}
-.dash-grid.dash-customizing .dash-widget{outline:1px dashed var(--border-strong);outline-offset:3px;border-radius:var(--radius-lg)}
-.dash-grid.dash-customizing .dash-widget[data-dragging="1"]{opacity:.4}
+.dash-grid.dash-customizing .grid-stack-item-content{outline:1px dashed var(--border-strong);outline-offset:-1px;border-radius:var(--radius-lg)}
+.dash-grid .grid-stack-item.ui-draggable-dragging .grid-stack-item-content,.dash-grid .grid-stack-item.ui-resizable-resizing .grid-stack-item-content{opacity:.75}
 .dash-widget-head{display:none;align-items:center;gap:6px;margin:0 0 12px;padding:6px 8px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--radius-sm)}
 .dash-grid.dash-customizing .dash-widget-head{display:flex}
-.dash-widget-head .dash-drag-handle{color:var(--text-tertiary);flex:0 0 auto;display:flex;cursor:grab;padding:2px 4px}
+.dash-widget-head .dash-drag-handle{color:var(--text-tertiary);flex:0 0 auto;display:flex;cursor:grab;padding:2px 4px;touch-action:none}
 .dash-widget-head .dash-widget-title{flex:1;font-size:.74rem;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dash-widget-head button{padding:4px 8px;font-size:.72rem;border-radius:var(--radius-sm);line-height:1.2}
-.dash-widget[data-h="compact"] .metric-visual{--metric-h:78px}
-.dash-widget[data-h="tall"] .metric-visual{--metric-h:196px}
-.dash-widget[data-h="compact"] .dash-scroll,.dash-widget[data-h="compact"] .chart-list{max-height:120px;overflow:auto}
-.dash-widget[data-h="tall"] .dash-scroll,.dash-widget[data-h="tall"] .chart-list{max-height:440px;overflow:auto}
-/* 0.8.5.6: a real 4-column layout grid (1-4 column span per widget) instead
-   of a binary half/full choice; `grid-auto-flow:dense` back-fills gaps left
-   by mixed-width widgets instead of leaving holes. Two intermediate
-   breakpoints keep the same span *proportions* readable as the viewport
-   narrows, rather than only collapsing straight to one column. */
-@media(max-width:1300px){
-  .dash-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .dash-widget[data-w="1"],.dash-widget[data-w="2"]{grid-column:span 1}
-  .dash-widget[data-w="3"],.dash-widget[data-w="4"]{grid-column:span 2}
-}
-@media(max-width:900px){.dash-grid{grid-template-columns:1fr}.dash-widget{grid-column:1/-1!important}}
+/* GridStack's own drag handles are only meaningful in customize mode; its
+   resize handles (.ui-resizable-handle, its own class, not ours) are hidden
+   the rest of the time so the grid reads as static content by default. */
+.dash-grid:not(.dash-customizing) .ui-resizable-handle{display:none!important}
+.dash-grid.dash-customizing .grid-stack-item{cursor:default}
+.dash-hidden-tray{display:none;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 14px;padding:8px 10px;background:var(--surface-2);border:1px dashed var(--border-strong);border-radius:var(--radius-sm)}
+.dash-hidden-tray.visible{display:flex}
+.dash-hidden-tray-label{font-size:.76rem;color:var(--text-tertiary);font-weight:600}
+.dash-hidden-tray-list{display:flex;flex-wrap:wrap;gap:6px}
+.dash-hidden-tray-list button{padding:4px 10px;font-size:.76rem;border-radius:var(--radius-pill);background:var(--surface-3);border:1px solid var(--border);color:var(--text-primary);cursor:pointer}
+@media(max-width:900px){.dash-grid.grid-stack{margin-left:0!important}}
 </style></head><body>
 {% if is_dev_environment %}<div class="dev-banner" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l10 18H2z"/><path d="M12 10v4"/><circle cx="12" cy="17.5" r=".1" fill="currentColor" stroke="currentColor" stroke-width="2"/></svg><span>DEVELOPMENT ENVIRONMENT — NOT PRODUCTION</span></div>{% endif %}
 <header class="app-shell">
@@ -2010,10 +2003,12 @@ function renderInstrumentGauges(data){
       <option value="custom">Custom</option>
     </select>
     <button type="button" id="dash-reset-btn" title="Reset to the default layout">Reset layout</button>
-    <span class="dash-hint" id="dash-hint" hidden>Use the handle to drag, or the arrow/size/hide buttons &mdash; changes save to this browser.</span>
+    <span class="dash-hint" id="dash-hint" hidden>Use the handle to drag, or resize from a corner/edge, or the arrow/hide buttons &mdash; changes save to this browser.</span>
   </div>
-  <div class="dash-grid" id="analytics-dash-grid">
-    <div class="dash-widget" data-widget-id="visibility-report" data-title="Visibility report" data-w="4" data-h="normal">
+  <div class="dash-hidden-tray" id="dash-hidden-tray"><span class="dash-hidden-tray-label">Hidden widgets:</span><div class="dash-hidden-tray-list" id="dash-hidden-tray-list"></div></div>
+  <div class="dash-grid grid-stack" id="analytics-dash-grid">
+    <div class="grid-stack-item dash-widget" data-widget-id="visibility-report" data-title="Visibility report" gs-id="visibility-report" gs-w="4" gs-h="7">
+      <div class="grid-stack-item-content">
       <div class="card">
         <h2>Visibility report <span class="sub">executive overview</span></h2>
         <div class="stats-note" style="margin-top:0">A factual first-glance summary for the selected period above &mdash; every figure here is derived from the same retained data as the charts below, never invented.</div>
@@ -2034,8 +2029,10 @@ function renderInstrumentGauges(data){
         </div>
         <div id="visibility-report"><div class="empty-state">Loading…</div></div>
       </div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" data-w="4" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="query-volume" data-title="DNS activity over time" gs-id="query-volume" gs-w="4" gs-h="6">
+      <div class="grid-stack-item-content">
       <div class="card">
         <h2>DNS activity over time</h2>
         <div class="analytics-range-controls" role="group" aria-label="Historical time range">
@@ -2057,21 +2054,29 @@ function renderInstrumentGauges(data){
         <div class="stats-note" style="margin-top:0">Click or tap a point (or focus it and press Enter) for the exact interval &mdash; query count, status mix, new domains/devices, and top domains/devices for that window.</div>
         <div id="chart-query-volume-detail" class="interval-detail" hidden></div>
       </div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="new-domains" data-title="New domains discovered" data-w="2" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="new-domains" data-title="New domains discovered" gs-id="new-domains" gs-w="2" gs-h="4">
+      <div class="grid-stack-item-content">
       <div class="card"><h2>New domains discovered</h2><div id="chart-new-domains"></div></div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="new-devices" data-title="New devices discovered" data-w="2" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="new-devices" data-title="New devices discovered" gs-id="new-devices" gs-w="2" gs-h="4">
+      <div class="grid-stack-item-content">
       <div class="card"><h2>New devices discovered</h2><div id="chart-new-devices"></div></div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="status-breakdown" data-title="Status breakdown" data-w="4" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="status-breakdown" data-title="Status breakdown" gs-id="status-breakdown" gs-w="4" gs-h="4">
+      <div class="grid-stack-item-content">
       <div class="card">
         <h2>Status breakdown</h2>
         <div id="status-breakdown" class="dash-scroll"></div>
         <div class="stats-note">All known domains, grouped by their current AdGuard filtering outcome.</div>
       </div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="instrument-gauges" data-title="Instrument gauges" data-w="4" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="instrument-gauges" data-title="Instrument gauges" gs-id="instrument-gauges" gs-w="4" gs-h="4">
+      <div class="grid-stack-item-content">
       <div class="card">
         <h2>Instrument gauges</h2>
         <div id="instrument-gauges" class="gauge-cluster">
@@ -2079,8 +2084,10 @@ function renderInstrumentGauges(data){
           <div class="gauge-face"><div id="gauge-active-devices"></div><div class="stats-note">Active devices</div></div>
         </div>
       </div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="destination-map" data-title="DNS Destinations (observed)" data-w="4" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="destination-map" data-title="DNS Destinations (observed)" gs-id="destination-map" gs-w="4" gs-h="8">
+      <div class="grid-stack-item-content">
       <div class="card">
         <h2>DNS Destinations <span class="sub">(observed)</span></h2>
         <div class="stats-note" style="margin-top:0" id="destination-map-subtitle">Country-level aggregate of resolved DNS response IPs &mdash; not verified physical server locations. CDN, anycast and multi-region destinations resolve to whichever country answered.</div>
@@ -2154,20 +2161,27 @@ function renderInstrumentGauges(data){
         <div class="stats-note" style="margin-top:0" id="destination-map-history"></div>
         <div class="stats-note" style="margin-top:0">GeoIP data, when configured: IP Geolocation by <a href="https://db-ip.com" target="_blank" rel="noopener noreferrer">DB-IP</a> (DB-IP Lite, CC BY 4.0). Known-datacenter points, when configured, come from an operator-supplied curated provider/region database &mdash; see docs/GEOIP.md.</div>
       </div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" data-w="2" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="activity-domains" data-title="Recently active domains" gs-id="activity-domains" gs-w="2" gs-h="4">
+      <div class="grid-stack-item-content">
       <div class="card"><h2>Recently active domains</h2><div id="activity-domains" class="dash-scroll"></div></div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" data-w="2" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="activity-devices" data-title="Recently active devices" gs-id="activity-devices" gs-w="2" gs-h="4">
+      <div class="grid-stack-item-content">
       <div class="card"><h2>Recently active devices</h2><div id="activity-devices" class="dash-scroll"></div></div>
+      </div>
     </div>
-    <div class="dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" data-w="4" data-h="normal">
+    <div class="grid-stack-item dash-widget" data-widget-id="top-activity" data-title="Top activity (all time)" gs-id="top-activity" gs-w="4" gs-h="6">
+      <div class="grid-stack-item-content">
       <div class="card"><h2>Top activity (all time)</h2><div class="stats-note" style="margin-top:0">Cumulative totals since the database was created.</div></div>
       <div class="chart-grid">
         <div class="card chart-card"><h2>Most requested domains</h2><div id="chart-domains" class="chart-list"></div><div class="stats-note">Based on recorded DNS requests.</div></div>
         <div class="card chart-card"><h2>Most active devices</h2><div id="chart-devices" class="chart-list"></div><div class="stats-note">Ranked by total recorded requests.</div></div>
         <div class="card chart-card"><h2>Most active vendors</h2><div id="chart-vendors" class="chart-list"></div><div class="stats-note">Aggregated from identified devices.</div></div>
         <div class="card chart-card"><h2>Most active IPs</h2><div id="chart-ips" class="chart-list"></div><div class="stats-note">Aggregated from device IP observations.</div></div>
+      </div>
       </div>
     </div>
   </div>
@@ -3863,280 +3877,300 @@ window.onAnalyticsTabChange = analyticsTabChanged;
 analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'overview');
 </script>
 <script>
-/* ---- Dashboard Builder (0.8.5) ----
-   Customize mode for the Analytics widget grid: drag/move, bounded resize
-   (half/full width x compact/normal/tall height), show/hide and named
-   presets, persisted per-browser. This only reorders/resizes/hides the
-   widgets already in the page -- no widget's underlying data or route
-   changes. Drag-and-drop via the handle is a pointer/mouse enhancement;
-   the move-up/move-down buttons are the touch- and keyboard-accessible
-   path, since HTML5 drag-and-drop is unreliable on touch devices. */
+/* ---- Dashboard Builder (0.8.6): GridStack.js-backed Analytics widget grid ----
+   GridStack owns real drag, resize, collision/reflow and grid math; this
+   module wires it to the page (widget chrome, presets, hide/show, a
+   keyboard-operable move-earlier/move-later fallback) and persists the
+   resulting x/y/w/h per widget per-browser. This only moves/resizes/hides
+   the widgets already in the page -- no widget's underlying data or route
+   changes. `float:true` is used deliberately (no auto vertical gravity) so
+   every geometry write this module makes is exact and reproducible instead
+   of being second-guessed by GridStack's own compaction. */
 (function(){
-  const grid = document.getElementById('analytics-dash-grid');
-  if (!grid) return;
-  const WIDGET_IDS = Array.from(grid.querySelectorAll('.dash-widget')).map(w => w.dataset.widgetId);
+  if (typeof GridStack === 'undefined') return; // CDN unavailable: widgets still render, just without drag/resize/presets.
+  const gridEl = document.getElementById('analytics-dash-grid');
+  if (!gridEl) return;
+  const WIDGET_IDS = Array.from(gridEl.querySelectorAll('.dash-widget')).map(w => w.dataset.widgetId);
   const LAYOUT_KEY = 'dnsInspectorDashboardLayout';
-  const WIDTH_STEPS = ['1','2','3','4'];
-
-  /* 0.8.5.6: the grid moved from a binary half/full width to a real 1-4
-     column span. A browser that already persisted a pre-0.8.5.6
-     `dnsInspectorDashboardLayout` (or a preset built before this change) can
-     still hand back the old 'full'/'half' strings -- normalize those to the
-     equivalent span instead of treating them as an invalid/unknown width. */
-  function normalizeWidth(w){
-    if (w === 'full') return '4';
-    if (w === 'half') return '2';
-    return WIDTH_STEPS.includes(String(w)) ? String(w) : '4';
-  }
-
-  function defaultLayout(){
-    const widgets = {};
-    WIDGET_IDS.forEach(id => {
-      const el = grid.querySelector(`[data-widget-id="${id}"]`);
-      widgets[id] = { w: normalizeWidth(el.dataset.w), h: el.dataset.h || 'normal', hp: null, hidden: false };
-    });
-    return { preset: 'default', order: WIDGET_IDS.slice(), widgets };
-  }
-  const DEFAULT_LAYOUT = defaultLayout();
+  const COLUMNS = 4;
   const clone = (obj) => JSON.parse(JSON.stringify(obj));
+  function widgetEl(id){ return gridEl.querySelector(`[data-widget-id="${id}"]`); }
 
-  /* A widget introduced by a later release (e.g. the 0.8.5.1 GeoIP map) is
-     absent from any `order` saved by an older build, and from any preset's
-     own hard-coded reorder list. Naively appending such ids to the very end
-     of `order` buries a newly-shipped widget below everything a user's
-     browser already persisted -- functionally invisible without scrolling
-     past what used to be the bottom of the page. Placing it right next to
-     its default neighbour keeps existing customization intact while still
-     surfacing the new widget close to where a fresh layout would show it. */
-  function insertWidgetsAtDefaultPosition(order, defaultOrder){
-    order = order.slice();
-    defaultOrder.forEach((id, defaultIdx) => {
-      if (order.includes(id)) return;
-      let insertAt = -1;
-      for (let i = defaultIdx - 1; i >= 0 && insertAt === -1; i--){
-        const idx = order.indexOf(defaultOrder[i]);
-        if (idx !== -1) insertAt = idx + 1;
+  function widgetHeadHtml(title){
+    return `<div class="dash-widget-head"><span class="dash-drag-handle" title="Drag to reposition">⠿</span><span class="dash-widget-title">${esc(title)}</span><button type="button" data-dash-action="move-up" title="Move earlier" aria-label="Move ${esc(title)} earlier">&uarr;</button><button type="button" data-dash-action="move-down" title="Move later" aria-label="Move ${esc(title)} later">&darr;</button><button type="button" data-dash-action="hide" title="Hide widget" aria-label="Hide ${esc(title)}">&times;</button></div>`;
+  }
+  WIDGET_IDS.forEach(id => {
+    const el = widgetEl(id);
+    const content = el && el.querySelector('.grid-stack-item-content');
+    if (content) content.insertAdjacentHTML('afterbegin', widgetHeadHtml(el.dataset.title || id));
+  });
+
+  // gs-w/gs-h come from the server-rendered markup; gs-x/gs-y are
+  // intentionally absent so GridStack auto-packs the shipped DOM order on
+  // init, in reading order, the same way the old CSS `grid-auto-flow:dense`
+  // did -- that auto-packed result becomes DEFAULT_LAYOUT below.
+  const grid = GridStack.init({
+    column: COLUMNS,
+    cellHeight: 60,
+    margin: 10,
+    float: true,
+    animate: true,
+    staticGrid: true,
+    handle: '.dash-drag-handle',
+    resizable: { handles: 'e, se, s' },
+    oneColumnSize: 900,
+  }, gridEl);
+
+  const DEFAULT_LAYOUT = { preset: 'default', hidden: [], widgets: grid.save(false).map(n => ({id: n.id, x: n.x, y: n.y, w: n.w, h: n.h})) };
+
+  function baseWH(id){
+    const n = DEFAULT_LAYOUT.widgets.find(w => w.id === id);
+    return n ? {w: n.w, h: n.h} : {w: 4, h: 4};
+  }
+
+  /* Simple skyline/shelf packer -- given widgets in a desired reading order
+     with a target column span, lays them out left-to-right/top-to-bottom
+     with no gaps, mirroring the old dense CSS-grid packing but producing
+     real x/y coordinates for GridStack. */
+  function packLayout(items){
+    const colY = new Array(COLUMNS).fill(0);
+    return items.map(it => {
+      const w = Math.max(1, Math.min(COLUMNS, it.w));
+      let bestX = 0, bestY = Infinity;
+      for (let x = 0; x <= COLUMNS - w; x++){
+        let y = 0;
+        for (let c = x; c < x + w; c++) y = Math.max(y, colY[c]);
+        if (y < bestY){ bestY = y; bestX = x; }
       }
-      if (insertAt === -1){
-        for (let i = defaultIdx + 1; i < defaultOrder.length && insertAt === -1; i++){
-          const idx = order.indexOf(defaultOrder[i]);
-          if (idx !== -1) insertAt = idx;
-        }
-      }
-      order.splice(insertAt === -1 ? order.length : insertAt, 0, id);
+      for (let c = bestX; c < bestX + w; c++) colY[c] = bestY + it.h;
+      return { id: it.id, x: bestX, y: bestY, w, h: it.h };
     });
-    return order;
   }
 
   function presetLayout(name){
-    const base = clone(DEFAULT_LAYOUT);
-    base.preset = name;
-    const set = (id, patch) => { if (base.widgets[id]) Object.assign(base.widgets[id], patch); };
+    const COMPACT_H = 3, TALL_BONUS = 3;
+    let order, hidden = [];
     if (name === 'monitoring'){
-      base.order = ['visibility-report','status-breakdown','query-volume','new-domains','new-devices','activity-domains','activity-devices','top-activity'];
-      set('visibility-report', {h:'tall'});
-      set('activity-domains', {h:'compact'});
-      set('activity-devices', {h:'compact'});
-      set('top-activity', {hidden:true});
+      order = [
+        ['visibility-report', null, 'tall'], ['status-breakdown', null, null],
+        ['instrument-gauges', null, null], ['destination-map', null, null],
+        ['query-volume', null, null], ['new-domains', null, null], ['new-devices', null, null],
+        ['activity-domains', null, 'compact'], ['activity-devices', null, 'compact'],
+      ];
+      hidden = ['top-activity'];
     } else if (name === 'compact'){
-      WIDGET_IDS.forEach(id => set(id, {h:'compact'}));
-      set('top-activity', {hidden:true});
+      order = DEFAULT_LAYOUT.widgets.filter(w => w.id !== 'top-activity').map(w => [w.id, null, 'compact']);
+      hidden = ['top-activity'];
     } else if (name === 'investigation'){
-      base.order = ['query-volume','status-breakdown','top-activity','activity-domains','activity-devices','new-domains','new-devices','visibility-report'];
-      set('top-activity', {h:'tall'});
-      set('activity-domains', {h:'tall'});
-      set('activity-devices', {h:'tall'});
-      set('visibility-report', {w:'2', h:'compact'});
+      order = [
+        ['query-volume', null, null], ['status-breakdown', null, null],
+        ['instrument-gauges', null, null], ['destination-map', null, null],
+        ['top-activity', null, 'tall'], ['activity-domains', null, 'tall'], ['activity-devices', null, 'tall'],
+        ['new-domains', null, null], ['new-devices', null, null], ['visibility-report', 2, 'compact'],
+      ];
+    } else {
+      return clone(DEFAULT_LAYOUT);
     }
-    base.order = insertWidgetsAtDefaultPosition(base.order, DEFAULT_LAYOUT.order);
-    return base;
+    hidden = hidden.filter(id => WIDGET_IDS.includes(id));
+    const items = order
+      .filter(([id]) => WIDGET_IDS.includes(id) && !hidden.includes(id))
+      .map(([id, wOverride, hMode]) => {
+        const base = baseWH(id);
+        const w = wOverride || base.w;
+        const h = hMode === 'compact' ? COMPACT_H : (hMode === 'tall' ? base.h + TALL_BONUS : base.h);
+        return { id, w, h };
+      });
+    return { preset: name, hidden, widgets: packLayout(items) };
   }
 
   function loadLayout(){
     try{
       const raw = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
-      if (!raw || !raw.widgets || !raw.order) return clone(DEFAULT_LAYOUT);
-      const widgets = {};
-      WIDGET_IDS.forEach(id => {
-        const merged = Object.assign({w:'4',h:'normal',hp:null,hidden:false}, raw.widgets[id] || {});
-        merged.w = normalizeWidth(merged.w);
-        widgets[id] = merged;
-      });
-      const order = insertWidgetsAtDefaultPosition(raw.order.filter(id => WIDGET_IDS.includes(id)), DEFAULT_LAYOUT.order);
-      return { preset: raw.preset || 'custom', order, widgets };
+      if (!raw || !Array.isArray(raw.widgets)) return clone(DEFAULT_LAYOUT);
+      const knownIds = new Set(WIDGET_IDS);
+      const widgets = raw.widgets.filter(w => w && knownIds.has(w.id) && [w.x, w.y, w.w, w.h].every(Number.isFinite));
+      const hidden = Array.isArray(raw.hidden) ? raw.hidden.filter(id => knownIds.has(id)) : [];
+      const known = new Set([...widgets.map(w => w.id), ...hidden]);
+      // A widget shipped after this layout was saved is in neither list --
+      // surface it at its shipped default position instead of dropping it.
+      DEFAULT_LAYOUT.widgets.forEach(dw => { if (!known.has(dw.id)) widgets.push(clone(dw)); });
+      return { preset: raw.preset || 'custom', widgets, hidden };
     }catch(e){ return clone(DEFAULT_LAYOUT); }
   }
-  function saveLayout(){ try{ localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); }catch(e){} }
+  function saveLayout(){
+    try{ localStorage.setItem(LAYOUT_KEY, JSON.stringify({preset: layout.preset, widgets: layout.widgets, hidden: layout.hidden})); }catch(e){}
+  }
 
   let layout = loadLayout();
   let customizing = false;
+  let applyingProgrammatically = false;
 
-  function widgetHeadHtml(title){
-    return `<div class="dash-widget-head"><span class="dash-drag-handle" draggable="true" title="Drag to reorder">⠿</span><span class="dash-widget-title">${esc(title)}</span><button type="button" data-dash-action="move-up" title="Move up" aria-label="Move ${esc(title)} up">&uarr;</button><button type="button" data-dash-action="move-down" title="Move down" aria-label="Move ${esc(title)} down">&darr;</button><button type="button" class="dash-width-btn" data-dash-action="width" aria-label="Change ${esc(title)} width">&hArr;</button><button type="button" data-dash-action="height" title="Toggle height (compact/normal/tall)">&vArr;</button><button type="button" data-dash-action="hide" title="Hide widget" aria-label="Hide ${esc(title)}">&times;</button></div>`;
+  function syncLayoutFromGrid(){
+    layout.widgets = grid.save(false).map(n => ({id: n.id, x: n.x, y: n.y, w: n.w, h: n.h}));
   }
-  WIDGET_IDS.forEach(id => {
-    const el = grid.querySelector(`[data-widget-id="${id}"]`);
-    el.insertAdjacentHTML('afterbegin', widgetHeadHtml(el.dataset.title || id));
-  });
 
-  function applyLayout(){
-    layout.order.forEach((id, i) => {
-      const el = grid.querySelector(`[data-widget-id="${id}"]`);
-      if (!el) return;
-      el.style.order = String(i);
-      const w = layout.widgets[id] || {w:'4',h:'normal',hp:null,hidden:false};
-      el.dataset.w = normalizeWidth(w.w);
-      el.dataset.h = w.h || 'normal';
-      if (Number.isFinite(Number(w.hp)) && Number(w.hp) >= 160){
-        el.dataset.fixedHeight = '1';
-        el.style.setProperty('--dash-widget-height', Math.round(Number(w.hp)) + 'px');
-      } else {
-        el.dataset.fixedHeight = '0';
-        el.style.removeProperty('--dash-widget-height');
-      }
-      el.dataset.hidden = w.hidden ? '1' : '0';
-      const hideBtn = el.querySelector('[data-dash-action="hide"]');
-      if (hideBtn){ hideBtn.innerHTML = w.hidden ? '&#43;' : '&times;'; hideBtn.title = w.hidden ? 'Show widget' : 'Hide widget'; }
-      const widthBtn = el.querySelector('[data-dash-action="width"]');
-      if (widthBtn) widthBtn.title = `Width: ${el.dataset.w}/4 columns (click to widen/narrow)`;
-    });
+  function applyGeometry(state){
+    applyingProgrammatically = true;
+    try{
+      WIDGET_IDS.forEach(id => {
+        const el = widgetEl(id);
+        if (!el || !state.hidden.includes(id)) return;
+        if (el.gridstackNode) grid.removeWidget(el, false);
+        el.style.display = 'none';
+      });
+      state.widgets.forEach(w => {
+        const el = widgetEl(w.id);
+        if (!el) return;
+        el.style.display = '';
+        if (el.gridstackNode) grid.update(el, {x: w.x, y: w.y, w: w.w, h: w.h});
+        else grid.addWidget(el, {x: w.x, y: w.y, w: w.w, h: w.h, id: w.id});
+      });
+    } finally { applyingProgrammatically = false; }
+  }
+
+  function refreshChrome(){
     const presetSelect = document.getElementById('dash-preset-select');
     if (presetSelect) presetSelect.value = layout.preset || 'custom';
+    WIDGET_IDS.forEach(id => {
+      const el = widgetEl(id);
+      if (!el) return;
+      const isHidden = layout.hidden.includes(id);
+      const hideBtn = el.querySelector('[data-dash-action="hide"]');
+      if (hideBtn){
+        hideBtn.innerHTML = isHidden ? '&#43;' : '&times;';
+        hideBtn.title = isHidden ? 'Show widget' : 'Hide widget';
+        hideBtn.setAttribute('aria-label', (isHidden ? 'Show ' : 'Hide ') + (el.dataset.title || id));
+      }
+    });
+    const tray = document.getElementById('dash-hidden-tray');
+    const trayList = document.getElementById('dash-hidden-tray-list');
+    if (tray && trayList){
+      trayList.innerHTML = layout.hidden.map(id => {
+        const el = widgetEl(id);
+        const title = el ? (el.dataset.title || id) : id;
+        return `<button type="button" data-dash-show="${id}">${esc(title)} +</button>`;
+      }).join('');
+      tray.classList.toggle('visible', customizing && layout.hidden.length > 0);
+    }
     if (document.getElementById('tab-analytics')?.classList.contains('active') && typeof fetchAnalyticsFull === 'function') fetchAnalyticsFull();
     if (typeof renderLiveHero === 'function') renderLiveHero();
   }
 
-  function markCustom(){ layout.preset = 'custom'; saveLayout(); applyLayout(); }
+  function markCustom(){
+    layout.preset = 'custom';
+    syncLayoutFromGrid();
+    saveLayout();
+    refreshChrome();
+  }
 
-  grid.addEventListener('click', (e) => {
+  function hideWidgetById(id){
+    const el = widgetEl(id);
+    applyingProgrammatically = true;
+    try{
+      if (el && el.gridstackNode) grid.removeWidget(el, false);
+      if (el) el.style.display = 'none';
+    } finally { applyingProgrammatically = false; }
+    if (!layout.hidden.includes(id)) layout.hidden.push(id);
+    markCustom();
+  }
+  function unhideWidget(id){
+    const el = widgetEl(id);
+    if (!el) return;
+    applyingProgrammatically = true;
+    try{
+      el.style.display = '';
+      if (!el.gridstackNode){
+        const last = layout.widgets.find(w => w.id === id) || DEFAULT_LAYOUT.widgets.find(w => w.id === id) || {w: 4, h: 4};
+        grid.addWidget(el, {x: 0, y: (grid.getRow ? grid.getRow() : 0), w: last.w, h: last.h, id});
+      }
+    } finally { applyingProgrammatically = false; }
+    layout.hidden = layout.hidden.filter(h => h !== id);
+    markCustom();
+  }
+
+  // Keyboard/touch-accessible reordering, independent of pointer drag: swaps
+  // this widget's grid position with its visual neighbour (reading order is
+  // y then x, i.e. top-to-bottom then left-to-right).
+  function visibleOrderedIds(){
+    return WIDGET_IDS
+      .filter(id => !layout.hidden.includes(id))
+      .map(id => { const el = widgetEl(id); return el && el.gridstackNode ? {id, node: el.gridstackNode} : null; })
+      .filter(Boolean)
+      .sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x)
+      .map(x => x.id);
+  }
+  function moveWidget(id, dir){
+    const order = visibleOrderedIds();
+    const idx = order.indexOf(id);
+    const otherIdx = idx + dir;
+    if (idx === -1 || otherIdx < 0 || otherIdx >= order.length) return;
+    const elA = widgetEl(id), elB = widgetEl(order[otherIdx]);
+    if (!elA || !elB || !elA.gridstackNode || !elB.gridstackNode) return;
+    const a = elA.gridstackNode, b = elB.gridstackNode;
+    const posA = {x: a.x, y: a.y, w: a.w, h: a.h}, posB = {x: b.x, y: b.y, w: b.w, h: b.h};
+    applyingProgrammatically = true;
+    try{ grid.update(elA, posB); grid.update(elB, posA); } finally { applyingProgrammatically = false; }
+    markCustom();
+  }
+
+  gridEl.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-dash-action]'); if (!btn) return;
-    const widget = btn.closest('.dash-widget'); const id = widget.dataset.widgetId;
+    const widget = btn.closest('.dash-widget'); if (!widget) return;
+    const id = widget.dataset.widgetId;
     const action = btn.dataset.dashAction;
-    const idx = layout.order.indexOf(id);
-    const cur = layout.widgets[id];
-    if (action === 'move-up' && idx > 0){ [layout.order[idx-1], layout.order[idx]] = [layout.order[idx], layout.order[idx-1]]; }
-    else if (action === 'move-down' && idx < layout.order.length-1){ [layout.order[idx+1], layout.order[idx]] = [layout.order[idx], layout.order[idx+1]]; }
-    else if (action === 'width'){ cur.w = WIDTH_STEPS[(WIDTH_STEPS.indexOf(normalizeWidth(cur.w)) + 1) % WIDTH_STEPS.length]; }
-    else if (action === 'height'){ cur.h = cur.h === 'compact' ? 'normal' : (cur.h === 'normal' ? 'tall' : 'compact'); }
-    else if (action === 'hide'){ cur.hidden = !cur.hidden; }
-    markCustom();
+    if (action === 'hide') hideWidgetById(id);
+    else if (action === 'move-up') moveWidget(id, -1);
+    else if (action === 'move-down') moveWidget(id, 1);
+  });
+  document.getElementById('dash-hidden-tray')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-dash-show]'); if (!btn) return;
+    unhideWidget(btn.dataset.dashShow);
   });
 
-  let dragId = null;
-  grid.addEventListener('dragstart', (e) => {
-    const handle = e.target.closest('.dash-drag-handle'); if (!handle || !customizing) return;
-    const widget = handle.closest('.dash-widget'); dragId = widget.dataset.widgetId;
-    widget.dataset.dragging = '1';
-    if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-  });
-  grid.addEventListener('dragend', (e) => {
-    const widget = e.target.closest('.dash-widget'); if (widget) widget.removeAttribute('data-dragging');
-    dragId = null;
-  });
-  grid.addEventListener('dragover', (e) => { if (dragId) e.preventDefault(); });
-  grid.addEventListener('drop', (e) => {
-    if (!dragId) return;
-    e.preventDefault();
-    const target = e.target.closest('.dash-widget');
-    if (!target || target.dataset.widgetId === dragId) return;
-    const from = layout.order.indexOf(dragId), to = layout.order.indexOf(target.dataset.widgetId);
-    if (from === -1 || to === -1) return;
-    layout.order.splice(from, 1);
-    layout.order.splice(to, 0, dragId);
-    markCustom();
+  // GridStack's own 'change' event is how pointer-driven drag/resize (the
+  // one interaction not already funneled through a button handler above)
+  // gets captured and persisted; the guard skips this module's own
+  // programmatic writes so switching a preset doesn't immediately relabel
+  // itself 'custom'.
+  grid.on('change', () => {
+    if (applyingProgrammatically) return;
+    layout.preset = 'custom';
+    syncLayoutFromGrid();
+    saveLayout();
+    refreshChrome();
   });
 
   const customizeBtn = document.getElementById('dash-customize-btn');
   const hint = document.getElementById('dash-hint');
   customizeBtn?.addEventListener('click', () => {
     customizing = !customizing;
-    grid.classList.toggle('dash-customizing', customizing);
+    grid.setStatic(!customizing);
+    gridEl.classList.toggle('dash-customizing', customizing);
     customizeBtn.classList.toggle('active', customizing);
     customizeBtn.setAttribute('aria-pressed', String(customizing));
     customizeBtn.textContent = customizing ? 'Done customizing' : 'Customize';
     if (hint) hint.hidden = !customizing;
+    refreshChrome();
   });
 
   document.getElementById('dash-preset-select')?.addEventListener('change', (e) => {
     const name = e.target.value;
     if (name === 'custom') return;
     layout = presetLayout(name);
+    applyGeometry(layout);
     saveLayout();
-    applyLayout();
+    refreshChrome();
   });
 
   document.getElementById('dash-reset-btn')?.addEventListener('click', () => {
     layout = clone(DEFAULT_LAYOUT);
+    applyGeometry(layout);
     saveLayout();
-    applyLayout();
+    refreshChrome();
   });
 
-  // Pointer resize: width snaps to the 4-column grid; the corner handle also
-  // snaps height to a small persisted set of pixel rows. Resize work is local
-  // during pointer movement and is committed once on pointerup.
-  const HEIGHT_STEPS = [180, 260, 340, 420, 500];
-  WIDGET_IDS.forEach(id => {
-    const el = grid.querySelector('[data-widget-id="' + id + '"]');
-    if (!el) return;
-    if (!el.querySelector('.dash-resize-handle.edge')){
-      el.insertAdjacentHTML('beforeend', '<div class="dash-resize-handle edge" data-resize-axis="x" aria-hidden="true"></div><div class="dash-resize-handle corner" data-resize-axis="both" aria-hidden="true"></div>');
-    }
-  });
-
-  function gridColumnSpanFromPointer(rect, clientX){
-    const gridRect = grid.getBoundingClientRect();
-    const gap = parseFloat(getComputedStyle(grid).columnGap || '14') || 14;
-    const colWidth = Math.max(1, (gridRect.width - gap * 3) / 4);
-    const relative = Math.max(0, clientX - rect.left);
-    return String(Math.max(1, Math.min(4, Math.round((relative + gap * 0.5) / (colWidth + gap)))));
-  }
-  function snapHeight(px){
-    return HEIGHT_STEPS.reduce((best, step) => Math.abs(step - px) < Math.abs(best - px) ? step : best, HEIGHT_STEPS[0]);
-  }
-
-  grid.addEventListener('pointerdown', (e) => {
-    const handle = e.target.closest('.dash-resize-handle');
-    if (!handle || !customizing) return;
-    const widget = handle.closest('.dash-widget');
-    if (!widget) return;
-    const id = widget.dataset.widgetId;
-    const cur = layout.widgets[id] || (layout.widgets[id] = {w:'4',h:'normal',hp:null,hidden:false});
-    const startRect = widget.getBoundingClientRect();
-    const startX = e.clientX, startY = e.clientY;
-    const startHp = Number(cur.hp) || startRect.height;
-    const axis = handle.dataset.resizeAxis || 'x';
-    const pointerId = e.pointerId;
-    e.preventDefault();
-    handle.setPointerCapture?.(pointerId);
-    widget.dataset.resizing = '1';
-
-    const move = (ev) => {
-      const width = gridColumnSpanFromPointer(startRect, ev.clientX);
-      cur.w = width;
-      widget.dataset.w = width;
-      if (axis === 'both'){
-        const hp = snapHeight(Math.max(160, startHp + (ev.clientY - startY)));
-        cur.hp = hp;
-        widget.dataset.fixedHeight = '1';
-        widget.style.setProperty('--dash-widget-height', hp + 'px');
-      }
-    };
-    const done = () => {
-      widget.removeAttribute('data-resizing');
-      layout.preset = 'custom';
-      saveLayout();
-      applyLayout();
-      handle.releasePointerCapture?.(pointerId);
-      handle.removeEventListener('pointermove', move);
-      handle.removeEventListener('pointerup', done);
-      handle.removeEventListener('pointercancel', done);
-    };
-    handle.addEventListener('pointermove', move);
-    handle.addEventListener('pointerup', done);
-    handle.addEventListener('pointercancel', done);
-  });
-
-  applyLayout();
+  applyGeometry(layout);
+  refreshChrome();
 })();
 </script>
 <script>

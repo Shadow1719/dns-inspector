@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased] - 0.8.6-dev.9 GridStack.js-backed Analytics dashboard grid
+
+- replaced the Analytics widget grid's custom drag/resize implementation with [GridStack.js](https://gridstack.github.io/gridstack.js/) (pinned to the 10.x major line via `https://unpkg.com/gridstack@10/...`, matching the existing Leaflet CDN-include pattern): real grid-cell drag/resize with collision handling/reflow (no overlapping widgets), snap-to-cell placement, and a persisted per-browser `x/y/w/h` layout (localStorage key unchanged: `dnsInspectorDashboardLayout`) that restores after a refresh
+- Customize mode, named presets (Default/Monitoring/Compact/Investigation), per-widget hide/show (now a real grid membership change via `removeWidget`/`addWidget`, not just a CSS toggle, so hiding a widget lets others reflow into its place) and a keyboard/touch-accessible Move-earlier/Move-later fallback are all preserved from the previous system, just re-implemented on top of GridStack instead of a hand-rolled CSS-grid + pointer-drag engine
+- a saved pre-0.8.6-dev.9 layout (the old `order` + named width/height system) is not migrated -- it resets to the default layout once, since the underlying grid model changed from an ordered list to real coordinates; nothing else (theme, other prefs, report/scheduler config) is affected
+- no change to any Analytics/reporting data, route, or to the destination map/PDF/scheduler functionality
+- bumped candidate to `0.8.6-dev.9`
+
 ## [Unreleased] - 0.8.6-dev.8 custom analytics window, standalone Assessment tab, map/list accessibility (Issue #88 follow-up)
 
 - added a configurable custom From/To analytics window: `parse_custom_analytics_window()` validates and bounds an arbitrary period (clamped to "now" and to the retained analytics-history floor, tiered bucket size, raw `processed_queries` when the span fits the existing 7d raw window and the bounded hourly `analytics_buckets` aggregate otherwise); `/api/analytics`, `/api/analytics/report.pdf` and `/api/analytics/interval` all accept `range=custom&from=&to=`, and the selected window is reflected in the dashboard UI, the PDF cover/footer, the export filename (`...-custom-YYYYMMDD-YYYYMMDD-*.pdf`) and the JSON `custom_window` metadata
