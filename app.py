@@ -927,6 +927,7 @@ pre{white-space:pre-wrap;word-break:break-word;color:#ddd}.source{font-size:.88e
 .range-custom-controls input[type=date]{padding:5px 8px;font-size:.8rem}
 .range-custom-controls button{padding:5px 12px;font-size:.8rem;border-radius:999px}
 .range-custom-error{color:var(--sem-blocked);font-size:.78rem}
+.assessment-open-btn{white-space:nowrap}
 .assessment-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:16px}
 .assessment-section{margin-top:14px}
 .assessment-section>summary{cursor:pointer;font-weight:700;font-size:1.02rem;padding:2px 0;list-style:revert}
@@ -1617,7 +1618,6 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
   <button class="tab-btn" data-tab="overview" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>Overview</button>
   <button class="tab-btn" data-tab="devices" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M9 20h6M12 16v4"/></svg>Devices</button>
   <button class="tab-btn active" data-tab="analytics" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9M11 19V5M18 19v-7"/></svg>Analytics</button>
-  <button class="tab-btn" data-tab="assessment" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg>Assessment</button>
 </nav>
 <script>
 /* ---- Inspector BEMO preferences (0.8.4) ----
@@ -1984,6 +1984,10 @@ function renderInstrumentGauges(data){
   <p class="source">Identity is based on AdGuard client information when available. A DHCP IP is treated as a changing observation, not as a permanent device identity. MAC/client identifiers are used as the stable key when AdGuard exposes them.</p></div>
 </section>
 <section id="tab-analytics" class="tab-panel active" data-panel="analytics">
+  <div class="card" style="margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+    <div><h2 style="margin:0">Visibility Assessment</h2><div class="stats-note" style="margin-top:4px">Open the full 10-section assessment built from the same Analytics data.</div></div>
+    <button type="button" class="assessment-open-btn" onclick="setActiveTab('assessment')">Open full assessment</button>
+  </div>
   <div class="dash-toolbar">
     <button type="button" class="dash-customize-btn" id="dash-customize-btn" aria-pressed="false">Customize</button>
     <button type="button" id="analytics-export-pdf-btn" title="Export the currently selected Analytics range as a visual PDF report">Export PDF</button>
@@ -2180,6 +2184,10 @@ function renderInstrumentGauges(data){
 </section>
 <section id="tab-assessment" class="tab-panel" data-panel="assessment">
   <div class="card">
+    <div class="assessment-toolbar" style="margin-bottom:8px">
+      <button type="button" onclick="setActiveTab('analytics')">← Back to Analytics</button>
+      <span class="stats-note">Detailed report</span>
+    </div>
     <h2>Visibility Assessment <span class="sub">standalone 10-section report</span></h2>
     <div class="stats-note" style="margin-top:0">Every figure below is read from the same <code>/api/analytics</code>, <code>/api/analytics/map</code>, and <code>/api/reports/status</code> data the rest of the dashboard uses &mdash; nothing here is a separate or fabricated data source. Sections are collapsed by default; expand the ones you need.</div>
     <div class="assessment-toolbar">
@@ -2432,9 +2440,11 @@ function applySort(table,key,dir){ const th=[...table.querySelectorAll('th.sorta
 function bindSortableTables(){ document.querySelectorAll('th.sortable').forEach(th=>{ th.onclick=()=>{ const table=th.closest('table'); const name=table.id==='recent-table'?'recent':'clients'; const key=th.dataset.sortKey; const same=tableSortState[name].key===key; tableSortState[name]={key,dir:same?-tableSortState[name].dir:1}; applySort(table,key,tableSortState[name].dir); }; }); }
 function reapplyTableSorts(){ const r=document.getElementById('recent-table'),c=document.getElementById('clients-table'); if(r&&tableSortState.recent.key)applySort(r,tableSortState.recent.key,tableSortState.recent.dir); if(c&&tableSortState.clients.key)applySort(c,tableSortState.clients.key,tableSortState.clients.dir); }
 function setActiveTab(name){
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === name));
-  try{ localStorage.setItem('dnsInspectorTab', name); }catch(e){}
+  const requested = name === 'assessment' ? 'assessment' : name;
+  const navName = requested === 'assessment' ? 'analytics' : requested;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === navName));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.panel === requested));
+  try{ localStorage.setItem('dnsInspectorTab', requested === 'assessment' ? 'analytics' : requested); }catch(e){}
   // The background /api/state poll skips re-rendering a tab's table while
   // it isn't visible (see renderRecent/renderClients); catch it up here
   // from the cached last-fetched rows instead of re-fetching.
