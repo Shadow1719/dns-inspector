@@ -331,3 +331,29 @@ def test_analytics_dashboard_layout_is_persisted_and_restorable(monkeypatch, tmp
     assert "function moveWidget(" in body
     assert 'data-dash-action="move-up"' in body
     assert 'data-dash-action="move-down"' in body
+
+
+def test_analytics_widget_card_fills_its_gridstack_shell(monkeypatch, tmp_path):
+    """Regression test for the dev.13 report (Issue #97): widgets rendered as
+    thin/collapsed boxes with large empty gaps between shells on the initial
+    Analytics render. GridStack sizes each .grid-stack-item/-content shell
+    absolutely (via gs-w/gs-h), but the .card inside it is an ordinary static
+    block -- without an explicit height it only grows to fit its own content
+    and never fills the shell GridStack allocated, leaving the widget looking
+    collapsed with dead space below it. .card (and its .grid-stack-item-content
+    parent) must stretch to the shell's full height, with border-box sizing so
+    padding/border can't push it past that height."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+
+    content_rule_start = body.index(".dash-grid .grid-stack-item-content{")
+    content_rule_end = body.index("}", content_rule_start)
+    content_rule = body[content_rule_start:content_rule_end + 1]
+    assert "height:100%" in content_rule
+    assert "box-sizing:border-box" in content_rule
+
+    card_rule_start = body.index(".dash-widget .card{")
+    card_rule_end = body.index("}", card_rule_start)
+    card_rule = body[card_rule_start:card_rule_end + 1]
+    assert "height:100%" in card_rule
+    assert "box-sizing:border-box" in card_rule
