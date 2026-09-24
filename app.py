@@ -1405,10 +1405,10 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 .dash-customize-btn.active{background:var(--accent-soft);border-color:var(--accent);color:var(--text-primary)}
 .dash-hint{color:var(--text-tertiary);font-size:.78rem}
 .dash-grid.grid-stack{background:transparent}
-.dash-grid .grid-stack-item-content{overflow:visible;box-sizing:border-box}
+.dash-grid .grid-stack-item-content{overflow:visible;box-sizing:border-box;height:100%}
 .dash-widget{container-type:inline-size;container-name:dashboard-widget;min-width:0}
 .dash-widget .grid-stack-item-content{min-width:0}
-.dash-widget .card{min-height:120px;min-width:0;overflow:visible}
+.dash-widget .card{min-height:120px;min-width:0;overflow:visible;height:100%;box-sizing:border-box}
 .dash-widget .analytics-hero{min-width:0}
 .dash-widget .stat-tiles{min-width:0}
 @container dashboard-widget (max-width: 900px){
