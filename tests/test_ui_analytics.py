@@ -357,3 +357,58 @@ def test_analytics_widget_card_fills_its_gridstack_shell(monkeypatch, tmp_path):
     card_rule = body[card_rule_start:card_rule_end + 1]
     assert "height:100%" in card_rule
     assert "box-sizing:border-box" in card_rule
+
+
+def test_analytics_dashboard_chrome_refresh_does_not_refetch(monkeypatch, tmp_path):
+    """Regression test for Issue #100: on a fresh page load with Analytics as
+    the default landing tab, analyticsTabChanged() -> startAnalyticsPolling()
+    already fires the initial fetchAnalyticsFull(). The Dashboard Builder IIFE
+    ran unconditionally right after it and called `refreshChrome()`, which
+    *also* called fetchAnalyticsFull() whenever the Analytics tab was active --
+    firing a second, redundant /api/analytics request on every single page
+    load (matching the "two Analytics requests at initial page load" runtime
+    evidence). refreshChrome() must instead redraw from the already-fetched
+    payload (applyAnalyticsPayload/window.__lastAnalyticsPayload), never
+    trigger a new fetch itself."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+
+    fn_start = body.index("function refreshChrome(){")
+    fn_end = body.index("\n  }", fn_start)
+    fn_body = body[fn_start:fn_end]
+    assert "fetchAnalyticsFull(" not in fn_body
+    assert "applyAnalyticsPayload(window.__lastAnalyticsPayload)" in fn_body
+
+    # fetchAnalyticsFull() must still only be reachable from the tab-change/
+    # polling/range-selection/style-change paths, never from the Dashboard
+    # Builder chrome refresh.
+    assert body.count("fetchAnalyticsFull();") == 4  # style change, startAnalyticsPolling, the two range-change handlers
+    assert "function applyAnalyticsPayload(data){" in body
+    assert "async function fetchAnalyticsFull(){" in body
+
+
+def test_map_zoom_fit_reset_controls_defer_to_leaflet_when_active(monkeypatch, tmp_path):
+    """Regression test for Issue #100: map-zoom-in-btn/map-zoom-out-btn/
+    map-fit-btn/map-reset-btn are each bound twice -- once by the legacy
+    inline SVG-map script (app.HTML) and once by static/leaflet-map.js, the
+    now-primary renderer. Both listeners fired on every click, driving the
+    legacy (dead, once Leaflet is active) zoom/pan state *and* a real Leaflet
+    zoom/pan simultaneously. The legacy handlers must check whether Leaflet
+    has taken over (host carries 'leaflet-map-host', set by leaflet-map.js's
+    ensureMap()) and no-op instead of double-handling the click."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+
+    assert "function isLegacySvgMapActive(){" in body
+    guard_start = body.index("function isLegacySvgMapActive(){")
+    guard_end = body.index("\n}", guard_start)
+    guard_body = body[guard_start:guard_end]
+    assert "leaflet-map-host" in guard_body
+
+    for btn_id in ("map-zoom-in-btn", "map-zoom-out-btn", "map-reset-btn"):
+        handler_start = body.index(f"document.getElementById('{btn_id}')?.addEventListener('click', () => {{")
+        handler_end = body.index("\n});", handler_start)
+        handler_body = body[handler_start:handler_end]
+        assert "if (!isLegacySvgMapActive()) return;" in handler_body
+
+    assert "document.getElementById('map-fit-btn')?.addEventListener('click', () => { if (isLegacySvgMapActive()) mapFitToData(); });" in body

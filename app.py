@@ -2771,6 +2771,28 @@ function renderQueryVolumeChart(data){
     onPointClick: (point) => selectIntervalBucket(point, data.range),
   });
 }
+// Shared render step for a fetched analytics payload -- used both by a real
+// fetch (fetchAnalyticsFull) and by callers that only need to redraw the
+// already-cached payload (e.g. a GridStack layout/chrome change). Layout
+// changes never need fresh server data, only a re-render, so routing them
+// through here instead of fetchAnalyticsFull() is what keeps a Dashboard
+// Builder chrome update from firing a second, redundant /api/analytics
+// request on top of startAnalyticsPolling()'s own initial fetch.
+function applyAnalyticsPayload(data){
+  window.__lastAnalyticsPayload = data;
+  renderVisibilityReport(data);
+  renderQueryVolumeChart(data);
+  renderMetricVisual('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
+  renderMetricVisual('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
+  renderStatusBreakdown(data.status_breakdown);
+  renderRecentActivity(data.recent_domains, data.recent_devices);
+  renderInstrumentGauges(data);
+  const tAllowed=document.getElementById('tile-allowed'); if(tAllowed) tAllowed.textContent = data.status_breakdown?.Allowed ?? '—';
+  const tBlocked=document.getElementById('tile-blocked'); if(tBlocked) tBlocked.textContent = data.status_breakdown?.Blocked ?? '—';
+  const tDevices=document.getElementById('tile-devices'); if(tDevices) tDevices.textContent = data.active_devices ?? '—';
+  const tNewDomains=document.getElementById('tile-new-domains'); if(tNewDomains) tNewDomains.textContent = data.new_domains_24h ?? '—';
+  document.querySelectorAll('[data-analytics-range]').forEach(b => b.classList.toggle('active', b.dataset.analyticsRange === analyticsRange));
+}
 async function fetchAnalyticsFull(){
   const seq = ++analyticsFetchSeq;
   if (analyticsFetchController) analyticsFetchController.abort();
@@ -2790,19 +2812,7 @@ async function fetchAnalyticsFull(){
     const data = await r.json();
     if (seq !== analyticsFetchSeq) return; // superseded while awaiting the response body
     const renderStartedAt = perfNow();
-    window.__lastAnalyticsPayload = data;
-    renderVisibilityReport(data);
-    renderQueryVolumeChart(data);
-    renderMetricVisual('chart-new-domains', data.series?.new_domains?.points, '--sem-ok', 'New domains');
-    renderMetricVisual('chart-new-devices', data.series?.new_devices?.points, '--sem-ok', 'New devices');
-    renderStatusBreakdown(data.status_breakdown);
-    renderRecentActivity(data.recent_domains, data.recent_devices);
-    renderInstrumentGauges(data);
-    const tAllowed=document.getElementById('tile-allowed'); if(tAllowed) tAllowed.textContent = data.status_breakdown?.Allowed ?? '—';
-    const tBlocked=document.getElementById('tile-blocked'); if(tBlocked) tBlocked.textContent = data.status_breakdown?.Blocked ?? '—';
-    const tDevices=document.getElementById('tile-devices'); if(tDevices) tDevices.textContent = data.active_devices ?? '—';
-    const tNewDomains=document.getElementById('tile-new-domains'); if(tNewDomains) tNewDomains.textContent = data.new_domains_24h ?? '—';
-    document.querySelectorAll('[data-analytics-range]').forEach(b => b.classList.toggle('active', b.dataset.analyticsRange === analyticsRange));
+    applyAnalyticsPayload(data);
     recordPerf('analytics', fetchStartedAt, renderStartedAt, perfNow());
     // /api/analytics/map is intentionally NOT fetched here -- see
     // startAnalyticsPolling()/mapRefreshMs(): it runs heavier server-side
@@ -3802,22 +3812,39 @@ document.getElementById('map-routes-toggle')?.addEventListener('change', (e) => 
   savePrefs();
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
+// These four legacy SVG-map controls double as the Leaflet map's own zoom
+// in/out/fit/reset controls (static/leaflet-map.js binds the same button
+// IDs to real Leaflet viewport calls). Both scripts' listeners fire on every
+// click regardless of registration order, so once Leaflet has taken over
+// (host carries 'leaflet-map-host', set by leaflet-map.js's ensureMap())
+// this legacy handler must no-op -- otherwise a single click drives the
+// legacy SVG zoom state *and* the real Leaflet viewport at once, doubling
+// map re-renders and leaving mapZoom/mapViewCenter out of sync with what's
+// actually on screen. Leaflet is only ever absent as a real fallback (the
+// CDN failed to load, or L.map() itself threw), so this still owns zoom/fit/
+// reset for the legacy SVG renderer in that case.
+function isLegacySvgMapActive(){
+  return !document.getElementById('destination-map')?.classList.contains('leaflet-map-host');
+}
 document.getElementById('map-zoom-in-btn')?.addEventListener('click', () => {
+  if (!isLegacySvgMapActive()) return;
   mapZoom = Math.min(8, mapZoom * 2);
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-zoom-out-btn')?.addEventListener('click', () => {
+  if (!isLegacySvgMapActive()) return;
   mapZoom = Math.max(1, mapZoom / 2);
   if (mapZoom === 1) mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
 document.getElementById('map-reset-btn')?.addEventListener('click', () => {
+  if (!isLegacySvgMapActive()) return;
   mapZoom = 1; mapViewCenter = { cx: MAP_W / 2, cy: MAP_H / 2 };
   mapSelectedCountry = null; mapSelectedDestinationKey = null;
   renderMapDetail(null);
   if (mapLastPayload) renderDestinationMap(mapLastPayload);
 });
-document.getElementById('map-fit-btn')?.addEventListener('click', mapFitToData);
+document.getElementById('map-fit-btn')?.addEventListener('click', () => { if (isLegacySvgMapActive()) mapFitToData(); });
 function mapPayloadFingerprint(data){
   try{
     return JSON.stringify({
@@ -4089,7 +4116,14 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
       }).join('');
       tray.classList.toggle('visible', customizing && layout.hidden.length > 0);
     }
-    if (document.getElementById('tab-analytics')?.classList.contains('active') && typeof fetchAnalyticsFull === 'function') fetchAnalyticsFull();
+    // Re-render from the last-fetched payload rather than calling
+    // fetchAnalyticsFull(): a layout/chrome change (hide/show, preset,
+    // customize toggle) never changes the underlying data, so it never
+    // needs a fresh /api/analytics round trip -- and refreshChrome() runs
+    // once at Dashboard Builder init too, so fetching here would fire a
+    // second, redundant Analytics request right on top of
+    // startAnalyticsPolling()'s own initial fetch.
+    if (document.getElementById('tab-analytics')?.classList.contains('active') && window.__lastAnalyticsPayload && typeof applyAnalyticsPayload === 'function') applyAnalyticsPayload(window.__lastAnalyticsPayload);
     if (typeof renderLiveHero === 'function') renderLiveHero();
   }
 
@@ -4369,7 +4403,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     const kv = document.getElementById('reports-status-kv');
     try{
       const [cfgRes, statusRes] = await Promise.all([
-        fetch('/api/reports/schedule', {cache:'no-store'}),
+        adminFetch('/api/reports/schedule', {cache:'no-store'}),
         fetch('/api/reports/status', {cache:'no-store'}),
       ]);
       const cfgData = await cfgRes.json();
@@ -4431,7 +4465,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
     };
     if (resultEl) resultEl.textContent = 'Saving…';
     try{
-      const r = await fetch('/api/reports/schedule', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+      const r = await adminFetch('/api/reports/schedule', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
       const d = await r.json();
       if (resultEl) resultEl.textContent = d.ok ? 'Saved.' : ('Error: ' + (d.error || 'unknown'));
       refreshReportsPanel();
@@ -4440,7 +4474,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   document.getElementById('reports-save-now-btn')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget; btn.disabled = true;
     try{
-      const r = await fetch('/api/reports/save-now', {method:'POST'});
+      const r = await adminFetch('/api/reports/save-now', {method:'POST'});
       const d = await r.json();
       alert(d.ok ? `Report saved: ${d.saved_file || ''}` : `Save failed: ${d.error || 'unknown error'}`);
     }catch(e){ alert('Save failed.'); }
@@ -4449,7 +4483,7 @@ analyticsTabChanged(document.querySelector('.tab-btn.active')?.dataset.tab || 'o
   document.getElementById('reports-test-email-btn')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget; btn.disabled = true;
     try{
-      const r = await fetch('/api/reports/test-email', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
+      const r = await adminFetch('/api/reports/test-email', {method:'POST', headers:{'Content-Type':'application/json'}, body: '{}'});
       const d = await r.json();
       alert(d.ok ? `Test email sent to ${d.recipient_count || 0} recipient(s).` : `Test email failed: ${d.error || 'unknown error'}`);
     }catch(e){ alert('Test email failed.'); }
@@ -7566,6 +7600,7 @@ _report_scheduler = ReportScheduler(
 
 
 @app.route("/api/reports/schedule", methods=["GET", "POST"])
+@require_admin
 def api_reports_schedule():
     if request.method == "GET":
         return jsonify({"ok": True, "config": public_report_schedule_config(), "state": _report_scheduler.state()})
@@ -7583,6 +7618,7 @@ def api_reports_status():
 
 
 @app.route("/api/reports/save-now", methods=["POST"])
+@require_admin
 def api_reports_save_now():
     config = get_report_schedule_config()
     result = _report_scheduler.run_now(config=config, reason="manual")
@@ -7591,6 +7627,7 @@ def api_reports_save_now():
 
 
 @app.route("/api/reports/test-email", methods=["POST"])
+@require_admin
 def api_reports_test_email():
     data = request.get_json(silent=True) or {}
     config = get_report_schedule_config()
@@ -7610,6 +7647,7 @@ def api_reports_test_email():
 
 
 @app.route("/api/reports/history")
+@require_admin
 def api_reports_history():
     stored = get_setting("report_schedule") or {}
     history = list(stored.get("history") or [])
@@ -7620,6 +7658,7 @@ def api_reports_history():
 
 
 @app.route("/api/settings/map-origin", methods=["GET", "POST"])
+@require_admin
 def api_settings_map_origin():
     """A visualization-only origin point for destination route arcs. Never
     derived/guessed -- the operator must explicitly set real coordinates
@@ -8035,4 +8074,12 @@ if __name__ == "__main__":
     threading.Thread(target=_geoip_datacenter_initial_load_worker, daemon=True, name="geoip-datacenter-loader").start()
     _report_scheduler.start()
     signal.signal(signal.SIGTERM, lambda *_: (_report_scheduler.shutdown(), sys.exit(0)))
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
+    # threaded=True: the dashboard alone fires several concurrent requests per
+    # poll cycle (/api/state, /api/analytics, /api/analytics/map), and every
+    # DNS-ingest/enrichment/report-scheduler worker above already runs as its
+    # own thread against the same per-call sqlite3 connections + db_lock. A
+    # single-threaded dev server would instead serialize every one of those
+    # requests behind whichever one is slowest (e.g. report PDF generation or
+    # an SMTP send in api_reports_save_now), which looks like a hung/frozen
+    # browser tab even though each request eventually returns 200.
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), threaded=True)

@@ -21,6 +21,9 @@ def test_admin_auth_is_disabled_and_endpoints_stay_open_by_default(app_module):
     assert client.get("/api/device/label").status_code == 200
     assert client.post("/api/system/restart", json={}).status_code == 400
     assert client.post("/api/system/stop", json={}).status_code == 400
+    assert client.get("/api/reports/schedule").status_code == 200
+    assert client.get("/api/reports/history").status_code == 200
+    assert client.get("/api/settings/map-origin").status_code == 200
 
 
 def test_admin_endpoints_require_session_when_token_configured(admin_app_module):
@@ -35,6 +38,17 @@ def test_admin_endpoints_require_session_when_token_configured(admin_app_module)
         ("POST /api/device/label", client.post("/api/device/label", json={"device_key": "x", "label": "y"})),
         ("POST /api/system/restart", client.post("/api/system/restart", json={})),
         ("POST /api/system/stop", client.post("/api/system/stop", json={})),
+        # Issue #100: scheduled-report and map-origin routes were shipped
+        # without @require_admin, letting an unauthenticated caller read/
+        # rewrite SMTP delivery settings and trigger a report generation +
+        # email send even when an admin token is configured.
+        ("GET /api/reports/schedule", client.get("/api/reports/schedule")),
+        ("POST /api/reports/schedule", client.post("/api/reports/schedule", json={"enabled": True})),
+        ("GET /api/reports/history", client.get("/api/reports/history")),
+        ("POST /api/reports/save-now", client.post("/api/reports/save-now", json={})),
+        ("POST /api/reports/test-email", client.post("/api/reports/test-email", json={})),
+        ("GET /api/settings/map-origin", client.get("/api/settings/map-origin")),
+        ("POST /api/settings/map-origin", client.post("/api/settings/map-origin", json={"clear": True})),
     )
     for label, resp in checks:
         assert resp.status_code == 401, label
