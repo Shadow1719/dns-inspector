@@ -1408,7 +1408,13 @@ html[data-motion="reduced"] .map-tile-layer img.map-tile{transition:none}
 .dash-grid .grid-stack-item-content{overflow:visible;box-sizing:border-box;height:100%}
 .dash-widget{container-type:inline-size;container-name:dashboard-widget;min-width:0}
 .dash-widget .grid-stack-item-content{min-width:0}
-.dash-widget .card{min-height:120px;min-width:0;overflow:visible;height:100%;box-sizing:border-box}
+/* min-height, not height: GridStack's gs-h only reserves shell space from a
+   fixed cell count, it has no idea how tall a widget's real content is. A
+   hard height with overflow:visible (Issue #99) lets taller widgets spill
+   their live/interactive content into whatever is stacked next to or below
+   them; min-height still fills a shell that's taller than its content
+   (Issue #97) but can never clip a widget down to less than it needs. */
+.dash-widget .card{min-height:100%;min-width:0;overflow:visible;box-sizing:border-box}
 .dash-widget .analytics-hero{min-width:0}
 .dash-widget .stat-tiles{min-width:0}
 @container dashboard-widget (max-width: 900px){

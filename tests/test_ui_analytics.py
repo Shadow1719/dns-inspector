@@ -340,9 +340,13 @@ def test_analytics_widget_card_fills_its_gridstack_shell(monkeypatch, tmp_path):
     absolutely (via gs-w/gs-h), but the .card inside it is an ordinary static
     block -- without an explicit height it only grows to fit its own content
     and never fills the shell GridStack allocated, leaving the widget looking
-    collapsed with dead space below it. .card (and its .grid-stack-item-content
-    parent) must stretch to the shell's full height, with border-box sizing so
-    padding/border can't push it past that height."""
+    collapsed with dead space below it. .grid-stack-item-content stretches to
+    the shell's full height (a hard height is safe there -- it has no
+    intrinsic content of its own, .card is its only child); .card fills that
+    same shell with min-height rather than a hard height -- see
+    test_analytics_widget_card_never_hard_clips_to_its_gridstack_shell for
+    why -- with border-box sizing so padding/border can't push either box
+    past its shell."""
     app = _fresh_app(monkeypatch, tmp_path, "development")
     body = app.HTML
 
@@ -355,5 +359,31 @@ def test_analytics_widget_card_fills_its_gridstack_shell(monkeypatch, tmp_path):
     card_rule_start = body.index(".dash-widget .card{")
     card_rule_end = body.index("}", card_rule_start)
     card_rule = body[card_rule_start:card_rule_end + 1]
-    assert "height:100%" in card_rule
+    assert "min-height:100%" in card_rule
     assert "box-sizing:border-box" in card_rule
+
+
+def test_analytics_widget_card_never_hard_clips_to_its_gridstack_shell(monkeypatch, tmp_path):
+    """Regression test for the dev.14 browser-freeze report (Issue #99): the
+    Issue #97 fix above initially gave .dash-widget .card a hard `height:100%`
+    instead of `min-height:100%`. GridStack's gs-h only reserves shell space
+    from a fixed cell count -- it has no idea how tall a widget's real content
+    actually is. Several widgets (destination-map especially, with its
+    controls/legend/breakdown list/Leaflet viewport) render taller than their
+    shell. A hard height combined with the required `overflow:visible` (real
+    data must never be silently clipped) let that overflow spill directly
+    into the live, interactive DOM of whatever widget is stacked next to or
+    below it -- overlapping click targets and Leaflet's own pointer/drag
+    handlers with an unrelated widget, which is what turned a cosmetic
+    height issue into a tab-locking one under real interaction. `min-height`
+    still fills a shell taller than its content (the #97 fix) but, unlike
+    `height`, can never clip a widget down to less than it actually needs."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+
+    card_rule_start = body.index(".dash-widget .card{")
+    card_rule_end = body.index("}", card_rule_start)
+    card_rule = body[card_rule_start:card_rule_end + 1]
+    assert "min-height:100%" in card_rule
+    assert "height:100%" not in card_rule.replace("min-height:100%", "")
+    assert "overflow:visible" in card_rule
