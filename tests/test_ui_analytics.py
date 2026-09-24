@@ -270,6 +270,42 @@ def test_analytics_dashboard_resize_uses_gridstack_resize_event_without_observer
 
 
 
+def test_analytics_dashboard_resize_refresh_is_debounced_and_network_free(monkeypatch, tmp_path):
+    """Regression test for the Issue #94 browser-freeze report: an earlier
+    implementation attached a ResizeObserver directly to each
+    .grid-stack-item box and re-rendered widget content on every observed
+    size change; that re-render could itself perturb the observed box
+    (overflow/scrollbars/font metrics), which the same observer would pick
+    up again -- a render/layout feedback loop able to pin the main thread.
+    The fix drives responsive re-rendering off GridStack's own bounded,
+    pointer-driven 'resize' event instead of box observation, coalesces it
+    to at most one pending animation frame, and never issues a network
+    request just because a widget was resized."""
+    app = _fresh_app(monkeypatch, tmp_path, "development")
+    body = app.HTML
+    for dead_code in (
+        "new ResizeObserver", "responsiveWidthCache", "resizeLockState",
+        "suppressLayoutPersistence", "grid.on('resizestart'", "grid.on('resizestop'",
+    ):
+        assert dead_code not in body
+    assert body.count("grid.on('resize'") == 1
+    assert "grid.on('resize', () => scheduleResponsiveAnalyticsRefresh())" in body
+
+    fn_start = body.index("function scheduleResponsiveAnalyticsRefresh(){")
+    fn_end = body.index("\n  }", fn_start)
+    fn_body = body[fn_start:fn_end]
+    assert "responsiveRefreshPending" in fn_body
+    assert "requestAnimationFrame(" in fn_body
+    assert "fetch(" not in fn_body
+    assert "window.__lastAnalyticsPayload" in fn_body
+
+    # Only the trailing/bottom-right handles are interactive, and
+    # preventCollision keeps a resize from pushing neighboring widgets --
+    # growing one widget must never unexpectedly move an unrelated one.
+    assert "preventCollision: true" in body
+    assert "resizable: { handles: 'e, se, s' }" in body
+
+
 def test_analytics_dashboard_layout_is_persisted_and_restorable(monkeypatch, tmp_path):
     """Issue #88 follow-up (GridStack): drag/resize/hide changes must persist
     per-browser (x/y/w/h, not just an order list) and be restored after a
